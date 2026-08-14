@@ -108,7 +108,7 @@ var _ = Describe("UIReconciler", func() {
 			Kind:    "Route",
 		}
 
-		_, _, err := uiReconciler.reconcileUIRoute(ctx, cr)
+		_, _, err := uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
 		if err != nil {
 			// Route CRD not installed in envtest — skip gracefully.
 			if apierrors.IsNotFound(err) || isNoCRDError(err) {

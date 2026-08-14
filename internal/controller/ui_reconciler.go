@@ -28,11 +28,10 @@ import (
 )
 
 const (
-	defaultUIImage         = "quay.io/amobrem/openshiftpulse:latest"
-	defaultOAuthProxyImage = "quay.io/openshift/origin-oauth-proxy:4.15"
-	uiHTTPPort             = int32(8080)
-	uiProxyPort            = int32(8443)
-	oauthClientName        = "openshiftpulse"
+	defaultUIImage  = "quay.io/amobrem/openshiftpulse:latest"
+	uiHTTPPort      = int32(8080)
+	uiProxyPort     = int32(8443)
+	oauthClientName = "openshiftpulse"
 )
 
 // UIReconciler reconciles the UI sub-resources of an OpenShiftPulse CR.
@@ -84,6 +83,8 @@ func (r *UIReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
 func (r *UIReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	info := DetectClusterInfo(ctx, r.Client)
+
 	type syncStep struct {
 		name string
 		fn   func(context.Context, *pulsev1alpha1.OpenShiftPulse) error
@@ -104,7 +105,7 @@ func (r *UIReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.Ope
 	}
 
 	// Route must be created before OAuthClient — OCP assigns the hostname asynchronously.
-	routeHost, result, err := r.reconcileUIRoute(ctx, pulse)
+	routeHost, result, err := r.reconcileUIRoute(ctx, pulse, info)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("UI/Route: %w", err)
 	}
@@ -161,11 +162,15 @@ func resolvedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
 	return defaultUIImage
 }
 
-func resolvedOAuthProxyImage(cr *pulsev1alpha1.OpenShiftPulse) string {
-	if cr.Spec.UI.OAuthProxyImage != "" {
-		return cr.Spec.UI.OAuthProxyImage
+func resolvedOAuthProxyImage(cr *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo) string {
+	oauthImage := cr.Spec.UI.OAuthProxyImage
+	if oauthImage == "" && info != nil && info.OAuthProxyImage != "" {
+		oauthImage = info.OAuthProxyImage
 	}
-	return defaultOAuthProxyImage
+	if oauthImage == "" {
+		oauthImage = DefaultOAuthProxyImage
+	}
+	return oauthImage
 }
 
 // generateCookieSecret returns a base64-encoded string of 32 random bytes.
@@ -436,7 +441,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 						{
 							// Container 2: OpenShift OAuth proxy terminating TLS on 8443.
 							Name:  "oauth-proxy",
-							Image: resolvedOAuthProxyImage(pulse),
+							Image: resolvedOAuthProxyImage(pulse, DetectClusterInfo(ctx, r.Client)),
 							Ports: []corev1.ContainerPort{
 								{Name: "https", ContainerPort: uiProxyPort, Protocol: corev1.ProtocolTCP},
 							},
@@ -566,7 +571,8 @@ func (r *UIReconciler) reconcileUIService(ctx context.Context, pulse *pulsev1alp
 // h+i. Route — created without spec.host; waits for OCP to assign the hostname.
 // Returns the hostname (non-empty) and an empty Result once the Route is admitted.
 // Returns an empty host and a requeue Result while waiting.
-func (r *UIReconciler) reconcileUIRoute(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, ctrl.Result, error) {
+// info is used to add an informational cluster-domain annotation (OCP still assigns spec.host).
+func (r *UIReconciler) reconcileUIRoute(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo) (string, ctrl.Result, error) {
 	name := uiResourceName(pulse.Name)
 
 	routeGVK := schema.GroupVersionKind{
@@ -585,7 +591,12 @@ func (r *UIReconciler) reconcileUIRoute(ctx context.Context, pulse *pulsev1alpha
 		desired.SetGroupVersionKind(routeGVK)
 		desired.SetName(name)
 		desired.SetNamespace(pulse.Namespace)
-		desired.SetAnnotations(clusterScopedAnnotations(pulse))
+
+		annotations := clusterScopedAnnotations(pulse)
+		if info != nil && info.IngressDomain != "" {
+			annotations["pulse.ai/cluster-domain"] = info.IngressDomain
+		}
+		desired.SetAnnotations(annotations)
 
 		if setErr := unstructured.SetNestedField(desired.Object, map[string]interface{}{
 			"kind":   "Service",

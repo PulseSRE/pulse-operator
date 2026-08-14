@@ -4,6 +4,8 @@ import (
 	"flag"
 	"os"
 
+	configv1 "github.com/openshift/api/config/v1"
+	imagev1 "github.com/openshift/api/image/v1"
 	oauthv1 "github.com/openshift/api/oauth/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,6 +33,8 @@ func init() {
 	utilruntime.Must(pulsev1alpha1.AddToScheme(scheme))
 	utilruntime.Must(routev1.AddToScheme(scheme))
 	utilruntime.Must(oauthv1.AddToScheme(scheme))
+	utilruntime.Must(configv1.Install(scheme))
+	utilruntime.Must(imagev1.Install(scheme))
 }
 
 func main() {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -14,7 +15,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -154,7 +157,9 @@ func (r *OpenShiftPulseReconciler) isAgentHealthy(ctx context.Context, pulse *pu
 }
 
 // SetupWithManager registers this reconciler with the controller manager.
-// It watches OpenShiftPulse CRs and all namespace-scoped sub-resources it owns.
+// It watches OpenShiftPulse CRs, all namespace-scoped sub-resources it owns,
+// and the cluster-scoped configv1.Ingress "cluster" object so that a change to the
+// ingress domain (e.g. base domain update) triggers re-detection and reconciliation.
 func (r *OpenShiftPulseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&pulsev1alpha1.OpenShiftPulse{}).
@@ -164,5 +169,25 @@ func (r *OpenShiftPulseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ServiceAccount{}).
+		Watches(
+			&configv1.Ingress{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
+				// Any change to the cluster Ingress config should re-run all OpenShiftPulse reconciles.
+				pulseList := &pulsev1alpha1.OpenShiftPulseList{}
+				if err := r.List(ctx, pulseList); err != nil {
+					return nil
+				}
+				reqs := make([]reconcile.Request, 0, len(pulseList.Items))
+				for _, p := range pulseList.Items {
+					reqs = append(reqs, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      p.Name,
+							Namespace: p.Namespace,
+						},
+					})
+				}
+				return reqs
+			}),
+		).
 		Complete(r)
 }
