@@ -10,6 +10,8 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -30,6 +32,8 @@ func init() {
 	utilruntime.Must(corev1.AddToScheme(scheme))
 	utilruntime.Must(appsv1.AddToScheme(scheme))
 	utilruntime.Must(rbacv1.AddToScheme(scheme))
+	utilruntime.Must(networkingv1.AddToScheme(scheme))
+	utilruntime.Must(policyv1.AddToScheme(scheme))
 	utilruntime.Must(pulsev1alpha1.AddToScheme(scheme))
 	utilruntime.Must(routev1.AddToScheme(scheme))
 	utilruntime.Must(oauthv1.AddToScheme(scheme))
@@ -61,7 +65,7 @@ func main() {
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "pulse-operator-leader.pulse.ai",
+		LeaderElectionID:       "pulse-operator.pulse.ai",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

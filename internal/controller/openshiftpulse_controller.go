@@ -7,17 +7,23 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
+
+const finalizerName = "pulse.ai/cleanup"
 
 // OpenShiftPulseReconciler is the root reconciler for the OpenShiftPulse CRD.
 // It orchestrates the PostgreSQL, Agent, and UI sub-reconcilers, then syncs status.
@@ -44,6 +50,24 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Finalizer / deletion guard.
+	if !pulse.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(pulse, finalizerName) {
+			if err := r.deleteClusterScopedResources(ctx, pulse); err != nil {
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(pulse, finalizerName)
+			if err := r.Update(ctx, pulse); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+	if !controllerutil.ContainsFinalizer(pulse, finalizerName) {
+		controllerutil.AddFinalizer(pulse, finalizerName)
+		return ctrl.Result{}, r.Update(ctx, pulse)
+	}
+
 	logger.Info("Reconciling OpenShiftPulse", "name", pulse.Name, "namespace", pulse.Namespace)
 
 	// 1. Reconcile PostgreSQL sub-resources.
@@ -59,6 +83,12 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("reconcileAgent: %w", err)
 	}
 
+	// 2a. NetworkPolicies — protect UI and PostgreSQL pods.
+	if err := r.reconcileNetworkPolicies(ctx, pulse); err != nil {
+		logger.Error(err, "network policy reconcile failed")
+		return ctrl.Result{}, fmt.Errorf("reconcileNetworkPolicies: %w", err)
+	}
+
 	// 3. Reconcile UI sub-resources (Route, OAuthClient, Deployment, Service, etc.).
 	uiResult, err := r.UIReconciler.reconcileUI(ctx, pulse)
 	if err != nil {
@@ -71,11 +101,41 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return uiResult, nil
 	}
 
-	// 4. Determine health of each component and sync CR status.
-	agentHealthy := r.isAgentHealthy(ctx, pulse)
-	pulse.Status.AgentHealthy = agentHealthy
+	// 3a. PodDisruptionBudget — protect UI when replicas > 1.
+	if err := r.reconcileUIPodsDisruptionBudget(ctx, pulse); err != nil {
+		logger.Error(err, "PDB reconcile failed")
+		return ctrl.Result{}, fmt.Errorf("reconcileUIPodsDisruptionBudget: %w", err)
+	}
 
-	if pulse.Status.DatabaseReady && agentHealthy && pulse.Status.UIAvailable {
+	// 4. Detect cluster topology (used by Monitoring and MCP reconcilers).
+	info := DetectClusterInfo(ctx, r.Client)
+
+	// 5. Optional: Monitoring — ServiceMonitor + PrometheusRule.
+	if pulse.Spec.Monitoring.Enabled {
+		mr := &MonitoringReconciler{Client: r.Client, Scheme: r.Scheme}
+		if err := mr.reconcileMonitoring(ctx, pulse); err != nil {
+			logger.Error(err, "monitoring reconcile failed")
+			return ctrl.Result{}, fmt.Errorf("reconcileMonitoring: %w", err)
+		}
+	}
+
+	// 6. Optional: MCP server Deployment + Service.
+	if pulse.Spec.Agent.MCP.Enabled {
+		mcpr := &MCPReconciler{Client: r.Client, Scheme: r.Scheme}
+		if err := mcpr.reconcileMCP(ctx, pulse, info); err != nil {
+			logger.Error(err, "MCP reconcile failed")
+			return ctrl.Result{}, fmt.Errorf("reconcileMCP: %w", err)
+		}
+	}
+
+	// 7. Determine health of each component and sync CR status.
+	agentReady := r.isDeploymentReady(ctx, agentResourceName(pulse.Name), pulse.Namespace)
+	pgReady := r.isStatefulSetReady(ctx, pulse.Name+"-openshift-sre-agent-postgresql", pulse.Namespace)
+
+	pulse.Status.AgentHealthy = agentReady
+	pulse.Status.DatabaseReady = pgReady
+
+	if agentReady && pgReady && pulse.Status.UIAvailable {
 		pulse.Status.Phase = "Running"
 	} else {
 		pulse.Status.Phase = "Installing"
@@ -93,7 +153,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		condition.Status  = metav1.ConditionFalse
 		condition.Reason  = "Installing"
 		condition.Message = fmt.Sprintf("agentHealthy=%v databaseReady=%v uiAvailable=%v",
-			agentHealthy, pulse.Status.DatabaseReady, pulse.Status.UIAvailable)
+			agentReady, pgReady, pulse.Status.UIAvailable)
 	}
 	apimeta.SetStatusCondition(&pulse.Status.Conditions, condition)
 
@@ -102,6 +162,50 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// deleteClusterScopedResources removes the cluster-scoped resources that are not
+// owned by the CR (and therefore not garbage-collected by the K8s GC on deletion).
+// Each deletion ignores NotFound so the method is idempotent.
+func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	// Agent ClusterRole
+	agentCR := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}
+	if err := r.Delete(ctx, agentCR); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete agent ClusterRole: %w", err)
+	}
+
+	// UI ClusterRole
+	uiCR := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}
+	if err := r.Delete(ctx, uiCR); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete UI ClusterRole: %w", err)
+	}
+
+	// Agent ClusterRoleBinding
+	agentCRB := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}
+	if err := r.Delete(ctx, agentCRB); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete agent ClusterRoleBinding: %w", err)
+	}
+
+	// UI ClusterRoleBinding
+	uiCRB := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}
+	if err := r.Delete(ctx, uiCRB); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete UI ClusterRoleBinding: %w", err)
+	}
+
+	// OAuthClient — cluster-scoped OpenShift resource; use unstructured because the
+	// oauth.openshift.io API group is not registered in the controller-runtime scheme.
+	oac := &unstructured.Unstructured{}
+	oac.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "oauth.openshift.io",
+		Version: "v1",
+		Kind:    "OAuthClient",
+	})
+	oac.SetName(oauthClientName(pulse.Name, pulse.Namespace))
+	if err := r.Delete(ctx, oac); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete OAuthClient: %w", err)
+	}
+
+	return nil
 }
 
 // reconcilePostgres delegates to PostgreSQLReconciler and returns the database URL.
@@ -141,16 +245,22 @@ func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pu
 	return nil
 }
 
-// isAgentHealthy returns true when the agent Deployment has at least one available replica.
-func (r *OpenShiftPulseReconciler) isAgentHealthy(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) bool {
+// isDeploymentReady returns true when the named Deployment has at least one ready replica.
+func (r *OpenShiftPulseReconciler) isDeploymentReady(ctx context.Context, name, ns string) bool {
 	deploy := &appsv1.Deployment{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      agentResourceName(pulse.Name),
-		Namespace: pulse.Namespace,
-	}, deploy); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, deploy); err != nil {
 		return false
 	}
-	return deploy.Status.AvailableReplicas > 0
+	return deploy.Status.ReadyReplicas > 0
+}
+
+// isStatefulSetReady returns true when the named StatefulSet has at least one ready replica.
+func (r *OpenShiftPulseReconciler) isStatefulSetReady(ctx context.Context, name, ns string) bool {
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, sts); err != nil {
+		return false
+	}
+	return sts.Status.ReadyReplicas > 0
 }
 
 // SetupWithManager registers this reconciler with the controller manager.

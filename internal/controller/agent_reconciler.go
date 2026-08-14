@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -271,17 +272,15 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 		})
 	}
 
-	existing := &rbacv1.ClusterRole{}
-	err := r.Get(ctx, types.NamespacedName{Name: name}, existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
+	cr2 := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
-	if err != nil {
-		return err
-	}
-	existing.Rules = desired.Rules
-	existing.Annotations = desired.Annotations
-	return r.Update(ctx, existing)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cr2, func() error {
+		cr2.Annotations = desired.Annotations
+		cr2.Rules = desired.Rules
+		return nil
+	})
+	return err
 }
 
 func (r *AgentReconciler) reconcileClusterRoleBinding(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
@@ -305,18 +304,19 @@ func (r *AgentReconciler) reconcileClusterRoleBinding(ctx context.Context, cr *p
 		},
 	}
 
-	existing := &rbacv1.ClusterRoleBinding{}
-	err := r.Get(ctx, types.NamespacedName{Name: name}, existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
-	if err != nil {
-		return err
-	}
-	// RoleRef is immutable — only update Subjects and Annotations.
-	existing.Subjects = desired.Subjects
-	existing.Annotations = desired.Annotations
-	return r.Update(ctx, existing)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, crb, func() error {
+		crb.Annotations = desired.Annotations
+		crb.Subjects = desired.Subjects
+		// RoleRef is immutable — set only on creation.
+		if crb.RoleRef.Name == "" {
+			crb.RoleRef = desired.RoleRef
+		}
+		return nil
+	})
+	return err
 }
 
 func (r *AgentReconciler) reconcileWSTokenSecret(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
@@ -381,7 +381,7 @@ func (r *AgentReconciler) reconcileMemoryPVC(ctx context.Context, cr *pulsev1alp
 	return r.Create(ctx, desired)
 }
 
-func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse) appsv1.DeploymentSpec {
+func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo) appsv1.DeploymentSpec {
 	name := agentResourceName(cr.Name)
 	isNonRoot := true
 	runAsUser := int64(1001)
@@ -416,6 +416,26 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse) 
 				},
 			},
 		})
+	}
+
+	if info != nil && info.ACMAvailable {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PULSE_AGENT_ACM_THANOS_ENABLED",
+			Value: "true",
+		})
+		if info.ACMThanosURL != "" {
+			envVars = append(envVars, corev1.EnvVar{
+				Name:  "PULSE_AGENT_ACM_THANOS_URL",
+				Value: info.ACMThanosURL,
+			})
+		}
+	}
+
+	healthzProbeHandler := corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{
+			Path: "/healthz",
+			Port: intstr.FromInt(int(agentPort)),
+		},
 	}
 
 	return appsv1.DeploymentSpec{
@@ -454,6 +474,16 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse) 
 								MountPath: "/memory",
 							},
 						},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler:        healthzProbeHandler,
+							InitialDelaySeconds: 15,
+							PeriodSeconds:       20,
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler:        healthzProbeHandler,
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       10,
+						},
 					},
 				},
 				Volumes: []corev1.Volume{
@@ -472,62 +502,56 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse) 
 }
 
 func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
+	info := DetectClusterInfo(ctx, r.Client)
 	name := agentResourceName(cr.Name)
-	desired := &appsv1.Deployment{
+
+	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: cr.Namespace,
 		},
-		Spec: r.buildDeploymentSpec(cr),
 	}
-	if err := controllerutil.SetControllerReference(cr, desired, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
-	}
-	if err != nil {
-		return err
-	}
-	existing.Spec = desired.Spec
-	return r.Update(ctx, existing)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+		if err := controllerutil.SetControllerReference(cr, deploy, r.Scheme); err != nil {
+			return err
+		}
+		deploy.Spec = r.buildDeploymentSpec(cr, info)
+		return nil
+	})
+	return err
 }
 
 func (r *AgentReconciler) reconcileService(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
 	name := agentResourceName(cr.Name)
-	desired := &corev1.Service{
+	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: cr.Namespace,
 		},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
-			Selector: map[string]string{"app": name},
-			Ports: []corev1.ServicePort{
-				{
-					Name:     "http",
-					Port:     agentPort,
-					Protocol: corev1.ProtocolTCP,
-				},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if err := controllerutil.SetControllerReference(cr, svc, r.Scheme); err != nil {
+			return err
+		}
+		svc.Spec.Type = corev1.ServiceTypeClusterIP
+		svc.Spec.Selector = map[string]string{"app": name}
+		svc.Spec.Ports = []corev1.ServicePort{
+			{
+				Name:     "http",
+				Port:     agentPort,
+				Protocol: corev1.ProtocolTCP,
 			},
-		},
-	}
-	if err := controllerutil.SetControllerReference(cr, desired, r.Scheme); err != nil {
-		return err
-	}
+		}
+		return nil
+	})
+	return err
+}
 
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
+// isReady returns true when the agent Deployment has at least one ready replica.
+func (r *AgentReconciler) isReady(ctx context.Context, name, ns string) bool {
+	deploy := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, deploy); err != nil {
+		return false
 	}
-	if err != nil {
-		return err
-	}
-	existing.Spec.Selector = desired.Spec.Selector
-	existing.Spec.Ports = desired.Spec.Ports
-	return r.Update(ctx, existing)
+	return deploy.Status.ReadyReplicas > 0
 }

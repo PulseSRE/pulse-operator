@@ -28,6 +28,10 @@ type ClusterInfo struct {
 	OAuthProxyImage string
 	// ACMAvailable is true when ACM observability is installed
 	ACMAvailable bool
+	// ACMThanosURL is the in-cluster URL of the ACM Thanos querier service,
+	// e.g. http://thanos-querier.open-cluster-management-observability.svc:9091
+	// Empty when ACM is not available or the service was not found.
+	ACMThanosURL string
 }
 
 var (
@@ -77,6 +81,12 @@ func DetectClusterInfo(ctx context.Context, c client.Client) *ClusterInfo {
 		var ns corev1.Namespace
 		if err := c.Get(ctx, types.NamespacedName{Name: ACMObservabilityNS}, &ns); err == nil {
 			info.ACMAvailable = true
+
+			// 4. ACM Thanos querier URL — check for the thanos-querier Service
+			var thanosSvc corev1.Service
+			if err := c.Get(ctx, types.NamespacedName{Namespace: ACMObservabilityNS, Name: "thanos-querier"}, &thanosSvc); err == nil {
+				info.ACMThanosURL = fmt.Sprintf("http://thanos-querier.%s.svc:9091", ACMObservabilityNS)
+			}
 		}
 
 		logger := log.FromContext(ctx)
@@ -84,6 +94,7 @@ func DetectClusterInfo(ctx context.Context, c client.Client) *ClusterInfo {
 			"ingressDomain", info.IngressDomain,
 			"oauthProxyImage", info.OAuthProxyImage,
 			"acmAvailable", info.ACMAvailable,
+			"acmThanosURL", info.ACMThanosURL,
 		)
 		cachedClusterInfo = info
 	})

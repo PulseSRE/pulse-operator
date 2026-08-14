@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/PulseSRE/pulse-operator/api/v1alpha1"
@@ -70,11 +71,7 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 	}
 
 	// 5. Reflect readiness into status
-	ready, err := r.isPGReady(ctx, pulse.Namespace, stsName)
-	if err != nil {
-		logger.V(1).Info("could not determine pg readiness", "err", err)
-	}
-	pulse.Status.DatabaseReady = ready
+	pulse.Status.DatabaseReady = r.isReady(ctx, stsName, pulse.Namespace)
 
 	dbURL := fmt.Sprintf("postgresql://%s:%s@%s:5432/%s", pgUser, password, svcName, pgDB)
 	return dbURL, nil
@@ -121,21 +118,13 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 	return password, nil
 }
 
-// reconcilePGStatefulSet creates the PostgreSQL StatefulSet if it does not exist.
+// reconcilePGStatefulSet creates or updates the PostgreSQL StatefulSet.
+// VolumeClaimTemplates are immutable after creation and are only set on the create path.
 func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
 	stsName, secretName string,
 ) error {
-	existing := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: stsName}, existing)
-	if err == nil {
-		return nil // Already exists — no patching; operator manages creation only.
-	}
-	if !errors.IsNotFound(err) {
-		return err
-	}
-
 	image := pulse.Spec.Database.Image
 	if image == "" {
 		image = defaultPGImage
@@ -144,7 +133,6 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	if storageSize == "" {
 		storageSize = defaultPGStorageSize
 	}
-
 	storageQty, err := resource.ParseQuantity(storageSize)
 	if err != nil {
 		return fmt.Errorf("parse storageSize %q: %w", storageSize, err)
@@ -152,64 +140,32 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 
 	replicas := int32(1)
 	isTrue := true
-	isReadOnly := false
+	isFalse := false
+
+	pgProbeHandler := corev1.ProbeHandler{
+		Exec: &corev1.ExecAction{
+			Command: []string{"pg_isready", "-U", pgUser},
+		},
+	}
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      stsName,
 			Namespace: pulse.Namespace,
-			Labels:    pgLabels(pulse.Name),
 		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: stsName + "-headless",
-			Selector: &metav1.LabelSelector{
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+		sts.Labels = pgLabels(pulse.Name)
+		setOwner(pulse, sts)
+
+		// VolumeClaimTemplates is immutable — only populate on creation.
+		if sts.CreationTimestamp.IsZero() {
+			sts.Spec.Replicas = &replicas
+			sts.Spec.ServiceName = stsName + "-headless"
+			sts.Spec.Selector = &metav1.LabelSelector{
 				MatchLabels: pgLabels(pulse.Name),
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: pgLabels(pulse.Name),
-				},
-				Spec: corev1.PodSpec{
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: &isTrue,
-					},
-					Containers: []corev1.Container{
-						{
-							Name:  "postgresql",
-							Image: image,
-							Ports: []corev1.ContainerPort{
-								{Name: "postgresql", ContainerPort: pgPort, Protocol: corev1.ProtocolTCP},
-							},
-							EnvFrom: []corev1.EnvFromSource{
-								{
-									SecretRef: &corev1.SecretEnvSource{
-										LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-									},
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "pg-data", MountPath: "/var/lib/pgsql/data"},
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									Exec: &corev1.ExecAction{
-										Command: []string{"pg_isready", "-U", pgUser, "-d", pgDB},
-									},
-								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       10,
-								FailureThreshold:    3,
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: &isReadOnly,
-								ReadOnlyRootFilesystem:   &isReadOnly,
-							},
-						},
-					},
-				},
-			},
-			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+			}
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:   "pg-data",
@@ -224,17 +180,70 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 						},
 					},
 				},
+			}
+			if pulse.Spec.Database.StorageClass != "" {
+				sc := pulse.Spec.Database.StorageClass
+				sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName = &sc
+			}
+		}
+
+		// Sync mutable fields on both create and update.
+		sts.Spec.Template = corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: pgLabels(pulse.Name),
 			},
-		},
-	}
+			Spec: corev1.PodSpec{
+				SecurityContext: &corev1.PodSecurityContext{
+					RunAsNonRoot: &isTrue,
+				},
+				Containers: []corev1.Container{
+					{
+						Name:  "postgresql",
+						Image: image,
+						Ports: []corev1.ContainerPort{
+							{Name: "postgresql", ContainerPort: pgPort, Protocol: corev1.ProtocolTCP},
+						},
+						EnvFrom: []corev1.EnvFromSource{
+							{
+								SecretRef: &corev1.SecretEnvSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+								},
+							},
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "pg-data", MountPath: "/var/lib/pgsql/data"},
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler:        pgProbeHandler,
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       10,
+							FailureThreshold:    3,
+						},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler:        pgProbeHandler,
+							InitialDelaySeconds: 30,
+							PeriodSeconds:       30,
+						},
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: &isFalse,
+							ReadOnlyRootFilesystem:   &isFalse,
+						},
+					},
+				},
+			},
+		}
+		return nil
+	})
+	return err
+}
 
-	if pulse.Spec.Database.StorageClass != "" {
-		sc := pulse.Spec.Database.StorageClass
-		sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName = &sc
+// isReady returns true when the PostgreSQL StatefulSet has at least one ready replica.
+func (r *PostgreSQLReconciler) isReady(ctx context.Context, name, ns string) bool {
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, sts); err != nil {
+		return false
 	}
-
-	setOwner(pulse, sts)
-	return r.Create(ctx, sts)
+	return sts.Status.ReadyReplicas > 0
 }
 
 // reconcilePGService creates either a ClusterIP or headless Service for PostgreSQL.
@@ -280,15 +289,6 @@ func (r *PostgreSQLReconciler) reconcilePGService(
 
 	setOwner(pulse, svc)
 	return r.Create(ctx, svc)
-}
-
-// isPGReady returns true when the StatefulSet has at least one ready replica.
-func (r *PostgreSQLReconciler) isPGReady(ctx context.Context, namespace, stsName string) (bool, error) {
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: stsName}, sts); err != nil {
-		return false, err
-	}
-	return sts.Status.ReadyReplicas > 0, nil
 }
 
 // generatePassword returns a hex-encoded random string of n bytes (produces 2n hex chars).
