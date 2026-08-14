@@ -1,0 +1,204 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "pulse.ai/v1alpha1",
+          "kind": "OpenShiftPulse",
+          "metadata": {
+            "name": "pulse",
+            "namespace": "openshiftpulse"
+          },
+          "spec": {
+            "agent": {
+              "image": "quay.io/amobrem/pulse-agent:latest",
+              "trustLevel": 2,
+              "allowWriteOperations": false
+            },
+            "ui": {
+              "image": "quay.io/amobrem/openshiftpulse:latest",
+              "replicas": 2
+            },
+            "database": {
+              "storageSize": "5Gi"
+            },
+            "monitoring": {
+              "enabled": true
+            }
+          }
+        }
+      ]
+    capabilities: Basic Install
+    containerImage: quay.io/amobrem/pulse-operator:v0.1.0
+    repository: https://github.com/PulseSRE/pulse-operator
+    support: Red Hat CoE
+  name: pulse-operator.v0.1.0
+  namespace: openshiftpulse
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+      - description: OpenShiftPulse is the deployment configuration for the Pulse AI SRE agent and UI
+        displayName: OpenShift Pulse
+        kind: OpenShiftPulse
+        name: openshiftpulses.pulse.ai
+        version: v1alpha1
+  description: |
+    ## OpenShift Pulse Operator
+
+    Deploys and manages the **Pulse AI SRE Agent** — an AI-powered Kubernetes/OpenShift
+    SRE assistant built on Claude. Pulse connects to your cluster via the Kubernetes API
+    and uses Claude for diagnostics, incident triage, security audits, and automated
+    remediation through natural language.
+
+    ### Features
+    - Full-stack deployment (AI agent + UI + PostgreSQL) from a single CR
+    - OAuthClient redirect URI auto-configured after Route is ready
+    - oauth-proxy image auto-detected from cluster ImageStream
+    - Ingress domain auto-detected from cluster config
+    - ACM multicluster support auto-detected
+
+    ### Quick Start
+    ```yaml
+    apiVersion: pulse.ai/v1alpha1
+    kind: OpenShiftPulse
+    metadata:
+      name: pulse
+      namespace: openshiftpulse
+    spec:
+      vertexAI:
+        projectId: my-gcp-project
+        region: us-east5
+        credentialSecret: gcp-sa-key
+      agent:
+        trustLevel: 2
+    ```
+  displayName: OpenShift Pulse
+  icon:
+    - base64data: ""
+      mediatype: image/svg+xml
+  install:
+    spec:
+      clusterPermissions:
+        - rules:
+          - apiGroups: [""]
+            resources: ["namespaces","nodes","pods","services","events","persistentvolumeclaims","configmaps","serviceaccounts","secrets","endpoints"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          - apiGroups: ["apps"]
+            resources: ["deployments","statefulsets","replicasets","daemonsets"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          - apiGroups: ["rbac.authorization.k8s.io"]
+            resources: ["clusterroles","clusterrolebindings"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          - apiGroups: ["route.openshift.io"]
+            resources: ["routes"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          - apiGroups: ["oauth.openshift.io"]
+            resources: ["oauthclients"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          - apiGroups: ["config.openshift.io"]
+            resources: ["ingresses","clusterversions","clusteroperators"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["image.openshift.io"]
+            resources: ["imagestreams"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["networking.k8s.io"]
+            resources: ["networkpolicies"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          - apiGroups: ["monitoring.coreos.com"]
+            resources: ["servicemonitors","prometheusrules"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          - apiGroups: ["pulse.ai"]
+            resources: ["openshiftpulses","openshiftpulses/status","openshiftpulses/finalizers"]
+            verbs: ["get","list","watch","create","update","patch","delete"]
+          serviceAccountName: pulse-operator-controller-manager
+      deployments:
+        - label:
+            app.kubernetes.io/component: manager
+            app.kubernetes.io/name: pulse-operator
+            control-plane: controller-manager
+          name: pulse-operator-controller-manager
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                control-plane: controller-manager
+            strategy: {}
+            template:
+              metadata:
+                labels:
+                  control-plane: controller-manager
+              spec:
+                containers:
+                  - args:
+                      - --leader-elect
+                    command:
+                      - /manager
+                    image: quay.io/amobrem/pulse-operator:v0.1.0
+                    name: manager
+                    ports:
+                      - containerPort: 8080
+                        name: metrics
+                        protocol: TCP
+                    resources:
+                      limits:
+                        cpu: 500m
+                        memory: 256Mi
+                      requests:
+                        cpu: 10m
+                        memory: 64Mi
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop:
+                          - ALL
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                securityContext:
+                  runAsNonRoot: true
+                serviceAccountName: pulse-operator-controller-manager
+                terminationGracePeriodSeconds: 10
+    strategy: deployment
+  installModes:
+    - supported: false
+      type: OwnNamespace
+    - supported: false
+      type: SingleNamespace
+    - supported: false
+      type: MultiNamespace
+    - supported: true
+      type: AllNamespaces
+  keywords:
+    - openshift
+    - ai
+    - sre
+    - pulse
+    - kubernetes
+    - claude
+    - observability
+  links:
+    - name: GitHub
+      url: https://github.com/PulseSRE/pulse-operator
+    - name: Documentation
+      url: https://github.com/PulseSRE/pulse-agent
+  maintainers:
+    - email: amobrem@redhat.com
+      name: Ali Mobrem
+  maturity: alpha
+  minKubeVersion: 1.28.0
+  provider:
+    name: Red Hat CoE
+    url: https://github.com/PulseSRE
+  version: 0.1.0
