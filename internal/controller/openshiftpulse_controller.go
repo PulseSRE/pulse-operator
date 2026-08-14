@@ -20,10 +20,11 @@ import (
 )
 
 // OpenShiftPulseReconciler is the root reconciler for the OpenShiftPulse CRD.
-// It orchestrates the PostgreSQL and Agent sub-reconcilers, then syncs status.
+// It orchestrates the PostgreSQL, Agent, and UI sub-reconcilers, then syncs status.
 type OpenShiftPulseReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme       *runtime.Scheme
+	UIReconciler *UIReconciler
 }
 
 // +kubebuilder:rbac:groups=pulse.ai,resources=openshiftpulses,verbs=get;list;watch;create;update;patch;delete
@@ -58,11 +59,23 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("reconcileAgent: %w", err)
 	}
 
-	// 3. Determine health of each component and sync CR status.
+	// 3. Reconcile UI sub-resources (Route, OAuthClient, Deployment, Service, etc.).
+	uiResult, err := r.UIReconciler.reconcileUI(ctx, pulse)
+	if err != nil {
+		logger.Error(err, "UI reconcile failed")
+		return ctrl.Result{}, fmt.Errorf("reconcileUI: %w", err)
+	}
+	// reconcileUI sets pulse.Status.RouteHost and pulse.Status.UIAvailable directly.
+	// If the Route hostname is not yet assigned, propagate the requeue.
+	if uiResult.RequeueAfter > 0 {
+		return uiResult, nil
+	}
+
+	// 4. Determine health of each component and sync CR status.
 	agentHealthy := r.isAgentHealthy(ctx, pulse)
 	pulse.Status.AgentHealthy = agentHealthy
 
-	if pulse.Status.DatabaseReady && agentHealthy {
+	if pulse.Status.DatabaseReady && agentHealthy && pulse.Status.UIAvailable {
 		pulse.Status.Phase = "Running"
 	} else {
 		pulse.Status.Phase = "Installing"
@@ -75,11 +88,12 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if pulse.Status.Phase == "Running" {
 		condition.Status  = metav1.ConditionTrue
 		condition.Reason  = "AllComponentsHealthy"
-		condition.Message = "Agent and database are healthy"
+		condition.Message = "Agent, database, and UI are healthy"
 	} else {
 		condition.Status  = metav1.ConditionFalse
 		condition.Reason  = "Installing"
-		condition.Message = fmt.Sprintf("agentHealthy=%v databaseReady=%v", agentHealthy, pulse.Status.DatabaseReady)
+		condition.Message = fmt.Sprintf("agentHealthy=%v databaseReady=%v uiAvailable=%v",
+			agentHealthy, pulse.Status.DatabaseReady, pulse.Status.UIAvailable)
 	}
 	apimeta.SetStatusCondition(&pulse.Status.Conditions, condition)
 

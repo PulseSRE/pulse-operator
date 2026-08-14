@@ -4,6 +4,8 @@ import (
 	"flag"
 	"os"
 
+	oauthv1 "github.com/openshift/api/oauth/v1"
+	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -27,6 +29,8 @@ func init() {
 	utilruntime.Must(appsv1.AddToScheme(scheme))
 	utilruntime.Must(rbacv1.AddToScheme(scheme))
 	utilruntime.Must(pulsev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(routev1.AddToScheme(scheme))
+	utilruntime.Must(oauthv1.AddToScheme(scheme))
 }
 
 func main() {
@@ -63,6 +67,10 @@ func main() {
 	if err := (&controller.OpenShiftPulseReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		UIReconciler: &controller.UIReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OpenShiftPulse")
 		os.Exit(1)

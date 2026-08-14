@@ -25,6 +25,8 @@ type OpenShiftPulseSpec struct {
 	AnthropicAPIKey *APIKeyConfig `json:"anthropicApiKey,omitempty"`
 	Agent AgentConfig `json:"agent"`
 	// +optional
+	UI UIConfig `json:"ui,omitempty"`
+	// +optional
 	Database DatabaseConfig `json:"database,omitempty"`
 	// +optional
 	Monitoring MonitoringConfig `json:"monitoring,omitempty"`
@@ -77,6 +79,18 @@ type MonitoringConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
 
+type UIConfig struct {
+	// +optional
+	Image string `json:"image,omitempty"`
+	// +kubebuilder:default=2
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+	// +optional
+	OAuthProxyImage string `json:"oauthProxyImage,omitempty"`
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
 type OpenShiftPulseStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
@@ -86,6 +100,10 @@ type OpenShiftPulseStatus struct {
 	AgentHealthy bool `json:"agentHealthy,omitempty"`
 	// +optional
 	DatabaseReady bool `json:"databaseReady,omitempty"`
+	// +optional
+	UIAvailable bool `json:"uiAvailable,omitempty"`
+	// +optional
+	RouteHost string `json:"routeHost,omitempty"`
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 }
