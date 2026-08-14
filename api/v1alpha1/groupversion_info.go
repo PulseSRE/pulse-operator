@@ -1,3 +1,4 @@
+// +groupName=pulse.ai
 package v1alpha1
 
 import (
