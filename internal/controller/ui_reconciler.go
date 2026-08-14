@@ -29,10 +29,15 @@ import (
 
 const (
 	defaultUIImage  = "quay.io/amobrem/openshiftpulse:latest"
-	uiHTTPPort      = int32(8080)
-	uiProxyPort     = int32(8443)
-	oauthClientName = "openshiftpulse"
+	uiHTTPPort = int32(8080)
+	uiProxyPort = int32(8443)
 )
+
+// oauthClientName returns a CR-scoped OAuthClient name so multiple OpenShiftPulse
+// CRs in different namespaces do not collide on the same cluster-scoped object.
+func oauthClientName(crName, crNamespace string) string {
+	return "openshiftpulse-" + crNamespace + "-" + crName
+}
 
 // UIReconciler reconciles the UI sub-resources of an OpenShiftPulse CR.
 // It manages the nginx frontend Deployment, the OpenShift OAuth proxy sidecar,
@@ -228,7 +233,7 @@ func (r *UIReconciler) reconcileUIClusterRole(ctx context.Context, pulse *pulsev
 				Resources: []string{
 					"namespaces", "pods", "services", "nodes", "events",
 					"persistentvolumeclaims", "configmaps", "endpoints",
-					"serviceaccounts", "secrets",
+					"serviceaccounts",
 				},
 				Verbs: []string{"get", "list", "watch"},
 			},
@@ -650,11 +655,12 @@ func (r *UIReconciler) reconcileOAuthClient(ctx context.Context, pulse *pulsev1a
 	existing := &unstructured.Unstructured{}
 	existing.SetGroupVersionKind(oauthGVK)
 
-	err := r.Get(ctx, types.NamespacedName{Name: oauthClientName}, existing)
+	clientName := oauthClientName(pulse.Name, pulse.Namespace)
+	err := r.Get(ctx, types.NamespacedName{Name: clientName}, existing)
 	if apierrors.IsNotFound(err) {
 		desired := &unstructured.Unstructured{}
 		desired.SetGroupVersionKind(oauthGVK)
-		desired.SetName(oauthClientName)
+		desired.SetName(clientName)
 		desired.SetAnnotations(clusterScopedAnnotations(pulse))
 
 		if setErr := unstructured.SetNestedField(desired.Object, clientSecret, "secret"); setErr != nil {
@@ -664,6 +670,12 @@ func (r *UIReconciler) reconcileOAuthClient(ctx context.Context, pulse *pulsev1a
 			[]string{redirectURI}, "redirectURIs"); setErr != nil {
 			return fmt.Errorf("set oauthclient redirectURIs: %w", setErr)
 		}
+		// grantMethod=auto skips the OCP consent screen. This is safe here because:
+		// (a) redirectURIs is locked to the operator-controlled Route hostname — no
+		//     third-party redirect target can be injected via the CR, and
+		// (b) the OAuthClient name is CR-scoped (namespace+name) so two CRs cannot
+		//     race to own the same client. Change to "prompt" if this operator is ever
+		//     deployed in a multi-tenant environment where users are not fully trusted.
 		if setErr := unstructured.SetNestedField(desired.Object, "auto", "grantMethod"); setErr != nil {
 			return fmt.Errorf("set oauthclient grantMethod: %w", setErr)
 		}

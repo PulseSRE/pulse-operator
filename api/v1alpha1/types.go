@@ -43,6 +43,11 @@ type APIKeyConfig struct {
 }
 
 type AgentConfig struct {
+	// Image is the container image for the Pulse Agent.
+	// For production deployments, always specify a digest-pinned image reference
+	// (e.g. quay.io/amobrem/pulse-agent@sha256:<hash>) rather than a mutable tag.
+	// The operator falls back to quay.io/amobrem/pulse-agent:latest when unset,
+	// which provides no integrity guarantee.
 	// +optional
 	Image string `json:"image,omitempty"`
 	// +kubebuilder:default=2

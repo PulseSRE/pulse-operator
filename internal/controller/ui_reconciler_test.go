@@ -123,7 +123,7 @@ var _ = Describe("UIReconciler", func() {
 		}
 		oauthClient := &unstructured.Unstructured{}
 		oauthClient.SetGroupVersionKind(oauthGVK)
-		getErr := k8sClient.Get(ctx, types.NamespacedName{Name: oauthClientName}, oauthClient)
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Name: oauthClientName(uiCRName, namespace)}, oauthClient)
 		if isNoCRDError(getErr) {
 			Skip("OAuthClient CRD not installed in envtest — skipping")
 		}

@@ -247,6 +247,30 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 		},
 	}
 
+	// AllowSecretAccess lets the agent read Secrets (e.g. to surface misconfigurations).
+	// Disabled by default — cluster admins opt in via spec.agent.allowSecretAccess=true.
+	if cr.Spec.Agent.AllowSecretAccess {
+		desired.Rules = append(desired.Rules, rbacv1.PolicyRule{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get", "list", "watch"},
+		})
+	}
+
+	// AllowWriteOperations lets the agent perform remediations (restart pods, scale, etc.).
+	// Disabled by default — cluster admins opt in via spec.agent.allowWriteOperations=true.
+	if cr.Spec.Agent.AllowWriteOperations {
+		desired.Rules = append(desired.Rules, rbacv1.PolicyRule{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"delete"},
+		}, rbacv1.PolicyRule{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments", "statefulsets"},
+			Verbs:     []string{"patch", "update"},
+		})
+	}
+
 	existing := &rbacv1.ClusterRole{}
 	err := r.Get(ctx, types.NamespacedName{Name: name}, existing)
 	if errors.IsNotFound(err) {
