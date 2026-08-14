@@ -18,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 	"github.com/PulseSRE/pulse-operator/internal/controller"
@@ -59,13 +60,12 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	_ = metricsAddr // used via ctrl.Options.Metrics in future; kept as a tuning knob
-
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "pulse-operator.pulse.ai",
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
