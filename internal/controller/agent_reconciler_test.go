@@ -8,12 +8,42 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
+
+// reconcileWithBoundPVC runs two reconcile passes for AgentReconciler:
+// 1st pass creates the PVC; then we patch its status to Bound so
+// 2nd pass proceeds past the PVC gate and creates the Deployment.
+func reconcileWithBoundPVC(ctx context.Context, crName, namespace string) (ctrl.Result, error) {
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
+
+	// First pass — creates SA, ClusterRole, PVC etc. Stops before Deployment.
+	if _, err := reconciler.Reconcile(ctx, req); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Patch PVC status to Bound (envtest has no storage provisioner).
+	pvc := &corev1.PersistentVolumeClaim{}
+	pvcName := crName + "-openshift-sre-agent-memory"
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: namespace}, pvc); err != nil {
+		return ctrl.Result{}, err
+	}
+	pvc.Status.Phase = corev1.ClaimBound
+	pvc.Status.Capacity = corev1.ResourceList{
+		corev1.ResourceStorage: resource.MustParse("1Gi"),
+	}
+	if err := k8sClient.Status().Update(ctx, pvc); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Second pass — PVC is Bound, proceeds to create Deployment.
+	return reconciler.Reconcile(ctx, req)
+}
 
 var _ = Describe("AgentReconciler", func() {
 	const (
@@ -45,15 +75,19 @@ var _ = Describe("AgentReconciler", func() {
 	})
 
 	AfterEach(func() {
-		// Best-effort cleanup so tests don't bleed into each other.
+		// Best-effort cleanup — delete CR and PVC so tests don't bleed into each other.
 		_ = k8sClient.Delete(ctx, cr)
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      crName + "-openshift-sre-agent-memory",
+			Namespace: namespace,
+		}, pvc); err == nil {
+			_ = k8sClient.Delete(ctx, pvc)
+		}
 	})
 
 	It("CR creation triggers Deployment creation", func() {
-		req := ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace},
-		}
-		_, err := reconciler.Reconcile(ctx, req)
+		_, err := reconcileWithBoundPVC(ctx, crName, namespace)
 		Expect(err).NotTo(HaveOccurred())
 
 		deploy := &appsv1.Deployment{}
@@ -64,10 +98,7 @@ var _ = Describe("AgentReconciler", func() {
 	})
 
 	It("Deployment has the image from spec", func() {
-		req := ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace},
-		}
-		_, err := reconciler.Reconcile(ctx, req)
+		_, err := reconcileWithBoundPVC(ctx, crName, namespace)
 		Expect(err).NotTo(HaveOccurred())
 
 		deploy := &appsv1.Deployment{}
@@ -84,10 +115,7 @@ var _ = Describe("AgentReconciler", func() {
 		cr.Spec.Agent.Image = ""
 		Expect(k8sClient.Update(ctx, cr)).To(Succeed())
 
-		req := ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace},
-		}
-		_, err := reconciler.Reconcile(ctx, req)
+		_, err := reconcileWithBoundPVC(ctx, crName, namespace)
 		Expect(err).NotTo(HaveOccurred())
 
 		deploy := &appsv1.Deployment{}
@@ -99,9 +127,8 @@ var _ = Describe("AgentReconciler", func() {
 	})
 
 	It("WS token secret is created with a 32-char hex token", func() {
-		req := ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace},
-		}
+		// Token is created in the first pass — no need to reach Deployment
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
 		_, err := reconciler.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -118,10 +145,7 @@ var _ = Describe("AgentReconciler", func() {
 	})
 
 	It("WS token is not rotated on subsequent reconciles", func() {
-		req := ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace},
-		}
-
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
 		_, err := reconciler.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -143,11 +167,31 @@ var _ = Describe("AgentReconciler", func() {
 		Expect(string(secret2.Data["token"])).To(Equal(token1))
 	})
 
-	It("Deployment uses Recreate strategy", func() {
-		req := ctrl.Request{
-			NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace},
+	It("Memory PVC pending blocks Deployment and requeues", func() {
+		// Use a unique CR name so this test has its own PVC with no shared state.
+		uniqueName := "test-pulse-pvcgate"
+		uniqueCR := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueName, Namespace: namespace},
+			Spec:       pulsev1alpha1.OpenShiftPulseSpec{Agent: pulsev1alpha1.AgentConfig{Image: "quay.io/test:latest"}},
 		}
-		_, err := reconciler.Reconcile(ctx, req)
+		Expect(k8sClient.Create(ctx, uniqueCR)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, uniqueCR) })
+
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: uniqueName, Namespace: namespace}}
+		result, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter > 0).To(BeTrue(), "should requeue while PVC is Pending")
+
+		deploy := &appsv1.Deployment{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      agentResourceName(uniqueName),
+			Namespace: namespace,
+		}, deploy)
+		Expect(getErr).To(HaveOccurred(), "Deployment must NOT exist while PVC is Pending")
+	})
+
+	It("Deployment uses Recreate strategy", func() {
+		_, err := reconcileWithBoundPVC(ctx, crName, namespace)
 		Expect(err).NotTo(HaveOccurred())
 
 		deploy := &appsv1.Deployment{}

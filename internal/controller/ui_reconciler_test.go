@@ -101,6 +101,38 @@ var _ = Describe("UIReconciler", func() {
 		Expect(hasCookieSecret).To(BeTrue(), "secret must contain key 'cookie-secret'")
 	})
 
+	It("OAuthClient is created with correct redirectURI after Route hostname is known", func() {
+		// Simulate the post-route-ready path: call reconcileOAuthClient directly
+		// with a known routeHost and a valid client secret.
+		testRouteHost := "test-ui-pulse-default.apps.example.com"
+		testClientSecret := "test-client-secret-abc123"
+
+		err := uiReconciler.reconcileOAuthClient(ctx, cr, testRouteHost, testClientSecret)
+		if err != nil {
+			if isNoCRDError(err) {
+				Skip("OAuthClient CRD not installed in envtest — skipping OAuthClient check")
+			}
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Verify OAuthClient was created with the correct redirectURI
+		oauthGVK := schema.GroupVersionKind{
+			Group:   "oauth.openshift.io",
+			Version: "v1",
+			Kind:    "OAuthClient",
+		}
+		oauthClient := &unstructured.Unstructured{}
+		oauthClient.SetGroupVersionKind(oauthGVK)
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Name: oauthClientName}, oauthClient)
+		if isNoCRDError(getErr) {
+			Skip("OAuthClient CRD not installed in envtest — skipping")
+		}
+		Expect(getErr).NotTo(HaveOccurred())
+
+		redirectURIs, _, _ := unstructured.NestedStringSlice(oauthClient.Object, "redirectURIs")
+		Expect(redirectURIs).To(ContainElement("https://" + testRouteHost))
+	})
+
 	It("Route is created", func() {
 		routeGVK := schema.GroupVersionKind{
 			Group:   "route.openshift.io",
