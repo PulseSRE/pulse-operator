@@ -190,6 +190,31 @@ var _ = Describe("AgentReconciler", func() {
 		Expect(getErr).To(HaveOccurred(), "Deployment must NOT exist while PVC is Pending")
 	})
 
+	It("Deployment has readiness and liveness probes configured", func() {
+		_, err := reconcileWithBoundPVC(ctx, crName, namespace)
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      agentResourceName(crName),
+			Namespace: namespace,
+		}, deploy)).To(Succeed())
+
+		containers := deploy.Spec.Template.Spec.Containers
+		Expect(containers).To(HaveLen(1))
+		c := containers[0]
+
+		Expect(c.ReadinessProbe).NotTo(BeNil(), "readiness probe must be set")
+		Expect(c.ReadinessProbe.HTTPGet).NotTo(BeNil())
+		Expect(c.ReadinessProbe.HTTPGet.Path).To(Equal("/healthz"))
+		Expect(c.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(5)))
+
+		Expect(c.LivenessProbe).NotTo(BeNil(), "liveness probe must be set")
+		Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
+		Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/healthz"))
+		Expect(c.LivenessProbe.InitialDelaySeconds).To(Equal(int32(15)))
+	})
+
 	It("Deployment uses Recreate strategy", func() {
 		_, err := reconcileWithBoundPVC(ctx, crName, namespace)
 		Expect(err).NotTo(HaveOccurred())

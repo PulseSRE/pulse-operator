@@ -156,6 +156,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			agentReady, pgReady, pulse.Status.UIAvailable)
 	}
 	apimeta.SetStatusCondition(&pulse.Status.Conditions, condition)
+	pulse.Status.ObservedGeneration = pulse.Generation
 
 	if err := r.Status().Update(ctx, pulse); err != nil {
 		return ctrl.Result{}, fmt.Errorf("status update: %w", err)

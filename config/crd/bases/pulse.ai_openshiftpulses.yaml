@@ -55,6 +55,12 @@ spec:
                   allowWriteOperations:
                     type: boolean
                   image:
+                    description: |-
+                      Image is the container image for the Pulse Agent.
+                      For production deployments, always specify a digest-pinned image reference
+                      (e.g. quay.io/amobrem/pulse-agent@sha256:<hash>) rather than a mutable tag.
+                      The operator falls back to quay.io/amobrem/pulse-agent:latest when unset,
+                      which provides no integrity guarantee.
                     type: string
                   mcp:
                     properties:
@@ -70,7 +76,7 @@ spec:
                           Claims lists the names of resources, defined in spec.resourceClaims,
                           that are used by this container.
 
-                          This is an alpha field and requires enabling the
+                          This field depends on the
                           DynamicResourceAllocation feature gate.
 
                           This field is immutable. It can only be set for containers.
@@ -168,7 +174,7 @@ spec:
                           Claims lists the names of resources, defined in spec.resourceClaims,
                           that are used by this container.
 
-                          This is an alpha field and requires enabling the
+                          This field depends on the
                           DynamicResourceAllocation feature gate.
 
                           This field is immutable. It can only be set for containers.
@@ -298,6 +304,9 @@ spec:
                 type: array
               databaseReady:
                 type: boolean
+              observedGeneration:
+                format: int64
+                type: integer
               phase:
                 type: string
               routeHost:

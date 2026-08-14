@@ -418,6 +418,13 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		})
 	}
 
+	if cr.Spec.Agent.MCP.Enabled {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PULSE_AGENT_MCP_URL",
+			Value: MCPServiceURL(cr.Name, cr.Namespace),
+		})
+	}
+
 	if info != nil && info.ACMAvailable {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PULSE_AGENT_ACM_THANOS_ENABLED",
