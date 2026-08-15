@@ -46,6 +46,11 @@ rules:
 - apiGroups: [policy]
   resources: [poddisruptionbudgets]
   verbs: [create, delete, get, list, patch, update, watch]
+# SECURITY NOTE: `escalate` and `bind` are required so the operator can create
+# ClusterRoles that grant permissions beyond its own token (e.g. read-only roles
+# for the managed agent). This is a known privilege risk for RBAC-managing operators.
+# Mitigate by running the operator in a dedicated namespace and restricting exec
+# access to the pulse-operator-system namespace via NetworkPolicy or RBAC.
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [clusterroles, clusterrolebindings, roles, rolebindings]
   verbs: [bind, create, delete, escalate, get, list, patch, update, watch]

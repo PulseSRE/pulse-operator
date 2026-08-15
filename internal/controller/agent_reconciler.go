@@ -509,37 +509,49 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 	name := agentResourceName(cr.Name)
 	wantSelector := map[string]string{"app": name}
 
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: cr.Namespace,
-		},
+	existing := &appsv1.Deployment{}
+	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, existing)
+	if getErr != nil && !errors.IsNotFound(getErr) {
+		return getErr
 	}
 
-	// If an existing Deployment has a mismatched selector (e.g. from a prior Helm install),
-	// delete it so the create path runs with the correct immutable selector.
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, deploy); err == nil {
-		if deploy.Spec.Selector != nil {
-			for k, v := range wantSelector {
-				if deploy.Spec.Selector.MatchLabels[k] != v {
-					if delErr := r.Delete(ctx, deploy); delErr != nil && !errors.IsNotFound(delErr) {
-						return fmt.Errorf("delete mismatched deployment: %w", delErr)
-					}
-					break
-				}
+	if getErr == nil {
+		// Check for selector mismatch (e.g. Helm-managed deployment).
+		// Deployment selectors are immutable — delete and let next reconcile recreate.
+		mismatch := existing.Spec.Selector == nil
+		for k, v := range wantSelector {
+			if existing.Spec.Selector == nil || existing.Spec.Selector.MatchLabels[k] != v {
+				mismatch = true
+				break
 			}
 		}
-		deploy = &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cr.Namespace}}
-	}
+		if mismatch {
+			if delErr := r.Delete(ctx, existing); delErr != nil && !errors.IsNotFound(delErr) {
+				return fmt.Errorf("delete mismatched deployment: %w", delErr)
+			}
+			return fmt.Errorf("deleted mismatched deployment %s, requeuing", name)
+		}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		if err := controllerutil.SetControllerReference(cr, deploy, r.Scheme); err != nil {
+		// Selector matches — patch mutable fields in place.
+		updated := existing.DeepCopy()
+		spec := r.buildDeploymentSpec(cr, info)
+		spec.Selector = existing.Spec.Selector // selector is immutable, preserve it
+		updated.Spec = spec
+		if err := controllerutil.SetControllerReference(cr, updated, r.Scheme); err != nil {
 			return err
 		}
-		deploy.Spec = r.buildDeploymentSpec(cr, info)
-		return nil
-	})
-	return err
+		return r.Update(ctx, updated)
+	}
+
+	// Deployment does not exist — create it fresh.
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cr.Namespace},
+		Spec:       r.buildDeploymentSpec(cr, info),
+	}
+	if err := controllerutil.SetControllerReference(cr, deploy, r.Scheme); err != nil {
+		return err
+	}
+	return r.Create(ctx, deploy)
 }
 
 func (r *AgentReconciler) reconcileService(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {

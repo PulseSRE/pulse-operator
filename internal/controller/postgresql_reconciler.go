@@ -155,17 +155,30 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 
 	// If the existing StatefulSet has a selector that doesn't match the operator's labels
 	// (e.g. it was previously managed by Helm), delete it so the create path runs cleanly.
-	// The PVC is retained via cascade=orphan so no data is lost.
+	// Use Background propagation so the pod is also deleted — Orphan leaves postgresql-0
+	// running, which prevents the new STS from ever creating its pod (AlreadyExists).
+	// PVCs survive because they are managed by the STS volumeClaimTemplate lifecycle.
 	if err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: stsName}, sts); err == nil {
+		// If the STS is already terminating, return an error so controller-runtime
+		// retries shortly — the watch will also re-trigger when deletion completes.
+		if sts.DeletionTimestamp != nil {
+			return fmt.Errorf("postgresql StatefulSet %s is terminating; waiting for deletion", stsName)
+		}
 		wantLabels := pgLabels(pulse.Name)
 		if sts.Spec.Selector != nil {
+			mismatch := false
 			for k, v := range wantLabels {
-				if sts.Spec.Selector.MatchLabels[k] != v {
-					if delErr := r.Delete(ctx, sts, client.PropagationPolicy(metav1.DeletePropagationOrphan)); delErr != nil && !errors.IsNotFound(delErr) {
-						return fmt.Errorf("delete mismatched statefulset: %w", delErr)
-					}
+				existing, ok := sts.Spec.Selector.MatchLabels[k]
+				if !ok || existing != v {
+					mismatch = true
 					break
 				}
+			}
+			if mismatch {
+				if delErr := r.Delete(ctx, sts, client.PropagationPolicy(metav1.DeletePropagationBackground)); delErr != nil && !errors.IsNotFound(delErr) {
+					return fmt.Errorf("delete mismatched statefulset: %w", delErr)
+				}
+				return fmt.Errorf("postgresql StatefulSet %s deleted (selector mismatch); waiting for removal", stsName)
 			}
 		}
 		sts = &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: pulse.Namespace}}
@@ -239,7 +252,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 							InitialDelaySeconds: 30,
 							PeriodSeconds:       30,
 						},
-						SecurityContext: defaultContainerSecCtx(),
+						SecurityContext: writableContainerSecCtx(),
 					},
 				},
 			},
