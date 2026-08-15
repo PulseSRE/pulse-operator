@@ -355,7 +355,7 @@ events { worker_connections 1024; }
 http {
   server {
     listen 8080;
-    root /usr/share/nginx/html;
+    root /opt/app-root/src;
     index index.html;
     location / { try_files $uri $uri/ /index.html; }
     location /healthz { return 200 'OK\n'; add_header Content-Type text/plain; }
