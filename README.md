@@ -4,6 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/PulseSRE/pulse-operator)](go.mod)
 [![OpenShift](https://img.shields.io/badge/OpenShift-4.12%2B-red)](https://www.redhat.com/en/technologies/cloud-computing/openshift)
+[![Docs](https://img.shields.io/badge/docs-pulsesre.github.io-blue)](https://pulsesre.github.io/pulse-operator/)
 
 A Kubernetes Operator that deploys and manages the complete [OpenShift Pulse](https://github.com/PulseSRE/pulse-agent) stack — AI SRE agent, React UI, PostgreSQL — from a **single custom resource** on OpenShift.
 
