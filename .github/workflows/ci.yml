@@ -20,3 +20,29 @@ jobs:
           echo "KUBEBUILDER_ASSETS=$(setup-envtest use 1.31 -p path)" >> $GITHUB_ENV
       - run: go vet ./...
       - run: go test -count=1 ./...
+      - name: Build binary
+        run: go build -o /tmp/pulse-operator ./cmd/main.go
+      - name: Smoke test — operator starts and health probe responds
+        run: |
+          # Start the operator against the envtest API server.
+          # KUBEBUILDER_ASSETS is set by the setup-envtest step above;
+          # the operator uses it to find the kube-apiserver binary.
+          /tmp/pulse-operator \
+            --leader-elect=false \
+            --metrics-bind-address=:0 \
+            --health-probe-bind-address=:8089 &
+          OP_PID=$!
+
+          # Wait up to 15s for the health probe to respond.
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8089/healthz; then
+              echo "Operator healthy after ${i}s"
+              kill $OP_PID
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Health probe did not respond — operator crashed or failed to start"
+          kill $OP_PID 2>/dev/null
+          exit 1
