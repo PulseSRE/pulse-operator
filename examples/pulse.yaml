@@ -1,0 +1,18 @@
+apiVersion: pulse.ai/v1alpha1
+kind: OpenShiftPulse
+metadata:
+  name: pulse
+  namespace: openshiftpulse
+spec:
+  agent:
+    image: quay.io/amobrem/pulse-agent:latest
+    trustLevel: 2
+    allowWriteOperations: false
+    allowSecretAccess: false
+  ui:
+    image: quay.io/amobrem/openshiftpulse:latest
+    replicas: 2
+  database:
+    storageSize: 5Gi
+  monitoring:
+    enabled: true

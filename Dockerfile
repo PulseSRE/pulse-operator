@@ -1,12 +1,12 @@
 # Build stage
-FROM golang:1.22 AS builder
+FROM golang:1.26 AS builder
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
 COPY api/ api/
 COPY cmd/ cmd/
 COPY internal/ internal/
-RUN CGO_ENABLED=0 GOOS=linux go build -a -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
 
 # Runtime stage
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
