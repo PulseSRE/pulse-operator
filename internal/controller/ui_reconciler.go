@@ -100,8 +100,10 @@ func (r *UIReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.Ope
 		{"ClusterRoleBinding", r.reconcileUIClusterRoleBinding},
 		{"OAuthSecrets", r.reconcileUIOAuthSecrets},
 		{"NginxConfigMap", r.reconcileUINginxConfigMap},
-		{"Deployment", r.reconcileUIDeployment},
+		// Service must come before Deployment: the serving-cert annotation on the
+		// Service triggers OCP to create the TLS Secret the Deployment mounts.
 		{"Service", r.reconcileUIService},
+		{"Deployment", r.reconcileUIDeployment},
 	} {
 		if err := s.fn(ctx, pulse); err != nil {
 			logger.Error(err, "UI reconcile step failed", "step", s.name)
@@ -201,10 +203,22 @@ func strMapToInterface(m map[string]string) map[string]interface{} {
 
 // a. ServiceAccount
 func (r *UIReconciler) reconcileUIServiceAccount(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	saName := uiResourceName(pulse.Name)
+	routeName := uiResourceName(pulse.Name)
+	// oauth-redirectreference is required by the OpenShift OAuth proxy so that
+	// OCP's OAuth server accepts the service account as an OAuth client and
+	// issues tokens for the Route's redirect URI.
+	redirectRef := fmt.Sprintf(
+		`{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"%s"}}`,
+		routeName,
+	)
 	desired := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      uiResourceName(pulse.Name),
+			Name:      saName,
 			Namespace: pulse.Namespace,
+			Annotations: map[string]string{
+				"serviceaccounts.openshift.io/oauth-redirectreference.primary": redirectRef,
+			},
 		},
 	}
 	if err := controllerutil.SetControllerReference(pulse, desired, r.Scheme); err != nil {
@@ -216,7 +230,15 @@ func (r *UIReconciler) reconcileUIServiceAccount(ctx context.Context, pulse *pul
 	if apierrors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// Always sync the annotation in case the route name changed.
+	if existing.Annotations == nil {
+		existing.Annotations = map[string]string{}
+	}
+	existing.Annotations["serviceaccounts.openshift.io/oauth-redirectreference.primary"] = redirectRef
+	return r.Update(ctx, existing)
 }
 
 // b. ClusterRole — read-only access to namespace and cluster resources needed by the UI.

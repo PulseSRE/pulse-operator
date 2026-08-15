@@ -87,7 +87,7 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 	err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: secretName}, existing)
 	if err == nil {
 		// Already exists — return stored password without overwriting.
-		return string(existing.Data["POSTGRES_PASSWORD"]), nil
+		return string(existing.Data["POSTGRESQL_PASSWORD"]), nil
 	}
 	if !errors.IsNotFound(err) {
 		return "", err
@@ -105,10 +105,11 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 			Labels:    pgLabels(pulse.Name),
 		},
 		Type: corev1.SecretTypeOpaque,
+		// UBI postgresql-15 reads POSTGRESQL_* (RHSCL convention), not POSTGRES_* (upstream Docker Hub).
 		StringData: map[string]string{
-			"POSTGRES_USER":     pgUser,
-			"POSTGRES_PASSWORD": password,
-			"POSTGRES_DB":       pgDB,
+			"POSTGRESQL_USER":     pgUser,
+			"POSTGRESQL_PASSWORD": password,
+			"POSTGRESQL_DATABASE": pgDB,
 		},
 	}
 	setOwner(pulse, secret)
