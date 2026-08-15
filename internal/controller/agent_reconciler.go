@@ -385,6 +385,15 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 	name := agentResourceName(cr.Name)
 	isNonRoot := true
 	runAsUser := int64(1001)
+	allowPrivEsc := false
+	seccompProfile := corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
+	agentSecCtx := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &allowPrivEsc,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &seccompProfile,
+		RunAsNonRoot:             &isNonRoot,
+		RunAsUser:                &runAsUser,
+	}
 
 	envVars := []corev1.EnvVar{
 		{
@@ -464,9 +473,10 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 				},
 				Containers: []corev1.Container{
 					{
-						Name:      "agent",
-						Image:     resolvedImage(cr),
-						Resources: cr.Spec.Agent.Resources,
+						Name:            "agent",
+						Image:           resolvedImage(cr),
+						Resources:       cr.Spec.Agent.Resources,
+						SecurityContext: agentSecCtx,
 						Ports: []corev1.ContainerPort{
 							{
 								Name:          "http",
