@@ -81,10 +81,12 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 					Labels: map[string]string{"app": name},
 				},
 				Spec: corev1.PodSpec{
+					SecurityContext: defaultPodSecCtx(1001),
 					Containers: []corev1.Container{
 						{
-							Name:  "mcp-server",
-							Image: defaultMCPServerImage,
+							Name:            "mcp-server",
+							Image:           defaultMCPServerImage,
+							SecurityContext: defaultContainerSecCtx(),
 							Args: []string{
 								fmt.Sprintf("--port=%d", mcpServerPort),
 								fmt.Sprintf("--namespace=%s", pulse.Namespace),

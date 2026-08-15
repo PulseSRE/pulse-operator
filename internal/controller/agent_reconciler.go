@@ -383,17 +383,6 @@ func (r *AgentReconciler) reconcileMemoryPVC(ctx context.Context, cr *pulsev1alp
 
 func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo) appsv1.DeploymentSpec {
 	name := agentResourceName(cr.Name)
-	isNonRoot := true
-	runAsUser := int64(1001)
-	allowPrivEsc := false
-	seccompProfile := corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
-	agentSecCtx := &corev1.SecurityContext{
-		AllowPrivilegeEscalation: &allowPrivEsc,
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile:           &seccompProfile,
-		RunAsNonRoot:             &isNonRoot,
-		RunAsUser:                &runAsUser,
-	}
 
 	envVars := []corev1.EnvVar{
 		{
@@ -467,16 +456,13 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: name,
-				SecurityContext: &corev1.PodSecurityContext{
-					RunAsNonRoot: &isNonRoot,
-					RunAsUser:    &runAsUser,
-				},
+				SecurityContext: defaultPodSecCtx(1001),
 				Containers: []corev1.Container{
 					{
 						Name:            "agent",
 						Image:           resolvedImage(cr),
 						Resources:       cr.Spec.Agent.Resources,
-						SecurityContext: agentSecCtx,
+						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{
 								Name:          "http",
@@ -521,6 +507,7 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
 	info := DetectClusterInfo(ctx, r.Client)
 	name := agentResourceName(cr.Name)
+	wantSelector := map[string]string{"app": name}
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -528,6 +515,23 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 			Namespace: cr.Namespace,
 		},
 	}
+
+	// If an existing Deployment has a mismatched selector (e.g. from a prior Helm install),
+	// delete it so the create path runs with the correct immutable selector.
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, deploy); err == nil {
+		if deploy.Spec.Selector != nil {
+			for k, v := range wantSelector {
+				if deploy.Spec.Selector.MatchLabels[k] != v {
+					if delErr := r.Delete(ctx, deploy); delErr != nil && !errors.IsNotFound(delErr) {
+						return fmt.Errorf("delete mismatched deployment: %w", delErr)
+					}
+					break
+				}
+			}
+		}
+		deploy = &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cr.Namespace}}
+	}
+
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		if err := controllerutil.SetControllerReference(cr, deploy, r.Scheme); err != nil {
 			return err

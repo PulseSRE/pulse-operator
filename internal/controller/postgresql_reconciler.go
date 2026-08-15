@@ -139,8 +139,6 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	}
 
 	replicas := int32(1)
-	isTrue := true
-	isFalse := false
 
 	pgProbeHandler := corev1.ProbeHandler{
 		Exec: &corev1.ExecAction{
@@ -154,6 +152,25 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 			Namespace: pulse.Namespace,
 		},
 	}
+
+	// If the existing StatefulSet has a selector that doesn't match the operator's labels
+	// (e.g. it was previously managed by Helm), delete it so the create path runs cleanly.
+	// The PVC is retained via cascade=orphan so no data is lost.
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: stsName}, sts); err == nil {
+		wantLabels := pgLabels(pulse.Name)
+		if sts.Spec.Selector != nil {
+			for k, v := range wantLabels {
+				if sts.Spec.Selector.MatchLabels[k] != v {
+					if delErr := r.Delete(ctx, sts, client.PropagationPolicy(metav1.DeletePropagationOrphan)); delErr != nil && !errors.IsNotFound(delErr) {
+						return fmt.Errorf("delete mismatched statefulset: %w", delErr)
+					}
+					break
+				}
+			}
+		}
+		sts = &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: pulse.Namespace}}
+	}
+
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
 		sts.Labels = pgLabels(pulse.Name)
 		setOwner(pulse, sts)
@@ -193,9 +210,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 				Labels: pgLabels(pulse.Name),
 			},
 			Spec: corev1.PodSpec{
-				SecurityContext: &corev1.PodSecurityContext{
-					RunAsNonRoot: &isTrue,
-				},
+				SecurityContext: defaultPodSecCtx(26),
 				Containers: []corev1.Container{
 					{
 						Name:  "postgresql",
@@ -224,10 +239,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 							InitialDelaySeconds: 30,
 							PeriodSeconds:       30,
 						},
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: &isFalse,
-							ReadOnlyRootFilesystem:   &isFalse,
-						},
+						SecurityContext: defaultContainerSecCtx(),
 					},
 				},
 			},

@@ -429,19 +429,13 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: saName,
-				SecurityContext: &corev1.PodSecurityContext{
-					RunAsNonRoot: func() *bool { b := true; return &b }(),
-					SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-				},
+				SecurityContext:    defaultPodSecCtx(1001),
 				Containers: []corev1.Container{
 					{
 						// Container 1: nginx serving the React SPA.
 						Name:  "openshiftpulse",
 						Image: uiImage,
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
-							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-						},
+						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{Name: "http", ContainerPort: uiHTTPPort, Protocol: corev1.ProtocolTCP},
 						},
@@ -477,10 +471,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 						// Container 2: OpenShift OAuth proxy terminating TLS on 8443.
 						Name:  "oauth-proxy",
 						Image: oauthImage,
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
-							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-						},
+						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{Name: "https", ContainerPort: uiProxyPort, Protocol: corev1.ProtocolTCP},
 						},

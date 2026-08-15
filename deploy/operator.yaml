@@ -10,176 +10,66 @@ metadata:
   name: pulse-operator-manager
   namespace: pulse-operator-system
 ---
+# Canonical ClusterRole — generated from config/rbac/role.yaml.
+# To update: edit config/rbac/role.yaml then re-run: make build-installer
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: pulse-operator-manager-role
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  - persistentvolumeclaims
-  - secrets
-  - serviceaccounts
-  - services
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - apps
-  resources:
-  - deployments
-  - statefulsets
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - oauth.openshift.io
-  resources:
-  - oauthclients
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - pulse.ai
-  resources:
-  - openshiftpulses
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - pulse.ai
-  resources:
-  - openshiftpulses/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - clusterrolebindings
-  - clusterroles
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - route.openshift.io
-  resources:
-  - routes
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - networking.k8s.io
-  resources:
-  - networkpolicies
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy
-  resources:
-  - poddisruptionbudgets
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - monitoring.coreos.com
-  resources:
-  - servicemonitors
-  - prometheusrules
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - config.openshift.io
-  resources:
-  - ingresses
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - image.openshift.io
-  resources:
-  - imagestreams
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - namespaces
-  - events
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - coordination.k8s.io
-  resources:
-  - leases
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - pulse.ai
-  resources:
-  - openshiftpulses/finalizers
-  verbs:
-  - update
+- apiGroups: [""]
+  resources: [configmaps, persistentvolumeclaims, secrets, serviceaccounts, services,
+    pods, "pods/log", nodes, endpoints, limitranges, resourcequotas, "services/proxy",
+    namespaces, events]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [apps]
+  resources: [deployments, statefulsets, replicasets, daemonsets]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [autoscaling]
+  resources: [horizontalpodautoscalers]
+  verbs: [get, list, watch]
+- apiGroups: [batch]
+  resources: [jobs, cronjobs]
+  verbs: [get, list, watch]
+- apiGroups: [discovery.k8s.io]
+  resources: [endpointslices]
+  verbs: [get, list, watch]
+- apiGroups: [metrics.k8s.io]
+  resources: [nodes, pods]
+  verbs: [get, list]
+- apiGroups: [storage.k8s.io]
+  resources: [storageclasses]
+  verbs: [get, list, watch]
+- apiGroups: [networking.k8s.io]
+  resources: [ingresses, networkpolicies]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [policy]
+  resources: [poddisruptionbudgets]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [rbac.authorization.k8s.io]
+  resources: [clusterroles, clusterrolebindings, roles, rolebindings]
+  verbs: [bind, create, delete, escalate, get, list, patch, update, watch]
+- apiGroups: [monitoring.coreos.com]
+  resources: [servicemonitors, prometheusrules]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [route.openshift.io]
+  resources: [routes]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [oauth.openshift.io]
+  resources: [oauthclients]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [config.openshift.io]
+  resources: [ingresses]
+  verbs: [get, list, watch]
+- apiGroups: [image.openshift.io]
+  resources: [imagestreams]
+  verbs: [get, list, watch]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [create, get, list, patch, update, watch]
+- apiGroups: [pulse.ai]
+  resources: [openshiftpulses, "openshiftpulses/status", "openshiftpulses/finalizers"]
+  verbs: [create, delete, get, list, patch, update, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -210,13 +100,16 @@ spec:
         app: pulse-operator-manager
     spec:
       serviceAccountName: pulse-operator-manager
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: manager
-        image: image-registry.openshift-image-registry.svc:5000/pulse-operator-system/pulse-operator@sha256:c867416ac87acd957fdcf28ceecaf1b94d65447bc1e63b0368057da95d161a07
+        image: quay.io/amobrem/pulse-operator:latest
         args:
         - --leader-elect=true
         securityContext:
-          runAsNonRoot: true
           allowPrivilegeEscalation: false
           capabilities:
             drop:

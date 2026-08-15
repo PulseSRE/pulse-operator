@@ -1,3 +1,5 @@
+CONTAINER_TOOL ?= podman
+
 .PHONY: build test run fmt vet manifests generate
 
 ## build: compile the operator manager binary
@@ -40,11 +42,11 @@ bundle: ## Generate bundle manifests (run after any types/RBAC change)
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image
-	docker build -f Dockerfile.bundle -t $(BUNDLE_IMG) .
+	$(CONTAINER_TOOL) build -f Dockerfile.bundle -t $(BUNDLE_IMG) .
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image
-	docker push $(BUNDLE_IMG)
+	$(CONTAINER_TOOL) push $(BUNDLE_IMG)
 
 .PHONY: bundle-validate
 bundle-validate: ## Validate the bundle (requires operator-sdk)
@@ -55,12 +57,12 @@ bundle-run: ## Install bundle on cluster via operator-sdk (for testing)
 	operator-sdk run bundle $(BUNDLE_IMG) --namespace operators
 
 .PHONY: docker-build
-docker-build: ## Build operator manager Docker image
-	docker build -f Dockerfile -t $(OPERATOR_IMG) .
+docker-build: ## Build operator manager image
+	$(CONTAINER_TOOL) build --platform linux/amd64 -f Dockerfile -t $(OPERATOR_IMG) .
 
 .PHONY: docker-push
-docker-push: ## Push operator manager Docker image
-	docker push $(OPERATOR_IMG)
+docker-push: ## Push operator manager image
+	$(CONTAINER_TOOL) push $(OPERATOR_IMG)
 
 .PHONY: deploy
 deploy: ## Deploy operator to cluster (requires kubectl/oc and cluster access)
