@@ -12,6 +12,11 @@ metadata:
             "namespace": "openshiftpulse"
           },
           "spec": {
+            "vertexAI": {
+              "projectId": "my-gcp-project",
+              "region": "us-east5",
+              "credentialSecret": "gcp-sa-key"
+            },
             "agent": {
               "image": "quay.io/amobrem/pulse-agent:latest",
               "trustLevel": 2,
@@ -83,36 +88,71 @@ spec:
     spec:
       clusterPermissions:
         - rules:
+          # BEGIN GENERATED RBAC (source: config/rbac/role.yaml — run scripts/sync-rbac.py --fix)
           - apiGroups: [""]
-            resources: ["namespaces","nodes","pods","services","events","persistentvolumeclaims","configmaps","serviceaccounts","secrets","endpoints"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
+            resources: ["configmaps","persistentvolumeclaims","secrets","serviceaccounts","services","events"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
           - apiGroups: ["apps"]
-            resources: ["deployments","statefulsets","replicasets","daemonsets"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
+            resources: ["deployments","statefulsets"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
+          - apiGroups: ["networking.k8s.io"]
+            resources: ["networkpolicies"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
+          - apiGroups: ["policy"]
+            resources: ["poddisruptionbudgets"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
           - apiGroups: ["rbac.authorization.k8s.io"]
-            resources: ["clusterroles","clusterrolebindings"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
+            resources: ["clusterroles","clusterrolebindings","roles","rolebindings"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
+          - apiGroups: ["monitoring.coreos.com"]
+            resources: ["servicemonitors","prometheusrules"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
           - apiGroups: ["route.openshift.io"]
             resources: ["routes"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
           - apiGroups: ["oauth.openshift.io"]
             resources: ["oauthclients"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
+          - apiGroups: ["coordination.k8s.io"]
+            resources: ["leases"]
+            verbs: ["create","get","list","patch","update","watch"]
+          - apiGroups: ["pulse.ai"]
+            resources: ["openshiftpulses","openshiftpulses/status","openshiftpulses/finalizers"]
+            verbs: ["create","delete","get","list","patch","update","watch"]
+          - apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["get","list","watch","delete"]
+          - apiGroups: [""]
+            resources: ["pods/log","nodes","namespaces","endpoints","limitranges","resourcequotas"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["apps"]
+            resources: ["replicasets","daemonsets"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["autoscaling"]
+            resources: ["horizontalpodautoscalers"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["batch"]
+            resources: ["jobs","cronjobs"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["discovery.k8s.io"]
+            resources: ["endpointslices"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["metrics.k8s.io"]
+            resources: ["nodes","pods"]
+            verbs: ["get","list"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["storageclasses"]
+            verbs: ["get","list","watch"]
+          - apiGroups: ["networking.k8s.io"]
+            resources: ["ingresses"]
+            verbs: ["get","list","watch"]
           - apiGroups: ["config.openshift.io"]
             resources: ["ingresses","clusterversions","clusteroperators"]
             verbs: ["get","list","watch"]
           - apiGroups: ["image.openshift.io"]
             resources: ["imagestreams"]
             verbs: ["get","list","watch"]
-          - apiGroups: ["networking.k8s.io"]
-            resources: ["networkpolicies"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
-          - apiGroups: ["monitoring.coreos.com"]
-            resources: ["servicemonitors","prometheusrules"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
-          - apiGroups: ["pulse.ai"]
-            resources: ["openshiftpulses","openshiftpulses/status","openshiftpulses/finalizers"]
-            verbs: ["get","list","watch","create","update","patch","delete"]
+          # END GENERATED RBAC
           serviceAccountName: pulse-operator-controller-manager
       deployments:
         - label:
