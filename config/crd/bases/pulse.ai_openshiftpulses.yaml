@@ -66,6 +66,20 @@ spec:
                     properties:
                       enabled:
                         type: boolean
+                      image:
+                        description: |-
+                          Image overrides the MCP server image. Defaults to the OCP fork image
+                          (quay.io/amobrem/pulse-agent:mcp-server, built from github.com/openshift/openshift-mcp-server).
+                        type: string
+                      toolsets:
+                        description: |-
+                          Toolsets is the comma-separated list of MCP toolsets to enable.
+                          Available: cluster-diagnostics, cni-diagnostics, config, core, helm, kcp,
+                          kubevirt, netedge, netobserv, oadp, observability/logs, observability/metrics,
+                          observability/otelcol, observability/traces, openshift, openshift/mustgather,
+                          ossm, ovn-kubernetes, tekton.
+                          Defaults to the full SRE set when empty.
+                        type: string
                     type: object
                   resources:
                     description: ResourceRequirements describes the compute resource
@@ -229,6 +243,12 @@ spec:
               vertexAI:
                 properties:
                   credentialSecret:
+                    description: |-
+                      CredentialSecret is the name of a Secret in the same namespace containing
+                      a GCP service account key. The Secret must have a data key named "key.json"
+                      holding the JSON key file. When empty, the agent uses Application Default
+                      Credentials (ADC), which requires workload identity or a mounted GOOGLE_APPLICATION_CREDENTIALS.
+                      Example: kubectl create secret generic gcp-sa-key --from-file=key.json=sa-key.json
                     type: string
                   projectId:
                     type: string
