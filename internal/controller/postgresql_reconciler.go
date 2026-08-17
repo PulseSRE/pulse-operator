@@ -61,6 +61,15 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 	}
 	logger.V(1).Info("pg statefulset ready", "sts", stsName)
 
+	// 2a. Unblock rolling update: the StatefulSet controller does not delete
+	// Pending pods when the pod template changes — it waits for the pod to be
+	// Running first, which never happens when scheduling fails. Delete the pod
+	// so the StatefulSet controller creates a fresh pod with the updated spec.
+	if err := r.deletePendingPGPodIfStale(ctx, pulse, stsName); err != nil {
+		logger.Error(err, "failed to delete stale pending PG pod", "sts", stsName)
+		// Non-fatal — next reconcile will retry.
+	}
+
 	// 3. ClusterIP Service
 	if err := r.reconcilePGService(ctx, pulse, svcName, false); err != nil {
 		return "", fmt.Errorf("pg service: %w", err)
@@ -378,6 +387,32 @@ func pgLabels(crName string) map[string]string {
 // setOwner sets a non-blocking owner annotation (no controller OwnerReference since
 // cross-namespace ownership is not supported and CR/GVK is not available here without scheme).
 // Callers that have access to the scheme should call controllerutil.SetControllerReference instead.
+// deletePendingPGPodIfStale deletes the ordinal-0 PostgreSQL pod when it is
+// Pending. The StatefulSet RollingUpdate controller waits for pod-0 to be
+// Running before rolling it — a pod stuck Pending (e.g. due to stale resource
+// requests that were later updated) blocks the rollout indefinitely.
+// Deleting a Pending pod is safe: it never served traffic, so there's no
+// disruption. The StatefulSet controller recreates it with the current template.
+func (r *PostgreSQLReconciler) deletePendingPGPodIfStale(
+	ctx context.Context,
+	pulse *v1alpha1.OpenShiftPulse,
+	stsName string,
+) error {
+	podName := stsName + "-0"
+	pod := &corev1.Pod{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: podName}, pod)
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if pod.Status.Phase != corev1.PodPending {
+		return nil
+	}
+	return r.Delete(ctx, pod)
+}
+
 func setOwner(pulse *v1alpha1.OpenShiftPulse, obj metav1.Object) {
 	annotations := obj.GetAnnotations()
 	if annotations == nil {
