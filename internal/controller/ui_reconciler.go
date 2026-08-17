@@ -655,7 +655,13 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							"--tls-cert=/etc/tls/private/tls.crt",
 							"--tls-key=/etc/tls/private/tls.key",
 							"--cookie-secret-file=/etc/proxy/secrets/cookie-secret",
-							fmt.Sprintf("--openshift-service-account=%s", saName),
+							// Use the explicit OAuthClient (not SA-implicit mode) so the
+							// operator-managed client-secret is used for token redemption.
+							// Without these two flags the proxy uses the SA's implicit client
+							// while the redirect URI resolves to the explicit OAuthClient,
+							// causing "unauthorized_client" 400 on token exchange.
+							fmt.Sprintf("--client-id=%s", oauthClientName(pulse.Name, pulse.Namespace)),
+							"--client-secret-file=/etc/proxy/secrets/client-secret",
 							"--skip-provider-button",
 							// Forward the user's OAuth token so nginx can proxy /api/kubernetes/.
 							// Requires cookie-secret to be exactly 16/24/32 bytes (AES key).
