@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -31,6 +33,7 @@ type OpenShiftPulseReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
 	UIReconciler *UIReconciler
+	Recorder     record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=pulse.ai,resources=openshiftpulses,verbs=get;list;watch;create;update;patch;delete
@@ -54,8 +57,11 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if !pulse.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(pulse, finalizerName) {
 			if err := r.deleteClusterScopedResources(ctx, pulse); err != nil {
+				r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "DeleteFailed",
+					"Some cluster-scoped resources could not be deleted: %v", err)
 				return ctrl.Result{}, err
 			}
+			r.Recorder.Event(pulse, corev1.EventTypeNormal, "Deleted", "Cluster-scoped resources cleaned up")
 			controllerutil.RemoveFinalizer(pulse, finalizerName)
 			if err := r.Update(ctx, pulse); err != nil {
 				return ctrl.Result{}, err
@@ -74,12 +80,14 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	dbURL, err := r.reconcilePostgres(ctx, pulse)
 	if err != nil {
 		logger.Error(err, "postgres reconcile failed")
+		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "ReconcileFailed", "PostgreSQL reconcile failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("reconcilePostgres: %w", err)
 	}
 
 	// 2. Reconcile Agent sub-resources, providing the database URL.
 	if err := r.reconcileAgent(ctx, pulse, dbURL); err != nil {
 		logger.Error(err, "agent reconcile failed")
+		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "ReconcileFailed", "Agent reconcile failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("reconcileAgent: %w", err)
 	}
 
@@ -136,6 +144,9 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	pulse.Status.DatabaseReady = pgReady
 
 	if agentReady && pgReady && pulse.Status.UIAvailable {
+		if pulse.Status.Phase != "Running" {
+			r.Recorder.Event(pulse, corev1.EventTypeNormal, "Running", "All components are healthy")
+		}
 		pulse.Status.Phase = "Running"
 	} else {
 		pulse.Status.Phase = "Installing"
@@ -167,31 +178,21 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 // deleteClusterScopedResources removes the cluster-scoped resources that are not
 // owned by the CR (and therefore not garbage-collected by the K8s GC on deletion).
-// Each deletion ignores NotFound so the method is idempotent.
+// All deletions are attempted regardless of individual failures; errors are aggregated
+// so the caller sees the complete failure set rather than stopping at the first.
 func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	// Agent ClusterRole
-	agentCR := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}
-	if err := r.Delete(ctx, agentCR); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete agent ClusterRole: %w", err)
+	var errs []error
+
+	del := func(obj client.Object, desc string) {
+		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("delete %s: %w", desc, err))
+		}
 	}
 
-	// UI ClusterRole
-	uiCR := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}
-	if err := r.Delete(ctx, uiCR); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete UI ClusterRole: %w", err)
-	}
-
-	// Agent ClusterRoleBinding
-	agentCRB := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}
-	if err := r.Delete(ctx, agentCRB); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete agent ClusterRoleBinding: %w", err)
-	}
-
-	// UI ClusterRoleBinding
-	uiCRB := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}
-	if err := r.Delete(ctx, uiCRB); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete UI ClusterRoleBinding: %w", err)
-	}
+	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}, "agent ClusterRole")
+	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}, "UI ClusterRole")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}, "agent ClusterRoleBinding")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}, "UI ClusterRoleBinding")
 
 	// OAuthClient — cluster-scoped OpenShift resource; use unstructured because the
 	// oauth.openshift.io API group is not registered in the controller-runtime scheme.
@@ -202,11 +203,9 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 		Kind:    "OAuthClient",
 	})
 	oac.SetName(oauthClientName(pulse.Name, pulse.Namespace))
-	if err := r.Delete(ctx, oac); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete OAuthClient: %w", err)
-	}
+	del(oac, "OAuthClient")
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // reconcilePostgres delegates to PostgreSQLReconciler and returns the database URL.

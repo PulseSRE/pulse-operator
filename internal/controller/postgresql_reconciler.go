@@ -272,6 +272,16 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 						Ports: []corev1.ContainerPort{
 							{Name: "postgresql", ContainerPort: pgPort, Protocol: corev1.ProtocolTCP},
 						},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("100m"),
+								corev1.ResourceMemory: resource.MustParse("256Mi"),
+							},
+							Limits: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("1"),
+								corev1.ResourceMemory: resource.MustParse("1Gi"),
+							},
+						},
 						EnvFrom: []corev1.EnvFromSource{
 							{
 								SecretRef: &corev1.SecretEnvSource{
@@ -312,49 +322,38 @@ func (r *PostgreSQLReconciler) isReady(ctx context.Context, name, ns string) boo
 	return sts.Status.ReadyReplicas > 0
 }
 
-// reconcilePGService creates either a ClusterIP or headless Service for PostgreSQL.
+// reconcilePGService creates or updates either a ClusterIP or headless Service for PostgreSQL.
 func (r *PostgreSQLReconciler) reconcilePGService(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
 	svcName string,
 	headless bool,
 ) error {
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: svcName}, existing)
-	if err == nil {
-		return nil
-	}
-	if !errors.IsNotFound(err) {
-		return err
-	}
-
-	clusterIP := ""
-	if headless {
-		clusterIP = "None"
-	}
-
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      svcName,
 			Namespace: pulse.Namespace,
-			Labels:    pgLabels(pulse.Name),
-		},
-		Spec: corev1.ServiceSpec{
-			ClusterIP: clusterIP,
-			Selector:  pgLabels(pulse.Name),
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "postgresql",
-					Port:       pgPort,
-					TargetPort: intstr.FromInt(int(pgPort)),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
 		},
 	}
-
-	setOwner(pulse, svc)
-	return r.Create(ctx, svc)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = pgLabels(pulse.Name)
+		setOwner(pulse, svc)
+		svc.Spec.Selector = pgLabels(pulse.Name)
+		svc.Spec.Ports = []corev1.ServicePort{
+			{
+				Name:       "postgresql",
+				Port:       pgPort,
+				TargetPort: intstr.FromInt(int(pgPort)),
+				Protocol:   corev1.ProtocolTCP,
+			},
+		}
+		// ClusterIP is immutable after creation — only set on creation.
+		if svc.Spec.ClusterIP == "" && headless {
+			svc.Spec.ClusterIP = "None"
+		}
+		return nil
+	})
+	return err
 }
 
 // generatePassword returns a hex-encoded random string of n bytes (produces 2n hex chars).

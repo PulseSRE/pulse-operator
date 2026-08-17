@@ -19,7 +19,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -34,21 +33,21 @@ const (
 )
 
 // AgentReconciler reconciles the agent sub-resources of an OpenShiftPulse CR.
+// It is NOT registered as a standalone controller — SetupWithManager must not be
+// called on it because OpenShiftPulseReconciler already watches OpenShiftPulse
+// and delegates here. Registering both would cause concurrent reconcile races on
+// every watch event.
+//
+// Reconcile is kept for testing: envtest can drive the sub-reconcilers via the
+// standard ctrl.Request interface without standing up the full root reconciler.
 type AgentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=pulse.ai,resources=openshiftpulses,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=pulse.ai,resources=openshiftpulses/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets;persistentvolumeclaims;services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
-
-// Reconcile creates or updates all agent sub-resources when an OpenShiftPulse CR exists.
+// Reconcile runs all agent sub-resource reconcile steps in order.
+// Used by envtest tests; in production it is called from OpenShiftPulseReconciler.reconcileAgent.
 func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	cr := &pulsev1alpha1.OpenShiftPulse{}
 	if err := r.Get(ctx, req.NamespacedName, cr); err != nil {
 		if errors.IsNotFound(err) {
@@ -57,58 +56,24 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Reconciling OpenShiftPulse", "name", cr.Name, "namespace", cr.Namespace)
-
 	type step struct {
 		name string
 		fn   func(context.Context, *pulsev1alpha1.OpenShiftPulse) error
 	}
-
-	steps := []step{
+	for _, s := range []step{
 		{"ServiceAccount", r.reconcileServiceAccount},
 		{"ClusterRole", r.reconcileClusterRole},
 		{"ClusterRoleBinding", r.reconcileClusterRoleBinding},
 		{"WSTokenSecret", r.reconcileWSTokenSecret},
 		{"MemoryPVC", r.reconcileMemoryPVC},
-	}
-
-	for _, s := range steps {
-		if err := s.fn(ctx, cr); err != nil {
-			logger.Error(err, "reconcile step failed", "resource", s.name)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Create Deployment and Service unconditionally. With WaitForFirstConsumer
-	// storage classes (e.g. gp3-csi), the PVC only binds once a pod is
-	// scheduled — gating on Bound creates a chicken-and-egg deadlock.
-	// Kubernetes will hold the pod Pending until the volume is provisioned,
-	// and status.agentHealthy reflects actual pod readiness.
-	postPVCSteps := []step{
 		{"Deployment", r.reconcileDeployment},
 		{"Service", r.reconcileService},
-	}
-	for _, s := range postPVCSteps {
+	} {
 		if err := s.fn(ctx, cr); err != nil {
-			logger.Error(err, "reconcile step failed", "resource", s.name)
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("%s: %w", s.name, err)
 		}
 	}
-
-	logger.Info("Reconcile complete", "name", cr.Name)
 	return ctrl.Result{}, nil
-}
-
-// SetupWithManager registers the reconciler with the controller manager.
-func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&pulsev1alpha1.OpenShiftPulse{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.ServiceAccount{}).
-		Owns(&corev1.Secret{}).
-		Owns(&corev1.PersistentVolumeClaim{}).
-		Complete(r)
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

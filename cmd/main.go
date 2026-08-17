@@ -73,8 +73,9 @@ func main() {
 	}
 
 	if err := (&controller.OpenShiftPulseReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("pulse-operator"),
 		UIReconciler: &controller.UIReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
