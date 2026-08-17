@@ -24,8 +24,8 @@ var _ = Describe("UIReconciler", func() {
 	)
 
 	var (
-		cr          *pulsev1alpha1.OpenShiftPulse
-		ctx         context.Context
+		cr           *pulsev1alpha1.OpenShiftPulse
+		ctx          context.Context
 		uiReconciler *UIReconciler
 	)
 
