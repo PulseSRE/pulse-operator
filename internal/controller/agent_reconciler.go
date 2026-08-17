@@ -394,6 +394,35 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		},
 	}
 
+	// Inject AI backend credentials.
+	if cr.Spec.VertexAI != nil && cr.Spec.VertexAI.ProjectID != "" {
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "ANTHROPIC_VERTEX_PROJECT_ID", Value: cr.Spec.VertexAI.ProjectID},
+			corev1.EnvVar{Name: "CLOUD_ML_REGION", Value: func() string {
+				if cr.Spec.VertexAI.Region != "" {
+					return cr.Spec.VertexAI.Region
+				}
+				return "us-east5"
+			}()},
+		)
+		if cr.Spec.VertexAI.CredentialSecret != "" {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: "GOOGLE_APPLICATION_CREDENTIALS",
+				Value: "/var/secrets/google/key.json",
+			})
+		}
+	} else if cr.Spec.AnthropicAPIKey != nil && cr.Spec.AnthropicAPIKey.ExistingSecret != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "ANTHROPIC_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: cr.Spec.AnthropicAPIKey.ExistingSecret},
+					Key:                  "ANTHROPIC_API_KEY",
+				},
+			},
+		})
+	}
+
 	if databaseEnabled(cr) {
 		envVars = append(envVars, corev1.EnvVar{
 			Name: "PULSE_AGENT_DATABASE_URL",
@@ -463,12 +492,17 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 							},
 						},
 						Env: envVars,
-						VolumeMounts: []corev1.VolumeMount{
-							{
-								Name:      "memory",
-								MountPath: "/memory",
-							},
-						},
+						VolumeMounts: func() []corev1.VolumeMount {
+							mounts := []corev1.VolumeMount{{Name: "memory", MountPath: "/memory"}}
+							if cr.Spec.VertexAI != nil && cr.Spec.VertexAI.CredentialSecret != "" {
+								mounts = append(mounts, corev1.VolumeMount{
+									Name:      "gcp-sa-key",
+									MountPath: "/var/secrets/google",
+									ReadOnly:  true,
+								})
+							}
+							return mounts
+						}(),
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler:        healthzProbeHandler,
 							InitialDelaySeconds: 15,
@@ -481,16 +515,27 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 						},
 					},
 				},
-				Volumes: []corev1.Volume{
-					{
+				Volumes: func() []corev1.Volume {
+					vols := []corev1.Volume{{
 						Name: "memory",
 						VolumeSource: corev1.VolumeSource{
 							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 								ClaimName: memoryPVCName(cr.Name),
 							},
 						},
-					},
-				},
+					}}
+					if cr.Spec.VertexAI != nil && cr.Spec.VertexAI.CredentialSecret != "" {
+						vols = append(vols, corev1.Volume{
+							Name: "gcp-sa-key",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: cr.Spec.VertexAI.CredentialSecret,
+								},
+							},
+						})
+					}
+					return vols
+				}(),
 			},
 		},
 	}
