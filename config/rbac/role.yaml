@@ -57,6 +57,16 @@ rules:
 - apiGroups: [coordination.k8s.io]
   resources: [leases]
   verbs: [create, get, list, patch, update, watch]
+# Required to create the per-instance "<ui>-auth-delegator" ClusterRoleBinding
+# to the built-in system:auth-delegator ClusterRole (ui_reconciler.go). Kubernetes'
+# RBAC escalation check requires the operator to already hold every permission it
+# grants via a binding, so these two rules must mirror system:auth-delegator exactly.
+- apiGroups: [authentication.k8s.io]
+  resources: [tokenreviews]
+  verbs: [create]
+- apiGroups: [authorization.k8s.io]
+  resources: [subjectaccessreviews]
+  verbs: [create]
 - apiGroups: [pulse.ai]
   resources: [openshiftpulses, "openshiftpulses/status", "openshiftpulses/finalizers"]
   verbs: [create, delete, get, list, patch, update, watch]
