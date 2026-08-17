@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -176,6 +177,51 @@ func resolvedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
 		return cr.Spec.UI.Image
 	}
 	return defaultUIImage
+}
+
+// resolvedUIReplicas returns the effective UI Deployment replica count, applying
+// the same "0 means unset, default to 2" resolution the Deployment reconciler
+// uses. Shared with the PDB reconciler so the two never disagree about whether
+// a CR that omits spec.ui.replicas ends up with more than one pod.
+func resolvedUIReplicas(cr *pulsev1alpha1.OpenShiftPulse) int32 {
+	if cr.Spec.UI.Replicas == 0 {
+		return 2
+	}
+	return cr.Spec.UI.Replicas
+}
+
+// uiResources returns the effective resource requirements for the UI's main
+// (nginx/openshiftpulse) container: the spec override when set, or a modest
+// default otherwise. Mirrors agentResources' shape (memory-only, no CPU
+// request — Kubernetes auto-sets Requests=Limits for CPU when only a limit is
+// given, which is deliberately avoided here too).
+func uiResources(cr *pulsev1alpha1.OpenShiftPulse) corev1.ResourceRequirements {
+	if cr.Spec.UI.Resources.Requests != nil || cr.Spec.UI.Resources.Limits != nil {
+		return cr.Spec.UI.Resources
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+}
+
+// oauthProxyResources returns fixed resource requirements for the oauth-proxy
+// sidecar. Not user-configurable via the CRD (no spec field exists for it) —
+// the sidecar's footprint is small and stable regardless of workload, unlike
+// the main container which spec.ui.resources exists to let operators tune.
+func oauthProxyResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
 }
 
 func resolvedOAuthProxyImage(cr *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo) string {
@@ -567,10 +613,7 @@ http {
 func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo, nginxHash string) error {
 	name := uiResourceName(pulse.Name)
 
-	replicas := pulse.Spec.UI.Replicas
-	if replicas == 0 {
-		replicas = 2
-	}
+	replicas := resolvedUIReplicas(pulse)
 
 	saName := uiResourceName(pulse.Name)
 	tlsSecretName := uiTLSSecretName(pulse.Name)
@@ -618,6 +661,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 						// Container 1: nginx serving the React SPA.
 						Name:            "openshiftpulse",
 						Image:           uiImage,
+						Resources:       uiResources(pulse),
 						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{Name: "http", ContainerPort: uiHTTPPort, Protocol: corev1.ProtocolTCP},
@@ -654,6 +698,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 						// Container 2: OpenShift OAuth proxy terminating TLS on 8443.
 						Name:            "oauth-proxy",
 						Image:           oauthImage,
+						Resources:       oauthProxyResources(),
 						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{Name: "https", ContainerPort: uiProxyPort, Protocol: corev1.ProtocolTCP},

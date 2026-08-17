@@ -12,10 +12,14 @@ import (
 )
 
 // reconcileUIPodsDisruptionBudget creates or updates a PodDisruptionBudget for the UI
-// deployment. The PDB is only created when spec.ui.replicas > 1; with a single replica
-// the PDB would block node drains without providing any availability benefit.
+// deployment. The PDB is only created when the UI Deployment will actually run more
+// than one replica; with a single replica the PDB would block node drains without
+// providing any availability benefit. Uses resolvedUIReplicas (not the raw spec field)
+// so a CR that omits spec.ui.replicas — which the Deployment reconciler resolves to the
+// default of 2 — still gets the PDB its two real pods need, instead of silently getting
+// none.
 func (r *OpenShiftPulseReconciler) reconcileUIPodsDisruptionBudget(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	if pulse.Spec.UI.Replicas <= 1 {
+	if resolvedUIReplicas(pulse) <= 1 {
 		return nil
 	}
 
