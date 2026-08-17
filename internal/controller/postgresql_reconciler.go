@@ -224,7 +224,10 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 				Labels: pgLabels(pulse.Name),
 			},
 			Spec: corev1.PodSpec{
-				SecurityContext: defaultPodSecCtx(26),
+				// OCP assigns UIDs from the namespace range via the restricted SCC.
+			// Do not set RunAsUser — hardcoding 26 (postgres uid) is rejected by
+			// restricted-v2 SCC which enforces namespace-allocated UID ranges.
+			SecurityContext: defaultPodSecCtx(0),
 				Containers: []corev1.Container{
 					{
 						Name:  "postgresql",
