@@ -133,7 +133,7 @@ func (r *MonitoringReconciler) reconcilePrometheusRule(ctx context.Context, puls
 		map[string]interface{}{
 			"alert": "PulseAgentHighRestarts",
 			"expr": fmt.Sprintf(
-				`increase(kube_pod_container_status_restarts_total{namespace="%s", container="openshift-sre-agent"}[1h]) > 3`,
+				`increase(kube_pod_container_status_restarts_total{namespace="%s", container="agent"}[1h]) > 3`,
 				pulse.Namespace,
 			),
 			"for": "0m",

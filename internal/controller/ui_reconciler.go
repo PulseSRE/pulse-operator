@@ -21,9 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -855,40 +853,3 @@ func (r *UIReconciler) isReady(ctx context.Context, name, ns string) bool {
 	return deploy.Status.ReadyReplicas > 0
 }
 
-// SetupWithManager registers the UIReconciler with the controller manager.
-// Watches: OpenShiftPulse CR (source), owned Deployments/Services/ConfigMaps/Secrets/ServiceAccounts.
-// Also watches Routes (not owned) to trigger reconcile when OCP assigns the hostname.
-func (r *UIReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	routeObj := &unstructured.Unstructured{}
-	routeObj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "route.openshift.io",
-		Version: "v1",
-		Kind:    "Route",
-	})
-
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&pulsev1alpha1.OpenShiftPulse{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{}).
-		Owns(&corev1.Secret{}).
-		Owns(&corev1.ServiceAccount{}).
-		Watches(
-			routeObj,
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				annotations := obj.GetAnnotations()
-				if annotations == nil {
-					return nil
-				}
-				ownerName := annotations[annotationOwnerName]
-				ownerNS := annotations[annotationOwnerNamespace]
-				if ownerName == "" || ownerNS == "" {
-					return nil
-				}
-				return []reconcile.Request{
-					{NamespacedName: types.NamespacedName{Name: ownerName, Namespace: ownerNS}},
-				}
-			}),
-		).
-		Complete(r)
-}

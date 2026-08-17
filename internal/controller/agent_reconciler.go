@@ -101,6 +101,24 @@ func databaseEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
 	return cr.Spec.Database.StorageSize != "" || cr.Spec.Database.Image != ""
 }
 
+// agentResources returns the spec-provided resources when non-empty, or conservative
+// defaults that prevent unbounded memory growth without throttling normal operation.
+func agentResources(cr *pulsev1alpha1.OpenShiftPulse) corev1.ResourceRequirements {
+	if cr.Spec.Agent.Resources.Requests != nil || cr.Spec.Agent.Resources.Limits != nil {
+		return cr.Spec.Agent.Resources
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+	}
+}
+
 func clusterScopedAnnotations(cr *pulsev1alpha1.OpenShiftPulse) map[string]string {
 	return map[string]string{
 		annotationOwnerName:      cr.Name,
@@ -448,7 +466,7 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 					{
 						Name:            "agent",
 						Image:           resolvedImage(cr),
-						Resources:       cr.Spec.Agent.Resources,
+						Resources:       agentResources(cr),
 						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{

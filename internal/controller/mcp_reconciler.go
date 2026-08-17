@@ -25,7 +25,8 @@ const (
 )
 
 // MCPServiceURL returns the in-cluster URL of the MCP server for injection into the agent.
-// Injected as PULSE_AGENT_MCP_URL by AgentReconciler.buildDeploymentSpec when MCP is enabled.
+// Injected as PULSE_MCP_URL by AgentReconciler.buildDeploymentSpec when MCP is enabled.
+// Skills read the env var ${PULSE_MCP_URL} (not PULSE_AGENT_MCP_URL).
 func MCPServiceURL(name, ns string) string {
 	return fmt.Sprintf("http://%s-mcp-server:%d", name, mcpServerPort)
 }

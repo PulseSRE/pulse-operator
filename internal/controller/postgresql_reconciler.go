@@ -35,7 +35,9 @@ type PostgreSQLReconciler struct {
 
 // reconcilePostgres ensures the Secret, StatefulSet, ClusterIP Service, and headless
 // Service exist for the PostgreSQL instance backing the given pulse CR.
-// It returns the DATABASE_URL string and updates pulse.Status.DatabaseReady.
+// It returns the DATABASE_URL string. The caller (OpenShiftPulseReconciler) is
+// responsible for setting pulse.Status.DatabaseReady — PostgreSQLReconciler does
+// not touch the status field to avoid double-writes with the root reconciler.
 func (r *PostgreSQLReconciler) reconcilePostgres(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
@@ -69,9 +71,6 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 	if err := r.reconcilePGService(ctx, pulse, headlessSvcName, true); err != nil {
 		return "", fmt.Errorf("pg headless service: %w", err)
 	}
-
-	// 5. Reflect readiness into status
-	pulse.Status.DatabaseReady = r.isReady(ctx, stsName, pulse.Namespace)
 
 	dbURL := fmt.Sprintf("postgresql://%s:%s@%s:5432/%s", pgUser, password, svcName, pgDB)
 
