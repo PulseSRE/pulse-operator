@@ -633,9 +633,6 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							"--scope=user:full",
 							"--cookie-expire=168h",
 							"--cookie-refresh=1h",
-							// Delegate /api/kubernetes/ authorization to OpenShift — requires
-							// the user to have at least namespace list permission before gaining access.
-							`--openshift-delegate-urls={"/api/kubernetes/":{"resource":"namespaces","verb":"list"}}`,
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
