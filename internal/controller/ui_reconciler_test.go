@@ -297,6 +297,53 @@ var _ = Describe("UIReconciler", func() {
 		Expect(getErr).NotTo(HaveOccurred())
 		Expect(route.GetName()).To(Equal(uiResourceName(uiCRName)))
 	})
+
+	// Regression: reconcileUIRoute used to only ever read spec.host on an
+	// existing Route and never wrote anything back — any external change to
+	// spec.to/spec.port.targetPort/spec.tls (e.g. a manual kubectl edit)
+	// would persist forever instead of being corrected on the next reconcile.
+	It("corrects drift on an already-existing Route's spec.to/spec.port/spec.tls, without touching spec.host", func() {
+		routeGVK := schema.GroupVersionKind{Group: "route.openshift.io", Version: "v1", Kind: "Route"}
+
+		_, _, err := uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
+		if err != nil && (apierrors.IsNotFound(err) || isNoCRDError(err)) {
+			Skip("Route CRD not installed in envtest — skipping Route drift check")
+		}
+		Expect(err).NotTo(HaveOccurred())
+
+		route := &unstructured.Unstructured{}
+		route.SetGroupVersionKind(routeGVK)
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Name: uiResourceName(uiCRName), Namespace: namespace}, route)
+		if apierrors.IsNotFound(getErr) || isNoCRDError(getErr) {
+			Skip("Route CRD not installed in envtest — skipping Route drift check")
+		}
+		Expect(getErr).NotTo(HaveOccurred())
+
+		// Simulate external drift (e.g. a manual kubectl edit) and a
+		// pre-existing spec.host, which must survive untouched.
+		Expect(unstructured.SetNestedField(route.Object, "manually-set-host.apps.example.com", "spec", "host")).To(Succeed())
+		Expect(unstructured.SetNestedField(route.Object, map[string]interface{}{
+			"kind": "Service", "name": "some-other-service", "weight": int64(100),
+		}, "spec", "to")).To(Succeed())
+		Expect(unstructured.SetNestedField(route.Object, map[string]interface{}{
+			"termination": "edge", "insecureEdgeTerminationPolicy": "Allow",
+		}, "spec", "tls")).To(Succeed())
+		Expect(k8sClient.Update(ctx, route)).To(Succeed())
+
+		host, _, err := uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(host).To(Equal("manually-set-host.apps.example.com"), "spec.host must be preserved, not overwritten")
+
+		corrected := &unstructured.Unstructured{}
+		corrected.SetGroupVersionKind(routeGVK)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: uiResourceName(uiCRName), Namespace: namespace}, corrected)).To(Succeed())
+
+		to, _, _ := unstructured.NestedString(corrected.Object, "spec", "to", "name")
+		Expect(to).To(Equal(uiResourceName(uiCRName)), "spec.to must be corrected back to the UI Service")
+
+		termination, _, _ := unstructured.NestedString(corrected.Object, "spec", "tls", "termination")
+		Expect(termination).To(Equal("reencrypt"), "spec.tls must be corrected back to reencrypt")
+	})
 })
 
 // isNoCRDError returns true for "no kind is registered" or "no matches for kind" errors

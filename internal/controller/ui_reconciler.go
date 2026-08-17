@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"reflect"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -909,6 +910,33 @@ func (r *UIReconciler) reconcileUIRoute(ctx context.Context, pulse *pulsev1alpha
 	}
 	if err != nil {
 		return "", ctrl.Result{}, err
+	}
+
+	// Correct drift on spec.to/spec.port.targetPort/spec.tls if something
+	// external changed them (this used to only ever read spec.host and never
+	// wrote anything back once the Route existed). spec.host is deliberately
+	// never touched here: OCP assigns and owns it once admitted, and
+	// overwriting it would either be a no-op or, worse, race the router.
+	wantTo := map[string]interface{}{"kind": "Service", "name": name, "weight": int64(100)}
+	wantTLS := map[string]interface{}{"termination": "reencrypt", "insecureEdgeTerminationPolicy": "Redirect"}
+	gotTo, _, _ := unstructured.NestedMap(existing.Object, "spec", "to")
+	gotTargetPort, _, _ := unstructured.NestedFieldNoCopy(existing.Object, "spec", "port", "targetPort")
+	gotTLS, _, _ := unstructured.NestedMap(existing.Object, "spec", "tls")
+	if !reflect.DeepEqual(gotTo, wantTo) ||
+		!reflect.DeepEqual(gotTargetPort, int64(uiProxyPort)) ||
+		!reflect.DeepEqual(gotTLS, wantTLS) {
+		if setErr := unstructured.SetNestedField(existing.Object, wantTo, "spec", "to"); setErr != nil {
+			return "", ctrl.Result{}, fmt.Errorf("correct route spec.to: %w", setErr)
+		}
+		if setErr := unstructured.SetNestedField(existing.Object, int64(uiProxyPort), "spec", "port", "targetPort"); setErr != nil {
+			return "", ctrl.Result{}, fmt.Errorf("correct route spec.port.targetPort: %w", setErr)
+		}
+		if setErr := unstructured.SetNestedField(existing.Object, wantTLS, "spec", "tls"); setErr != nil {
+			return "", ctrl.Result{}, fmt.Errorf("correct route spec.tls: %w", setErr)
+		}
+		if updateErr := r.Update(ctx, existing); updateErr != nil {
+			return "", ctrl.Result{}, fmt.Errorf("correct route drift: %w", updateErr)
+		}
 	}
 
 	// Check spec.host — OCP populates this after the route is admitted by the router.
