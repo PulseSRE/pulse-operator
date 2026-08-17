@@ -448,7 +448,7 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: name,
-				SecurityContext: defaultPodSecCtx(podUID(1001)),
+				SecurityContext: defaultPodSecCtx(nil), // OCP assigns UID from namespace range via SCC
 				Containers: []corev1.Container{
 					{
 						Name:            "agent",

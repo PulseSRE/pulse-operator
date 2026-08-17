@@ -81,7 +81,7 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 					Labels: map[string]string{"app": name},
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext: defaultPodSecCtx(podUID(1001)),
+					SecurityContext: defaultPodSecCtx(nil), // OCP assigns UID from namespace range via SCC
 					Containers: []corev1.Container{
 						{
 							Name:            "mcp-server",
