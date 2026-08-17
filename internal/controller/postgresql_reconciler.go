@@ -74,6 +74,26 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 	pulse.Status.DatabaseReady = r.isReady(ctx, stsName, pulse.Namespace)
 
 	dbURL := fmt.Sprintf("postgresql://%s:%s@%s:5432/%s", pgUser, password, svcName, pgDB)
+
+	// Create/update the {name}-postgresql secret with the database-url key so the
+	// agent Deployment can reference it via secretKeyRef without the URL in plain env vars.
+	connSecret := &corev1.Secret{}
+	connSecretName := pulse.Name + "-postgresql"
+	err = r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: connSecretName}, connSecret)
+	if errors.IsNotFound(err) {
+		connSecret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: connSecretName, Namespace: pulse.Namespace, Labels: pgLabels(pulse.Name)},
+			Type:       corev1.SecretTypeOpaque,
+			StringData: map[string]string{"database-url": dbURL},
+		}
+		setOwner(pulse, connSecret)
+		if createErr := r.Create(ctx, connSecret); createErr != nil {
+			return "", fmt.Errorf("create pg connection secret: %w", createErr)
+		}
+	} else if err != nil {
+		return "", err
+	}
+
 	return dbURL, nil
 }
 
