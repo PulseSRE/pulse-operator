@@ -477,7 +477,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: saName,
-				SecurityContext:    defaultPodSecCtx(0),
+				SecurityContext:    defaultPodSecCtx(nil),
 				Containers: []corev1.Container{
 					{
 						// Container 1: nginx serving the React SPA.

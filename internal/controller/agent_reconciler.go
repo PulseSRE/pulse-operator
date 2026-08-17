@@ -456,7 +456,7 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: name,
-				SecurityContext: defaultPodSecCtx(1001),
+				SecurityContext: defaultPodSecCtx(podUID(1001)),
 				Containers: []corev1.Container{
 					{
 						Name:            "agent",

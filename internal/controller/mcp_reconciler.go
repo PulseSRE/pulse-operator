@@ -81,7 +81,7 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 					Labels: map[string]string{"app": name},
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext: defaultPodSecCtx(1001),
+					SecurityContext: defaultPodSecCtx(podUID(1001)),
 					Containers: []corev1.Container{
 						{
 							Name:            "mcp-server",

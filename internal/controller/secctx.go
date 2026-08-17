@@ -3,20 +3,25 @@ package controller
 import corev1 "k8s.io/api/core/v1"
 
 // defaultPodSecCtx returns a PodSecurityContext satisfying the restricted
-// PodSecurity admission policy. When all containers in the pod run as the same
-// UID, pass that UID; pass 0 to omit RunAsUser (e.g. when containers have
-// different built-in UIDs and each container must override individually).
-func defaultPodSecCtx(runAsUser int64) *corev1.PodSecurityContext {
+// PodSecurity admission policy. Pass a non-nil uid when all containers share
+// a single known UID; pass nil to omit RunAsUser so OCP's SCC admission
+// assigns a UID from the namespace range (required when containers have
+// different UIDs or the namespace enforces its own UID range).
+// Never pass 0 — that would set RunAsUser=root.
+func defaultPodSecCtx(uid *int64) *corev1.PodSecurityContext {
 	isNonRoot := true
 	ctx := &corev1.PodSecurityContext{
 		RunAsNonRoot:   &isNonRoot,
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
-	if runAsUser > 0 {
-		ctx.RunAsUser = &runAsUser
+	if uid != nil {
+		ctx.RunAsUser = uid
 	}
 	return ctx
 }
+
+// podUID is a convenience helper to create an *int64 for defaultPodSecCtx.
+func podUID(uid int64) *int64 { return &uid }
 
 // defaultContainerSecCtx returns a SecurityContext satisfying the restricted
 // PodSecurity admission policy at the container level.
