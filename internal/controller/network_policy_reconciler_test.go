@@ -144,4 +144,66 @@ var _ = Describe("NetworkPolicyReconciler", func() {
 		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
 		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
 	})
+
+	It("creates a NetworkPolicy restricting agent ingress to the UI pod and monitoring only", func() {
+		// Regression test: the agent pod previously had no NetworkPolicy at all —
+		// any pod in the namespace (or with network access to the pod IP) could
+		// reach its WS/REST API on 8080, including the shared WS auth token
+		// embedded in the UI's nginx ConfigMap.
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
+
+		np := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      crName + "-agent-access",
+			Namespace: namespace,
+		}, np)).To(Succeed())
+
+		Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app", crName+"-openshift-sre-agent"))
+		Expect(np.Spec.PolicyTypes).To(ConsistOf(networkingv1.PolicyTypeIngress))
+
+		var sawUIPeer, sawMonitoringPeer bool
+		for _, rule := range np.Spec.Ingress {
+			for _, peer := range rule.From {
+				if peer.PodSelector != nil && peer.PodSelector.MatchLabels["app"] == crName+"-openshiftpulse" {
+					sawUIPeer = true
+				}
+				if peer.NamespaceSelector != nil &&
+					peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "openshift-user-workload-monitoring" {
+					sawMonitoringPeer = true
+				}
+			}
+		}
+		Expect(sawUIPeer).To(BeTrue(), "must allow ingress from the UI pod")
+		Expect(sawMonitoringPeer).To(BeTrue(), "must allow ingress from user-workload-monitoring for ServiceMonitor scrape")
+	})
+
+	It("agent NetworkPolicy does not open port 8080 to any pod other than the UI", func() {
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
+
+		np := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      crName + "-agent-access",
+			Namespace: namespace,
+		}, np)).To(Succeed())
+
+		for _, rule := range np.Spec.Ingress {
+			for _, peer := range rule.From {
+				if peer.PodSelector != nil {
+					Expect(peer.PodSelector.MatchLabels).To(HaveKeyWithValue("app", crName+"-openshiftpulse"),
+						"only the UI pod may be a pod-scoped ingress peer for the agent")
+				}
+			}
+		}
+	})
+
+	It("agent NetworkPolicy has an OwnerReference to the CR", func() {
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
+
+		np := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      crName + "-agent-access",
+			Namespace: namespace,
+		}, np)).To(Succeed())
+		Expect(np.GetOwnerReferences()).NotTo(BeEmpty())
+	})
 })

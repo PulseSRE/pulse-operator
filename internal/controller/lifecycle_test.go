@@ -158,6 +158,10 @@ var _ = Describe("OpenShiftPulseReconciler.Reconcile — full lifecycle", func()
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-openshiftpulse", Namespace: namespace}, uiNP)).To(Succeed())
 		mustHaveOwner(uiNP, crName, "UI NetworkPolicy")
 
+		agentNP := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-agent-access", Namespace: namespace}, agentNP)).To(Succeed())
+		mustHaveOwner(agentNP, crName, "agent NetworkPolicy")
+
 		pdb := &policyv1.PodDisruptionBudget{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-openshiftpulse", Namespace: namespace}, pdb)).To(Succeed())
 		mustHaveOwner(pdb, crName, "PodDisruptionBudget")

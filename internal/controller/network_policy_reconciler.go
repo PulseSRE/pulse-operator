@@ -13,15 +13,19 @@ import (
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
 
-// reconcileNetworkPolicies creates or updates two NetworkPolicies:
+// reconcileNetworkPolicies creates or updates three NetworkPolicies:
 //   - {name}-openshiftpulse: protects the UI pod
 //   - {name}-pg-access: protects PostgreSQL
+//   - {name}-agent-access: protects the agent pod
 func (r *OpenShiftPulseReconciler) reconcileNetworkPolicies(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
 	if err := r.reconcileUIPodNetworkPolicy(ctx, pulse); err != nil {
 		return fmt.Errorf("ui network policy: %w", err)
 	}
 	if err := r.reconcilePGNetworkPolicy(ctx, pulse); err != nil {
 		return fmt.Errorf("pg network policy: %w", err)
+	}
+	if err := r.reconcileAgentNetworkPolicy(ctx, pulse); err != nil {
+		return fmt.Errorf("agent network policy: %w", err)
 	}
 	return nil
 }
@@ -132,6 +136,78 @@ func (r *OpenShiftPulseReconciler) reconcilePGNetworkPolicy(ctx context.Context,
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
 		np.Spec.PodSelector = metav1.LabelSelector{
 			MatchLabels: map[string]string{"app": pgApp},
+		}
+		np.Spec.PolicyTypes = []networkingv1.PolicyType{
+			networkingv1.PolicyTypeIngress,
+		}
+		np.Spec.Ingress = ingress
+		return controllerutil.SetControllerReference(pulse, np, r.Scheme)
+	})
+	return err
+}
+
+// reconcileAgentNetworkPolicy restricts ingress to the agent pod (app:
+// {name}-openshift-sre-agent, port 8080) to only the callers that legitimately
+// reach it: the UI pod (nginx proxies /api/agent/ and the WebSocket endpoints
+// there — see ui_reconciler.go's nginx ConfigMap) and the user-workload-monitoring
+// namespace (the agent's ServiceMonitor — see monitoring_reconciler.go — scrapes
+// this same port). The agent's own outbound calls (to the MCP server via
+// PULSE_MCP_URL, PostgreSQL, the Kubernetes API, and the configured AI backend)
+// are all egress, not ingress, so this policy — like the PG one above — only
+// restricts PolicyTypeIngress and leaves egress unmanaged.
+//
+// Note: only the agent calls the MCP server (PULSE_MCP_URL is injected into the
+// agent's Deployment, never the reverse), so the MCP pod is not added as an
+// ingress peer here. The MCP server's own NetworkPolicy (restricting ingress to
+// the agent pod) is reconciled by MCPReconciler.
+func (r *OpenShiftPulseReconciler) reconcileAgentNetworkPolicy(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := pulse.Name + "-agent-access"
+	agentApp := pulse.Name + "-openshift-sre-agent"
+	uiApp := pulse.Name + "-openshiftpulse"
+
+	tcpProto := corev1.ProtocolTCP
+	port8080 := intstr.FromInt(8080)
+
+	ingress := []networkingv1.NetworkPolicyIngressRule{
+		{
+			From: []networkingv1.NetworkPolicyPeer{
+				{
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": uiApp},
+					},
+				},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcpProto, Port: &port8080},
+			},
+		},
+		// user-workload-monitoring scrape (see monitoring_reconciler.go's ServiceMonitor).
+		{
+			From: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": "openshift-user-workload-monitoring",
+						},
+					},
+				},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcpProto, Port: &port8080},
+			},
+		},
+	}
+
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: pulse.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+		np.Spec.PodSelector = metav1.LabelSelector{
+			MatchLabels: map[string]string{"app": agentApp},
 		}
 		np.Spec.PolicyTypes = []networkingv1.PolicyType{
 			networkingv1.PolicyTypeIngress,
