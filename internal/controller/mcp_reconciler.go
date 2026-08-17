@@ -20,7 +20,7 @@ import (
 
 const (
 	defaultMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
-	mcpServerPort         = int32(8001)
+	mcpServerPort         = int32(8081)
 )
 
 // MCPServiceURL returns the in-cluster URL of the MCP server for injection into the agent.
