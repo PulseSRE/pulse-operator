@@ -614,7 +614,7 @@ func (r *AgentReconciler) reconcileService(ctx context.Context, cr *pulsev1alpha
 		// The ServiceMonitor's selector matches on this Service's own labels
 		// (not the pod selector below) — without this, Prometheus discovers
 		// the Service but silently drops it as a scrape target.
-		svc.ObjectMeta.Labels = map[string]string{"app": name}
+		svc.Labels = map[string]string{"app": name}
 		svc.Spec.Type = corev1.ServiceTypeClusterIP
 		svc.Spec.Selector = map[string]string{"app": name}
 		svc.Spec.Ports = []corev1.ServicePort{
