@@ -28,9 +28,14 @@ jobs:
           fi
       - run: go vet ./...
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+        # golangci-lint-action's "latest" resolves to a prebuilt binary that can
+        # lag behind the newest Go releases (v1.64.8 refuses to run against a
+        # go.mod targeting a newer Go than it was itself built with — hit this
+        # exact failure with go.mod's go 1.26.0). go install always builds
+        # against the runner's own (matching) Go toolchain instead.
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          $(go env GOPATH)/bin/golangci-lint run ./...
 
   rbac-and-crd-sync:
     runs-on: ubuntu-latest
