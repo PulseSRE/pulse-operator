@@ -86,7 +86,24 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 	existing := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: secretName}, existing)
 	if err == nil {
-		// Already exists — return stored password without overwriting.
+		// Already exists — return stored password. Migrate stale key names in-place
+		// so the StatefulSet picks up the correct POSTGRESQL_* env vars on next restart.
+		if _, ok := existing.Data["POSTGRESQL_PASSWORD"]; ok {
+			return string(existing.Data["POSTGRESQL_PASSWORD"]), nil
+		}
+		// Legacy secret has POSTGRES_* keys — migrate to POSTGRESQL_* without rotating password.
+		if pw, ok := existing.Data["POSTGRES_PASSWORD"]; ok {
+			existing.Data["POSTGRESQL_USER"] = existing.Data["POSTGRES_USER"]
+			existing.Data["POSTGRESQL_PASSWORD"] = pw
+			existing.Data["POSTGRESQL_DATABASE"] = existing.Data["POSTGRES_DB"]
+			delete(existing.Data, "POSTGRES_USER")
+			delete(existing.Data, "POSTGRES_PASSWORD")
+			delete(existing.Data, "POSTGRES_DB")
+			if updateErr := r.Update(ctx, existing); updateErr != nil {
+				return "", fmt.Errorf("migrate pg-auth secret keys: %w", updateErr)
+			}
+			return string(pw), nil
+		}
 		return string(existing.Data["POSTGRESQL_PASSWORD"]), nil
 	}
 	if !errors.IsNotFound(err) {
