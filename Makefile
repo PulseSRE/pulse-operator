@@ -74,3 +74,9 @@ deploy: ## Deploy operator to cluster (requires kubectl/oc and cluster access)
 undeploy: ## Remove operator from cluster
 	oc delete -f deploy/operator.yaml --ignore-not-found=true
 	oc delete -f config/crd/bases/pulse.ai_openshiftpulses.yaml --ignore-not-found=true
+
+.PHONY: setup-envtest
+setup-envtest: ## Install envtest binaries for local test runs
+	go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+	@echo "Run: export KUBEBUILDER_ASSETS=\$$(setup-envtest use 1.31 -p path)"
+	@echo "Then: make test"
