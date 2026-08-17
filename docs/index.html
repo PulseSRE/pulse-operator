@@ -350,6 +350,157 @@
 
   <div class="neon-divider"></div>
 
+  <!-- ── Full CR Spec ── -->
+  <section class="section">
+    <h2>// FULL CR SPEC</h2>
+    <p class="subtitle">Every field. All defaults. Copy-paste ready.</p>
+    <div class="code-block">
+<span class="key">apiVersion:</span> <span class="val">pulse.ai/v1alpha1</span>
+<span class="key">kind:</span> <span class="val">OpenShiftPulse</span>
+<span class="key">metadata:</span>
+  <span class="key">name:</span> <span class="val">pulse</span>
+  <span class="key">namespace:</span> <span class="val">openshiftpulse</span>
+<span class="key">spec:</span>
+
+  <span class="comment"># ── AI Backend — pick one ────────────────────────────────────────────</span>
+
+  <span class="key">vertexAI:</span>
+    <span class="key">projectId:</span> <span class="val">my-gcp-project</span>      <span class="comment"># GCP project ID</span>
+    <span class="key">region:</span> <span class="val">us-east5</span>              <span class="comment"># Vertex AI region</span>
+    <span class="key">credentialSecret:</span> <span class="val">gcp-sa-key</span>  <span class="comment"># Secret with key.json</span>
+
+  <span class="comment"># anthropicApiKey:              # alternative to vertexAI</span>
+  <span class="comment">#   existingSecret: anthropic-api-key  # Secret with ANTHROPIC_API_KEY</span>
+
+  <span class="comment"># ── Agent ────────────────────────────────────────────────────────────</span>
+
+  <span class="key">agent:</span>
+    <span class="key">image:</span> <span class="val">quay.io/amobrem/pulse-agent:latest</span>
+    <span class="key">trustLevel:</span> <span class="val">2</span>               <span class="comment"># 0=observe 1=suggest 2=confirm 3=auto-safe 4=autonomous</span>
+    <span class="key">allowWriteOperations:</span> <span class="val">false</span> <span class="comment"># add delete(pods), patch(deploy) to ClusterRole</span>
+    <span class="key">allowSecretAccess:</span> <span class="val">false</span>    <span class="comment"># add get/list/watch(secrets) to ClusterRole</span>
+    <span class="key">resources:</span>                   <span class="comment"># corev1.ResourceRequirements</span>
+      <span class="key">requests:</span>
+        <span class="key">cpu:</span> <span class="val">100m</span>
+        <span class="key">memory:</span> <span class="val">256Mi</span>
+    <span class="key">mcp:</span>
+      <span class="key">enabled:</span> <span class="val">false</span>             <span class="comment"># deploy MCP server sidecar for tool extension</span>
+
+  <span class="comment"># ── UI ───────────────────────────────────────────────────────────────</span>
+
+  <span class="key">ui:</span>
+    <span class="key">image:</span> <span class="val">quay.io/amobrem/openshiftpulse:latest</span>
+    <span class="key">replicas:</span> <span class="val">2</span>
+    <span class="key">oauthProxyImage:</span> <span class="val">""</span>          <span class="comment"># auto-detected from cluster ImageStream when empty</span>
+    <span class="key">resources:</span> <span class="val">{}</span>
+
+  <span class="comment"># ── Database ─────────────────────────────────────────────────────────</span>
+
+  <span class="key">database:</span>
+    <span class="key">storageSize:</span> <span class="val">5Gi</span>             <span class="comment"># PVC size — cannot shrink after creation</span>
+    <span class="key">storageClass:</span> <span class="val">""</span>             <span class="comment"># cluster default if empty</span>
+    <span class="key">image:</span> <span class="val">""</span>                    <span class="comment"># UBI9 postgresql-15 if empty</span>
+
+  <span class="comment"># ── Monitoring ───────────────────────────────────────────────────────</span>
+
+  <span class="key">monitoring:</span>
+    <span class="key">enabled:</span> <span class="val">true</span>               <span class="comment"># ServiceMonitor + PrometheusRule alerts</span>
+    </div>
+  </section>
+
+  <div class="neon-divider"></div>
+
+  <!-- ── CR Status ── -->
+  <section class="section">
+    <h2>// CR STATUS</h2>
+    <p class="subtitle">Watch the operator bring up the stack.</p>
+    <div class="code-block" style="margin-bottom: 16px;">
+<span class="comment"># Watch real-time</span>
+<span class="cmd">oc get openshiftpulse pulse -n openshiftpulse -w</span>
+
+NAME    PHASE        AGENTHEALTHY   DBREADY   UIAVAILABLE   ROUTEHOST
+pulse   Installing   false          false     false
+pulse   Installing   false          true      false
+pulse   Installing   true           true      false
+pulse   Running      true           true      true          pulse-openshiftpulse.apps.cluster.example.com
+    </div>
+    <div class="code-block">
+<span class="key">status:</span>
+  <span class="key">phase:</span> <span class="val">Running</span>               <span class="comment"># Pending | Installing | Running | Degraded</span>
+  <span class="key">agentHealthy:</span> <span class="val">true</span>           <span class="comment"># agent Deployment has ≥1 ready replica</span>
+  <span class="key">databaseReady:</span> <span class="val">true</span>          <span class="comment"># PostgreSQL StatefulSet has ≥1 ready replica</span>
+  <span class="key">uiAvailable:</span> <span class="val">true</span>            <span class="comment"># Route hostname assigned by OCP router</span>
+  <span class="key">routeHost:</span> <span class="val">pulse-openshiftpulse.apps.cluster.example.com</span>
+  <span class="key">observedGeneration:</span> <span class="val">3</span>
+  <span class="key">conditions:</span>
+  - <span class="key">type:</span> <span class="val">Ready</span>
+    <span class="key">status:</span> <span class="val">"True"</span>
+    <span class="key">reason:</span> <span class="val">AllComponentsReady</span>
+    <span class="key">observedGeneration:</span> <span class="val">3</span>
+    </div>
+  </section>
+
+  <div class="neon-divider"></div>
+
+  <!-- ── Examples ── -->
+  <section class="section">
+    <h2>// EXAMPLE CONFIGURATIONS</h2>
+    <p class="subtitle">Copy-paste starting points for common scenarios.</p>
+
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 12px; font-family: 'JetBrains Mono', monospace;">// MINIMAL — Anthropic API key</p>
+    <div class="code-block" style="margin-bottom: 20px;">
+<span class="key">spec:</span>
+  <span class="key">anthropicApiKey:</span>
+    <span class="key">existingSecret:</span> <span class="val">anthropic-api-key</span>
+  <span class="key">agent:</span>
+    <span class="key">image:</span> <span class="val">quay.io/amobrem/pulse-agent:latest</span>
+    <span class="key">trustLevel:</span> <span class="val">2</span>
+    </div>
+
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 12px; font-family: 'JetBrains Mono', monospace;">// FULL — MCP + write operations + custom resources</p>
+    <div class="code-block" style="margin-bottom: 20px;">
+<span class="key">spec:</span>
+  <span class="key">vertexAI:</span>
+    <span class="key">projectId:</span> <span class="val">my-gcp-project</span>
+    <span class="key">region:</span> <span class="val">us-east5</span>
+    <span class="key">credentialSecret:</span> <span class="val">gcp-sa-key</span>
+  <span class="key">agent:</span>
+    <span class="key">image:</span> <span class="val">quay.io/amobrem/pulse-agent:latest</span>
+    <span class="key">trustLevel:</span> <span class="val">3</span>
+    <span class="key">allowWriteOperations:</span> <span class="val">true</span>
+    <span class="key">allowSecretAccess:</span> <span class="val">true</span>
+    <span class="key">mcp:</span>
+      <span class="key">enabled:</span> <span class="val">true</span>
+    <span class="key">resources:</span>
+      <span class="key">requests:</span>
+        <span class="key">cpu:</span> <span class="val">200m</span>
+        <span class="key">memory:</span> <span class="val">512Mi</span>
+      <span class="key">limits:</span>
+        <span class="key">cpu:</span> <span class="val">1</span>
+        <span class="key">memory:</span> <span class="val">1Gi</span>
+  <span class="key">ui:</span>
+    <span class="key">image:</span> <span class="val">quay.io/amobrem/openshiftpulse:latest</span>
+    <span class="key">replicas:</span> <span class="val">3</span>
+  <span class="key">database:</span>
+    <span class="key">storageSize:</span> <span class="val">20Gi</span>
+    <span class="key">storageClass:</span> <span class="val">gp3-csi</span>
+  <span class="key">monitoring:</span>
+    <span class="key">enabled:</span> <span class="val">true</span>
+    </div>
+
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 12px; font-family: 'JetBrains Mono', monospace;">// UNINSTALL — CR deletion triggers finalizer cleanup</p>
+    <div class="code-block">
+<span class="comment"># Delete CR — finalizer removes ClusterRoles + OAuthClient</span>
+<span class="cmd">oc delete openshiftpulse pulse -n openshiftpulse</span>
+<span class="cmd">oc delete namespace openshiftpulse</span>
+
+<span class="comment"># PostgreSQL PVCs are RETAINED — data survives operator deletion</span>
+<span class="comment"># Re-create the CR to reattach to existing data</span>
+    </div>
+  </section>
+
+  <div class="neon-divider"></div>
+
   <!-- ── Related repos ── -->
   <section class="section">
     <h2>// RELATED</h2>
