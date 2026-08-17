@@ -89,7 +89,6 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 							SecurityContext: defaultContainerSecCtx(),
 							Args: []string{
 								fmt.Sprintf("--port=%d", mcpServerPort),
-								fmt.Sprintf("--namespace=%s", pulse.Namespace),
 							},
 							Ports: []corev1.ContainerPort{
 								{
