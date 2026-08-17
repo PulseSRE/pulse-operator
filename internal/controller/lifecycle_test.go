@@ -217,6 +217,7 @@ var _ = Describe("OpenShiftPulseReconciler.Reconcile — full lifecycle", func()
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName)}, &rbacv1.ClusterRole{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName) + "-auth-delegator"}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 
 		oac := &unstructured.Unstructured{}
 		oac.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})

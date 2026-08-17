@@ -79,6 +79,7 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(crName)}})
 		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(crName)}})
 		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(crName)}})
+		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(crName) + "-auth-delegator"}})
 		oac := &unstructured.Unstructured{}
 		oac.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
 		oac.SetName(oauthClientName(crName, namespace))
@@ -91,7 +92,7 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 	})
 
 	It("attempts every deletion and aggregates errors — one failure does not block the rest", func() {
-		// Pre-create all five cluster-scoped resources the finalizer is
+		// Pre-create all six cluster-scoped resources the finalizer is
 		// responsible for, so every Delete call in deleteClusterScopedResources
 		// hits a real object instead of NotFound.
 		agentCR := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(crName)}}
@@ -113,6 +114,13 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: uiResourceName(crName), Namespace: namespace}},
 		}
 		Expect(k8sClient.Create(ctx, uiCRB)).To(Succeed())
+
+		authDelegatorCRB := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(crName) + "-auth-delegator"},
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "system:auth-delegator"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: uiResourceName(crName), Namespace: namespace}},
+		}
+		Expect(k8sClient.Create(ctx, authDelegatorCRB)).To(Succeed())
 
 		oac := &unstructured.Unstructured{}
 		oac.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
@@ -143,17 +151,19 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 
 		By("every resource's Delete was attempted, not just the first")
 		Expect(failingClient.deleteCalls).To(ConsistOf(
-			agentResourceName(crName), // agent ClusterRole — fails
-			uiClusterRoleName(crName), // UI ClusterRole
-			agentResourceName(crName), // agent ClusterRoleBinding
-			uiClusterRoleName(crName), // UI ClusterRoleBinding
+			agentResourceName(crName),                   // agent ClusterRole — fails
+			uiClusterRoleName(crName),                   // UI ClusterRole
+			agentResourceName(crName),                   // agent ClusterRoleBinding
+			uiClusterRoleName(crName),                   // UI ClusterRoleBinding
+			uiClusterRoleName(crName)+"-auth-delegator", // UI auth-delegator ClusterRoleBinding
 			oauthClientName(crName, namespace),
 		))
 
-		By("the four resources that did not fail were actually deleted")
+		By("the five resources that did not fail were actually deleted")
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName)}, &rbacv1.ClusterRole{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName) + "-auth-delegator"}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		freshOAC := &unstructured.Unstructured{}
 		freshOAC.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: oauthClientName(crName, namespace)}, freshOAC))).To(BeTrue())
