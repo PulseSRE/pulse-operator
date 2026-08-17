@@ -56,7 +56,7 @@ var _ = Describe("UIReconciler", func() {
 	})
 
 	It("reconcileUI creates the nginx ConfigMap", func() {
-		err := uiReconciler.reconcileUINginxConfigMap(ctx, cr)
+		_, err := uiReconciler.reconcileUINginxConfigMap(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
 		cm := &corev1.ConfigMap{}

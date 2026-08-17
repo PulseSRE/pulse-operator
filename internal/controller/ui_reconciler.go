@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"time"
@@ -99,16 +100,21 @@ func (r *UIReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.Ope
 		{"ClusterRole", r.reconcileUIClusterRole},
 		{"ClusterRoleBinding", r.reconcileUIClusterRoleBinding},
 		{"OAuthSecrets", r.reconcileUIOAuthSecrets},
-		{"NginxConfigMap", r.reconcileUINginxConfigMap},
-		// Service must come before Deployment: the serving-cert annotation on the
-		// Service triggers OCP to create the TLS Secret the Deployment mounts.
 		{"Service", r.reconcileUIService},
-		{"Deployment", r.reconcileUIDeployment},
 	} {
 		if err := s.fn(ctx, pulse); err != nil {
 			logger.Error(err, "UI reconcile step failed", "step", s.name)
 			return ctrl.Result{}, fmt.Errorf("UI/%s: %w", s.name, err)
 		}
+	}
+
+	// NginxConfigMap before Deployment: the hash drives automatic rollout when config changes.
+	nginxHash, err := r.reconcileUINginxConfigMap(ctx, pulse)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("UI/NginxConfigMap: %w", err)
+	}
+	if err := r.reconcileUIDeployment(ctx, pulse, info, nginxHash); err != nil {
+		return ctrl.Result{}, fmt.Errorf("UI/Deployment: %w", err)
 	}
 
 	// Route must be created before OAuthClient — OCP assigns the hostname asynchronously.
@@ -369,18 +375,35 @@ func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulse
 }
 
 // e. ConfigMap — nginx.conf for the openshiftpulse SPA container.
-func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+// reconcileUINginxConfigMap creates/updates the nginx ConfigMap and returns a
+// short hash of the config content so callers can embed it as a Deployment
+// pod-template annotation — Kubernetes then rolls out new pods automatically
+// whenever the nginx config changes (subPath mounts never live-update).
+func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
 	name := uiNginxConfigMapName(pulse.Name)
 
 	nginxConf := `worker_processes auto;
 events { worker_connections 1024; }
 http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
   server {
     listen 8080;
     root /opt/app-root/src;
     index index.html;
-    location / { try_files $uri $uri/ /index.html; }
+    # Serve static assets directly; fall back to SPA index for unmatched paths.
+    location ~* \.(js|css|png|svg|ico|woff2?|ttf|eot|map)$ {
+      try_files $uri =404;
+      expires 1y;
+      add_header Cache-Control "public, immutable";
+    }
+    # Runtime config injected by the operator (agent URL, WS token, etc.)
+    location = /config.js {
+      add_header Content-Type application/javascript;
+      return 200 'window.__PULSE_CONFIG__={};';
+    }
     location /healthz { return 200 'OK\n'; add_header Content-Type text/plain; }
+    location / { try_files $uri $uri/ /index.html; }
   }
 }
 `
@@ -391,6 +414,8 @@ http {
 		},
 	}
 
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(nginxConf)))[:8]
+
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		if err := controllerutil.SetControllerReference(pulse, cm, r.Scheme); err != nil {
 			return err
@@ -400,11 +425,11 @@ http {
 		}
 		return nil
 	})
-	return err
+	return hash, err
 }
 
 // f. Deployment — openshiftpulse (nginx) + oauth-proxy sidecar.
-func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo, nginxHash string) error {
 	name := uiResourceName(pulse.Name)
 
 	replicas := pulse.Spec.UI.Replicas
@@ -421,7 +446,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 	maxUnavailable := intstr.FromInt(0)
 
 	uiImage := resolvedUIImage(pulse)
-	oauthImage := resolvedOAuthProxyImage(pulse, DetectClusterInfo(ctx, r.Client))
+	oauthImage := resolvedOAuthProxyImage(pulse, info)
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -447,7 +472,8 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 		}
 		deploy.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
-				Labels: map[string]string{"app": name},
+				Labels:      map[string]string{"app": name},
+				Annotations: map[string]string{"pulse.ai/nginx-config-hash": nginxHash},
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: saName,
