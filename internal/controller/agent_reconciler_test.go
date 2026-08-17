@@ -167,6 +167,23 @@ var _ = Describe("AgentReconciler", func() {
 		Expect(string(secret2.Data["token"])).To(Equal(token1))
 	})
 
+	It("agent Service carries an app label matching the ServiceMonitor selector", func() {
+		// Regression: the ServiceMonitor's spec.selector.matchLabels matches
+		// against this Service's own labels (not its spec.selector, which only
+		// targets pods). Without this label Prometheus discovers the Service
+		// but silently drops it, and metrics scraping never happens.
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      agentResourceName(crName),
+			Namespace: namespace,
+		}, svc)).To(Succeed())
+		Expect(svc.Labels).To(HaveKeyWithValue("app", agentResourceName(crName)))
+	})
+
 	It("Deployment is created even while memory PVC is Pending (WaitForFirstConsumer)", func() {
 		// With WaitForFirstConsumer storage classes, the PVC only binds once a pod
 		// is scheduled. The gate (requeue until Bound) created a deadlock — removed.
