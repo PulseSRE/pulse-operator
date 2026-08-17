@@ -383,18 +383,25 @@ func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulse
 	existing := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pulse.Namespace}, existing)
 	if err == nil {
-		// Validate the cookie-secret format: must be exactly 32 printable ASCII bytes
-		// (base64 of 24 random bytes). Raw bytes or 44-char base64 break AES when
-		// --pass-access-token=true is set. Delete and recreate on format mismatch.
-		if cookie := existing.Data["cookie-secret"]; !isValidCookieSecret(cookie) {
-			if delErr := r.Delete(ctx, existing); delErr != nil && !apierrors.IsNotFound(delErr) {
-				return fmt.Errorf("delete malformed cookie-secret: %w", delErr)
-			}
-			// Fall through to creation below.
-		} else {
+		if isValidCookieSecret(existing.Data["cookie-secret"]) {
 			return nil // preserve valid secret
 		}
-	} else if !apierrors.IsNotFound(err) {
+		// Cookie-secret is malformed (raw bytes, or 44-byte base64 from an older
+		// operator version). Patch just that key in place rather than deleting
+		// and recreating the whole Secret — client-secret must stay untouched
+		// here, or fixing an unrelated cookie-secret format bug would silently
+		// rotate it too and invalidate the OAuthClient's live grant for no reason.
+		newCookie, genErr := generateCookieSecret()
+		if genErr != nil {
+			return fmt.Errorf("generate cookie-secret: %w", genErr)
+		}
+		if existing.Data == nil {
+			existing.Data = map[string][]byte{}
+		}
+		existing.Data["cookie-secret"] = []byte(newCookie)
+		return r.Update(ctx, existing)
+	}
+	if !apierrors.IsNotFound(err) {
 		return err
 	}
 
@@ -404,7 +411,7 @@ func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulse
 		return fmt.Errorf("generate client-secret: %w", err)
 	}
 
-	// cookie-secret: base64(32 random bytes) as expected by oauth-proxy.
+	// cookie-secret: base64(24 random bytes) = 32 printable chars, as generateCookieSecret documents.
 	cookieSecret, err := generateCookieSecret()
 	if err != nil {
 		return fmt.Errorf("generate cookie-secret: %w", err)
@@ -669,6 +676,21 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							// Forward the user's OAuth token so nginx can proxy /api/kubernetes/.
 							// Requires cookie-secret to be exactly 16/24/32 bytes (AES key).
 							"--pass-access-token=true",
+							// oauth-proxy's default scope is "user:info user:check-access"
+							// (providers/openshift/provider.go — unconditional, not raised by
+							// any client mode). That scope can authenticate a user and answer
+							// "can this user do X" SubjectAccessReview checks, but a token
+							// scoped to it is rejected by the Kubernetes API for general
+							// resource reads — which is exactly what --pass-access-token above
+							// forwards the token for (nginx proxies /api/kubernetes/ using it
+							// as a Bearer token). Without an explicit user:full request here,
+							// that proxy path 403s and resources silently fail to load in the
+							// UI — the same symptom the very first oauth-proxy fix in this
+							// chain was written to resolve. SA-implicit OAuth clients can never
+							// be granted user:full at all (OpenShift restricts SA-derived
+							// clients to user:info/user:check-access/role:*), so this was not
+							// safely addable until the explicit-OAuthClient switch above.
+							"--scope=user:full",
 							"--cookie-expire=168h",
 						},
 						VolumeMounts: []corev1.VolumeMount{
