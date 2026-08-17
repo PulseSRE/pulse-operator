@@ -8,6 +8,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -143,6 +145,68 @@ var _ = Describe("MCPReconciler", func() {
 				Name:      mcpResourceName(crName),
 				Namespace: namespace,
 			}, svc)).To(Succeed())
+		})
+
+		// Regression: the Deployment used to set no ServiceAccountName at all,
+		// so the pod ran as the namespace's implicit "default" SA — normally
+		// zero permissions — even though its configured toolsets need real
+		// cluster read access.
+		It("Deployment runs as its own dedicated ServiceAccount, not the namespace default", func() {
+			Expect(mcp.reconcileMCP(ctx, cr, nil)).To(Succeed())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpResourceName(crName),
+				Namespace: namespace,
+			}, deploy)).To(Succeed())
+
+			saName := deploy.Spec.Template.Spec.ServiceAccountName
+			Expect(saName).NotTo(BeEmpty())
+			Expect(saName).NotTo(Equal("default"))
+			Expect(saName).To(Equal(mcpResourceName(crName)))
+
+			sa := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: saName, Namespace: namespace}, sa)).To(Succeed())
+		})
+
+		It("creates a ClusterRole and ClusterRoleBinding granting the MCP ServiceAccount read access", func() {
+			Expect(mcp.reconcileMCP(ctx, cr, nil)).To(Succeed())
+
+			cr2 := &rbacv1.ClusterRole{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpResourceName(crName)}, cr2)).To(Succeed())
+			Expect(cr2.Rules).NotTo(BeEmpty())
+			for _, rule := range cr2.Rules {
+				for _, verb := range rule.Verbs {
+					Expect(verb).To(BeElementOf("get", "list", "watch"),
+						"MCP's ClusterRole must stay strictly read-only")
+				}
+			}
+
+			crb := &rbacv1.ClusterRoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpResourceName(crName)}, crb)).To(Succeed())
+			Expect(crb.RoleRef.Name).To(Equal(mcpResourceName(crName)))
+			Expect(crb.Subjects).To(ConsistOf(rbacv1.Subject{
+				Kind:      "ServiceAccount",
+				Name:      mcpResourceName(crName),
+				Namespace: namespace,
+			}))
+		})
+
+		It("creates a NetworkPolicy restricting ingress to the agent pod only", func() {
+			Expect(mcp.reconcileMCP(ctx, cr, nil)).To(Succeed())
+
+			np := &networkingv1.NetworkPolicy{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpResourceName(crName),
+				Namespace: namespace,
+			}, np)).To(Succeed())
+
+			Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app", mcpResourceName(crName)))
+			Expect(np.Spec.Ingress).To(HaveLen(1))
+			Expect(np.Spec.Ingress[0].From).To(HaveLen(1))
+			Expect(np.Spec.Ingress[0].From[0].PodSelector.MatchLabels).To(
+				HaveKeyWithValue("app", crName+"-openshift-sre-agent"),
+				"only the agent pod (the sole caller of PULSE_MCP_URL) may reach the MCP server")
 		})
 	})
 })

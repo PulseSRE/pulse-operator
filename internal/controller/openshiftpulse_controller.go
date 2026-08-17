@@ -236,6 +236,11 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 	// orphan risk as the two bindings above: cluster-scoped, can't carry an
 	// OwnerReference to a namespaced CR, so it must be cleaned up here too.
 	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name) + "-auth-delegator"}}, "UI auth-delegator ClusterRoleBinding")
+	// MCP server's ClusterRole/ClusterRoleBinding — same orphan risk: cluster-scoped,
+	// reconciled unconditionally on delete regardless of whether MCP is (or ever
+	// was) enabled, matching the pattern of the other cluster-scoped resources here.
+	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(pulse.Name)}}, "MCP ClusterRole")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(pulse.Name)}}, "MCP ClusterRoleBinding")
 
 	// OAuthClient — cluster-scoped OpenShift resource; use unstructured because the
 	// oauth.openshift.io API group is not registered in the controller-runtime scheme.

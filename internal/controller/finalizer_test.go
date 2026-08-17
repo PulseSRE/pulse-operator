@@ -80,6 +80,8 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(crName)}})
 		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(crName)}})
 		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(crName) + "-auth-delegator"}})
+		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(crName)}})
+		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(crName)}})
 		oac := &unstructured.Unstructured{}
 		oac.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
 		oac.SetName(oauthClientName(crName, namespace))
@@ -92,7 +94,7 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 	})
 
 	It("attempts every deletion and aggregates errors — one failure does not block the rest", func() {
-		// Pre-create all six cluster-scoped resources the finalizer is
+		// Pre-create all eight cluster-scoped resources the finalizer is
 		// responsible for, so every Delete call in deleteClusterScopedResources
 		// hits a real object instead of NotFound.
 		agentCR := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(crName)}}
@@ -121,6 +123,16 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: uiResourceName(crName), Namespace: namespace}},
 		}
 		Expect(k8sClient.Create(ctx, authDelegatorCRB)).To(Succeed())
+
+		mcpCR := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(crName)}}
+		Expect(k8sClient.Create(ctx, mcpCR)).To(Succeed())
+
+		mcpCRB := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(crName)},
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: mcpResourceName(crName)},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: mcpResourceName(crName), Namespace: namespace}},
+		}
+		Expect(k8sClient.Create(ctx, mcpCRB)).To(Succeed())
 
 		oac := &unstructured.Unstructured{}
 		oac.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
@@ -156,14 +168,18 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 			agentResourceName(crName),                   // agent ClusterRoleBinding
 			uiClusterRoleName(crName),                   // UI ClusterRoleBinding
 			uiClusterRoleName(crName)+"-auth-delegator", // UI auth-delegator ClusterRoleBinding
+			mcpResourceName(crName),                     // MCP ClusterRole
+			mcpResourceName(crName),                     // MCP ClusterRoleBinding
 			oauthClientName(crName, namespace),
 		))
 
-		By("the five resources that did not fail were actually deleted")
+		By("the resources that did not fail were actually deleted")
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName)}, &rbacv1.ClusterRole{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(crName) + "-auth-delegator"}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: mcpResourceName(crName)}, &rbacv1.ClusterRole{}))).To(BeTrue())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: mcpResourceName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		freshOAC := &unstructured.Unstructured{}
 		freshOAC.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: oauthClientName(crName, namespace)}, freshOAC))).To(BeTrue())
