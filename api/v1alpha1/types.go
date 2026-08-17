@@ -25,11 +25,24 @@ type OpenShiftPulseSpec struct {
 	// +optional
 	AnthropicAPIKey *APIKeyConfig `json:"anthropicApiKey,omitempty"`
 	Agent           AgentConfig   `json:"agent"`
+	// UI, Database, and Monitoring below all carry a kubebuilder default of an
+	// empty object, on top of +optional. CRD structural-schema defaulting only
+	// applies a child field's own default (e.g. database.storageSize) when the
+	// parent object is itself present in the submitted object. A client that
+	// omits the whole ui/database/monitoring key (as any author who never
+	// wrote that section would) gets a Go zero-value struct with none of the
+	// child defaults applied, silently disabling e.g. the agent's database
+	// wiring even though PostgreSQL is provisioned unconditionally. The
+	// empty-object default makes the API server synthesize the parent so its
+	// children's own defaults can fire.
 	// +optional
+	// +kubebuilder:default={}
 	UI UIConfig `json:"ui,omitempty"`
 	// +optional
+	// +kubebuilder:default={}
 	Database DatabaseConfig `json:"database,omitempty"`
 	// +optional
+	// +kubebuilder:default={}
 	Monitoring MonitoringConfig `json:"monitoring,omitempty"`
 }
 
