@@ -6,6 +6,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,7 +37,8 @@ func MCPServiceURL(name, ns string) string {
 	return fmt.Sprintf("http://%s-mcp-server:%d", name, mcpServerPort)
 }
 
-// mcpResourceName returns the MCP server Deployment/Service name for a given CR name.
+// mcpResourceName returns the MCP server Deployment/Service/ServiceAccount/
+// ClusterRole/ClusterRoleBinding name for a given CR name.
 func mcpResourceName(crName string) string {
 	return crName + "-mcp-server"
 }
@@ -59,13 +62,162 @@ func (r *MCPReconciler) reconcileMCP(ctx context.Context, pulse *pulsev1alpha1.O
 	logger := log.FromContext(ctx)
 	logger.Info("Reconciling MCP server resources", "name", pulse.Name, "namespace", pulse.Namespace)
 
+	// RBAC before the Deployment: the ServiceAccount must exist before it can
+	// be referenced by Spec.Template.Spec.ServiceAccountName.
+	if err := r.reconcileMCPServiceAccount(ctx, pulse); err != nil {
+		return fmt.Errorf("MCP ServiceAccount: %w", err)
+	}
+	if err := r.reconcileMCPClusterRole(ctx, pulse); err != nil {
+		return fmt.Errorf("MCP ClusterRole: %w", err)
+	}
+	if err := r.reconcileMCPClusterRoleBinding(ctx, pulse); err != nil {
+		return fmt.Errorf("MCP ClusterRoleBinding: %w", err)
+	}
 	if err := r.reconcileMCPDeployment(ctx, pulse); err != nil {
 		return fmt.Errorf("MCP Deployment: %w", err)
 	}
 	if err := r.reconcileMCPService(ctx, pulse); err != nil {
 		return fmt.Errorf("MCP Service: %w", err)
 	}
+	if err := r.reconcileMCPNetworkPolicy(ctx, pulse); err != nil {
+		return fmt.Errorf("MCP NetworkPolicy: %w", err)
+	}
 	return nil
+}
+
+// reconcileMCPServiceAccount creates the dedicated ServiceAccount the MCP server
+// runs as. Without this, the Deployment ran as the namespace's implicit
+// "default" ServiceAccount, which normally carries zero permissions — leaving
+// its cluster-diagnostics/observability/openshift toolsets unable to read
+// anything even though they were configured and enabled.
+func (r *MCPReconciler) reconcileMCPServiceAccount(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := mcpResourceName(pulse.Name)
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		return controllerutil.SetControllerReference(pulse, sa, r.Scheme)
+	})
+	return err
+}
+
+// reconcileMCPClusterRole grants the MCP server's ServiceAccount the read-only
+// cluster access its toolsets need (cluster-diagnostics, observability/*,
+// openshift, etc. — see defaultMCPToolsets). Rules are a read-only extension
+// of AgentReconciler.reconcileClusterRole's set (which the MCP toolsets
+// overlap heavily with for cluster-diagnostics/observability) plus the
+// OpenShift platform resources (routes, clusteroperators, clusterversions)
+// the "openshift" toolset needs, which the agent's role does not carry.
+func (r *MCPReconciler) reconcileMCPClusterRole(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := mcpResourceName(pulse.Name)
+	rules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{""},
+			Resources: []string{
+				"pods", "pods/log", "nodes", "events",
+				"services", "namespaces", "configmaps",
+				"persistentvolumeclaims", "resourcequotas",
+				"serviceaccounts", "endpoints", "limitranges",
+			},
+			Verbs: []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments", "replicasets", "statefulsets", "daemonsets"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"batch"},
+			Resources: []string{"jobs", "cronjobs"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"metrics.k8s.io"},
+			Resources: []string{"nodes", "pods"},
+			Verbs:     []string{"get", "list"},
+		},
+		{
+			APIGroups: []string{"route.openshift.io"},
+			Resources: []string{"routes"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"config.openshift.io"},
+			Resources: []string{"clusterversions", "clusteroperators"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+	}
+
+	desired := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, desired, func() error {
+		desired.Annotations = clusterScopedAnnotations(pulse)
+		desired.Rules = rules
+		return nil
+	})
+	return err
+}
+
+// reconcileMCPClusterRoleBinding binds the MCP ServiceAccount to its ClusterRole.
+func (r *MCPReconciler) reconcileMCPClusterRoleBinding(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := mcpResourceName(pulse.Name)
+	desired := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, desired, func() error {
+		desired.Annotations = clusterScopedAnnotations(pulse)
+		desired.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      name,
+			Namespace: pulse.Namespace,
+		}}
+		// RoleRef is immutable — set only on creation.
+		if desired.RoleRef.Name == "" {
+			desired.RoleRef = rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name,
+			}
+		}
+		return nil
+	})
+	return err
+}
+
+// reconcileMCPNetworkPolicy restricts ingress to the MCP server pod (port
+// mcpServerPort) to only the agent pod — the sole caller, via PULSE_MCP_URL
+// (see MCPServiceURL and AgentReconciler.buildDeploymentSpec). Referenced by
+// the comment on reconcileAgentNetworkPolicy in network_policy_reconciler.go.
+func (r *MCPReconciler) reconcileMCPNetworkPolicy(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := mcpResourceName(pulse.Name)
+	mcpApp := name
+	agentApp := pulse.Name + "-openshift-sre-agent"
+
+	tcpProto := corev1.ProtocolTCP
+	port := intstr.FromInt(int(mcpServerPort))
+
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+		np.Spec.PodSelector = metav1.LabelSelector{
+			MatchLabels: map[string]string{"app": mcpApp},
+		}
+		np.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
+		np.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{
+			{
+				From: []networkingv1.NetworkPolicyPeer{
+					{
+						PodSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": agentApp},
+						},
+					},
+				},
+				Ports: []networkingv1.NetworkPolicyPort{
+					{Protocol: &tcpProto, Port: &port},
+				},
+			},
+		}
+		return controllerutil.SetControllerReference(pulse, np, r.Scheme)
+	})
+	return err
 }
 
 // reconcileMCPDeployment creates or updates the MCP server Deployment.
@@ -91,6 +243,7 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 			MatchLabels: map[string]string{"app": name},
 		}
 		deploy.Spec.Template.Labels = map[string]string{"app": name}
+		deploy.Spec.Template.Spec.ServiceAccountName = name
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil) // OCP assigns UID from namespace range via SCC
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{
 			{
