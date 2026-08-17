@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -104,8 +105,11 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("reconcileUI: %w", err)
 	}
 	// reconcileUI sets pulse.Status.RouteHost and pulse.Status.UIAvailable directly.
-	// If the Route hostname is not yet assigned, propagate the requeue.
+	// If the Route hostname is not yet assigned, flush the current status and requeue
+	// so the CR reflects the installing state rather than showing stale/empty status.
 	if uiResult.RequeueAfter > 0 {
+		pulse.Status.Phase = "Installing"
+		_ = r.Status().Update(ctx, pulse)
 		return uiResult, nil
 	}
 
@@ -143,11 +147,30 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	pulse.Status.AgentHealthy = agentReady
 	pulse.Status.DatabaseReady = pgReady
 
+	// Populate agentVersion from the Deployment image tag.
+	if deploy := r.agentDeployment(ctx, agentResourceName(pulse.Name), pulse.Namespace); deploy != nil {
+		if len(deploy.Spec.Template.Spec.Containers) > 0 {
+			img := deploy.Spec.Template.Spec.Containers[0].Image
+			if idx := strings.LastIndex(img, ":"); idx >= 0 {
+				pulse.Status.AgentVersion = img[idx+1:]
+			} else {
+				pulse.Status.AgentVersion = img
+			}
+		}
+	}
+
+	prevPhase := pulse.Status.Phase
 	if agentReady && pgReady && pulse.Status.UIAvailable {
-		if pulse.Status.Phase != "Running" {
+		if prevPhase != "Running" {
 			r.Recorder.Event(pulse, corev1.EventTypeNormal, "Running", "All components are healthy")
 		}
 		pulse.Status.Phase = "Running"
+	} else if prevPhase == "Running" {
+		// Was healthy, now something is down — Degraded rather than Installing.
+		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "Degraded",
+			"Component health changed: agentHealthy=%v databaseReady=%v uiAvailable=%v",
+			agentReady, pgReady, pulse.Status.UIAvailable)
+		pulse.Status.Phase = "Degraded"
 	} else {
 		pulse.Status.Phase = "Installing"
 	}
@@ -252,6 +275,15 @@ func (r *OpenShiftPulseReconciler) isDeploymentReady(ctx context.Context, name, 
 		return false
 	}
 	return deploy.Status.ReadyReplicas > 0
+}
+
+// agentDeployment returns the agent Deployment object, or nil if not found.
+func (r *OpenShiftPulseReconciler) agentDeployment(ctx context.Context, name, ns string) *appsv1.Deployment {
+	deploy := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, deploy); err != nil {
+		return nil
+	}
+	return deploy
 }
 
 // isStatefulSetReady returns true when the named StatefulSet has at least one ready replica.

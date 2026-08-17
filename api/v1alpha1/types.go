@@ -72,6 +72,18 @@ type AgentConfig struct {
 type MCPConfig struct {
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+	// Image overrides the MCP server image. Defaults to the OCP fork image
+	// (quay.io/amobrem/pulse-agent:mcp-server, built from github.com/openshift/openshift-mcp-server).
+	// +optional
+	Image string `json:"image,omitempty"`
+	// Toolsets is the comma-separated list of MCP toolsets to enable.
+	// Available: cluster-diagnostics, cni-diagnostics, config, core, helm, kcp,
+	// kubevirt, netedge, netobserv, oadp, observability/logs, observability/metrics,
+	// observability/otelcol, observability/traces, openshift, openshift/mustgather,
+	// ossm, ovn-kubernetes, tekton.
+	// Defaults to the full SRE set when empty.
+	// +optional
+	Toolsets string `json:"toolsets,omitempty"`
 }
 
 type DatabaseConfig struct {

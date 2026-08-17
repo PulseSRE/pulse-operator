@@ -22,6 +22,10 @@ import (
 const (
 	defaultMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
 	mcpServerPort         = int32(8081)
+	// defaultMCPToolsets is the full SRE toolset matching the documented 36-tool count.
+	// Matches: core(default)+config(default)+helm+observability/metrics+observability/logs+
+	// openshift+ossm+netedge+tekton+kubevirt+kcp+cluster-diagnostics
+	defaultMCPToolsets = "core,config,helm,observability/metrics,observability/logs,openshift,ossm,netedge,tekton,kubevirt,kcp,cluster-diagnostics"
 )
 
 // MCPServiceURL returns the in-cluster URL of the MCP server for injection into the agent.
@@ -86,12 +90,24 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 					SecurityContext: defaultPodSecCtx(nil), // OCP assigns UID from namespace range via SCC
 					Containers: []corev1.Container{
 						{
-							Name:            "mcp-server",
-							Image:           defaultMCPServerImage,
+							Name: "mcp-server",
+							Image: func() string {
+								if pulse.Spec.Agent.MCP.Image != "" {
+									return pulse.Spec.Agent.MCP.Image
+								}
+								return defaultMCPServerImage
+							}(),
 							SecurityContext: defaultContainerSecCtx(),
-							Args: []string{
-								fmt.Sprintf("--port=%d", mcpServerPort),
-							},
+							Args: func() []string {
+								toolsets := pulse.Spec.Agent.MCP.Toolsets
+								if toolsets == "" {
+									toolsets = defaultMCPToolsets
+								}
+								return []string{
+									fmt.Sprintf("--port=%d", mcpServerPort),
+									fmt.Sprintf("--toolsets=%s", toolsets),
+								}
+							}(),
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "http",

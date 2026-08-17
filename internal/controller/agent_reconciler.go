@@ -170,7 +170,7 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				APIGroups: []string{""},
 				Resources: []string{
 					"pods", "pods/log", "nodes", "events",
-					"services", "services/proxy", "namespaces", "configmaps",
+					"services", "namespaces", "configmaps",
 					"persistentvolumeclaims", "resourcequotas",
 					"serviceaccounts", "endpoints", "limitranges",
 				},
