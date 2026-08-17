@@ -27,9 +27,9 @@ import (
 )
 
 const (
-	defaultUIImage  = "quay.io/amobrem/openshiftpulse:latest"
-	uiHTTPPort = int32(8080)
-	uiProxyPort = int32(8443)
+	defaultUIImage = "quay.io/amobrem/openshiftpulse:latest"
+	uiHTTPPort     = int32(8080)
+	uiProxyPort    = int32(8443)
 )
 
 // oauthClientName returns a CR-scoped OAuthClient name so multiple OpenShiftPulse
@@ -139,8 +139,12 @@ func (r *UIReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.Ope
 	}
 
 	// Reflect into status (caller is responsible for r.Status().Update).
+	// UIAvailable must reflect actual pod readiness, not just Route admission —
+	// the Route can be admitted by the OCP router while the UI Deployment's
+	// pods are still CrashLoopBackOff. Gate on the same readiness check used
+	// for the agent/database so `Phase: Running` is never a false positive.
 	pulse.Status.RouteHost = routeHost
-	pulse.Status.UIAvailable = true
+	pulse.Status.UIAvailable = r.isReady(ctx, uiResourceName(pulse.Name), pulse.Namespace)
 
 	return ctrl.Result{}, nil
 }
@@ -213,15 +217,6 @@ func isValidCookieSecret(b []byte) bool {
 		}
 	}
 	return true
-}
-
-// strMapToInterface converts map[string]string to map[string]interface{} for unstructured use.
-func strMapToInterface(m map[string]string) map[string]interface{} {
-	out := make(map[string]interface{}, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }
 
 // ─── sub-reconcilers ─────────────────────────────────────────────────────────
@@ -498,6 +493,14 @@ http {
     }
 
     # Agent WebSocket — appends the shared token as a query param.
+    # SECURITY NOTE: unlike the REST proxy below (Authorization: Bearer header),
+    # this passes the token via the upstream URL, which risks it appearing in
+    # the agent's own request logs. It is NOT switched to a header here because
+    # the agent's WebSocket handler (github.com/PulseSRE/pulse-agent, a separate
+    # repo) is what actually authenticates the connection — changing the wire
+    # format on this side alone, without confirming the handler reads a header
+    # too, would silently break every WebSocket connection. Coordinate a
+    # protocol change with pulse-agent before changing this.
     location ~ ^/api/agent/ws/(sre|security|monitor|agent)$ {
       proxy_pass http://%s:8080/ws/$1?token=%s;
       proxy_set_header Upgrade $http_upgrade;
@@ -606,8 +609,8 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 				Containers: []corev1.Container{
 					{
 						// Container 1: nginx serving the React SPA.
-						Name:  "openshiftpulse",
-						Image: uiImage,
+						Name:            "openshiftpulse",
+						Image:           uiImage,
 						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{Name: "http", ContainerPort: uiHTTPPort, Protocol: corev1.ProtocolTCP},
@@ -642,8 +645,8 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 					},
 					{
 						// Container 2: OpenShift OAuth proxy terminating TLS on 8443.
-						Name:  "oauth-proxy",
-						Image: oauthImage,
+						Name:            "oauth-proxy",
+						Image:           oauthImage,
 						SecurityContext: defaultContainerSecCtx(),
 						Ports: []corev1.ContainerPort{
 							{Name: "https", ContainerPort: uiProxyPort, Protocol: corev1.ProtocolTCP},
@@ -805,6 +808,14 @@ func (r *UIReconciler) reconcileUIRoute(ctx context.Context, pulse *pulsev1alpha
 		}
 		desired.SetAnnotations(annotations)
 
+		// Without an OwnerReference the Route is never garbage-collected by
+		// Kubernetes on CR deletion, and it isn't in the finalizer's cleanup
+		// list either (that only covers cluster-scoped resources) — it would
+		// leak forever. Route is namespace-scoped, so SetControllerReference works.
+		if setErr := controllerutil.SetControllerReference(pulse, desired, r.Scheme); setErr != nil {
+			return "", ctrl.Result{}, fmt.Errorf("set owner on route: %w", setErr)
+		}
+
 		if setErr := unstructured.SetNestedField(desired.Object, map[string]interface{}{
 			"kind":   "Service",
 			"name":   name,
@@ -921,4 +932,3 @@ func (r *UIReconciler) isReady(ctx context.Context, name, ns string) bool {
 	}
 	return deploy.Status.ReadyReplicas > 0
 }
-

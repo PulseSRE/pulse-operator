@@ -54,7 +54,11 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Ensures only one active manager at a time.")
 
-	opts := zap.Options{Development: true}
+	// Development:false -> structured JSON logs at Info level, the right
+	// default for a production log-aggregation pipeline. zap.Options.BindFlags
+	// already registers --zap-devel (and --zap-encoder, --zap-log-level, etc.)
+	// so this default can still be overridden at runtime for local development.
+	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
@@ -73,9 +77,15 @@ func main() {
 	}
 
 	if err := (&controller.OpenShiftPulseReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("pulse-operator"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// GetEventRecorderFor is deprecated in favor of GetEventRecorder, but
+		// that returns the newer k8s.io/client-go/tools/events.EventRecorder
+		// interface (different Eventf signature — takes an extra "action"
+		// argument), not the record.EventRecorder this reconciler's Recorder
+		// field and every Event()/Eventf() call site is typed against.
+		// Migrating is a deliberate follow-up, not a lint-pass change.
+		Recorder: mgr.GetEventRecorderFor("pulse-operator"), //nolint:staticcheck // SA1019: see comment above
 		UIReconciler: &controller.UIReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),

@@ -143,7 +143,12 @@ spec:
                     type: object
                   trustLevel:
                     default: 2
+                    description: |-
+                      TrustLevel controls how much autonomy the agent has: 0=observe, 1=suggest,
+                      2=confirm (default), 3=batch, 4=autonomous. See README.md#trust-levels.
                     format: int32
+                    maximum: 4
+                    minimum: 0
                     type: integer
                 type: object
               anthropicApiKey:
@@ -260,6 +265,10 @@ spec:
             required:
             - agent
             type: object
+            x-kubernetes-validations:
+            - rule: '!(has(self.vertexAI) && has(self.anthropicApiKey))'
+              message: spec.vertexAI and spec.anthropicApiKey are mutually exclusive
+                — set at most one AI backend
           status:
             properties:
               agentHealthy:

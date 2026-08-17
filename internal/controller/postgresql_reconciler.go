@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +32,9 @@ const (
 // PostgreSQLReconciler handles all PostgreSQL sub-resources for an OpenShiftPulse CR.
 type PostgreSQLReconciler struct {
 	client.Client
+	// Scheme is required to set a real OwnerReference on every PostgreSQL
+	// sub-resource so Kubernetes garbage-collects them when the CR is deleted.
+	Scheme *runtime.Scheme
 }
 
 // reconcilePostgres ensures the Secret, StatefulSet, ClusterIP Service, and headless
@@ -94,7 +98,9 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 			Type:       corev1.SecretTypeOpaque,
 			StringData: map[string]string{"database-url": dbURL},
 		}
-		setOwner(pulse, connSecret)
+		if setErr := controllerutil.SetControllerReference(pulse, connSecret, r.Scheme); setErr != nil {
+			return "", fmt.Errorf("set owner on pg connection secret: %w", setErr)
+		}
 		if createErr := r.Create(ctx, connSecret); createErr != nil {
 			return "", fmt.Errorf("create pg connection secret: %w", createErr)
 		}
@@ -157,7 +163,9 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 			"POSTGRESQL_DATABASE": pgDB,
 		},
 	}
-	setOwner(pulse, secret)
+	if err := controllerutil.SetControllerReference(pulse, secret, r.Scheme); err != nil {
+		return "", fmt.Errorf("set owner on pg-auth secret: %w", err)
+	}
 	if err := r.Create(ctx, secret); err != nil {
 		return "", err
 	}
@@ -232,7 +240,9 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
 		sts.Labels = pgLabels(pulse.Name)
-		setOwner(pulse, sts)
+		if setErr := controllerutil.SetControllerReference(pulse, sts, r.Scheme); setErr != nil {
+			return setErr
+		}
 
 		// VolumeClaimTemplates is immutable — only populate on creation.
 		if sts.CreationTimestamp.IsZero() {
@@ -270,9 +280,9 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 			},
 			Spec: corev1.PodSpec{
 				// OCP assigns UIDs from the namespace range via the restricted SCC.
-			// Do not set RunAsUser — hardcoding 26 (postgres uid) is rejected by
-			// restricted-v2 SCC which enforces namespace-allocated UID ranges.
-			SecurityContext: defaultPodSecCtx(nil),
+				// Do not set RunAsUser — hardcoding 26 (postgres uid) is rejected by
+				// restricted-v2 SCC which enforces namespace-allocated UID ranges.
+				SecurityContext: defaultPodSecCtx(nil),
 				Containers: []corev1.Container{
 					{
 						Name:  "postgresql",
@@ -319,15 +329,6 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	return err
 }
 
-// isReady returns true when the PostgreSQL StatefulSet has at least one ready replica.
-func (r *PostgreSQLReconciler) isReady(ctx context.Context, name, ns string) bool {
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, sts); err != nil {
-		return false
-	}
-	return sts.Status.ReadyReplicas > 0
-}
-
 // reconcilePGService creates or updates either a ClusterIP or headless Service for PostgreSQL.
 func (r *PostgreSQLReconciler) reconcilePGService(
 	ctx context.Context,
@@ -343,7 +344,9 @@ func (r *PostgreSQLReconciler) reconcilePGService(
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 		svc.Labels = pgLabels(pulse.Name)
-		setOwner(pulse, svc)
+		if setErr := controllerutil.SetControllerReference(pulse, svc, r.Scheme); setErr != nil {
+			return setErr
+		}
 		svc.Spec.Selector = pgLabels(pulse.Name)
 		svc.Spec.Ports = []corev1.ServicePort{
 			{
@@ -384,9 +387,6 @@ func pgLabels(crName string) map[string]string {
 	}
 }
 
-// setOwner sets a non-blocking owner annotation (no controller OwnerReference since
-// cross-namespace ownership is not supported and CR/GVK is not available here without scheme).
-// Callers that have access to the scheme should call controllerutil.SetControllerReference instead.
 // deletePendingPGPodIfStale deletes the ordinal-0 PostgreSQL pod when it is
 // Pending. The StatefulSet RollingUpdate controller waits for pod-0 to be
 // Running before rolling it — a pod stuck Pending (e.g. due to stale resource
@@ -411,13 +411,4 @@ func (r *PostgreSQLReconciler) deletePendingPGPodIfStale(
 		return nil
 	}
 	return r.Delete(ctx, pod)
-}
-
-func setOwner(pulse *v1alpha1.OpenShiftPulse, obj metav1.Object) {
-	annotations := obj.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	annotations["pulse-operator.io/owner"] = pulse.Namespace + "/" + pulse.Name
-	obj.SetAnnotations(annotations)
 }

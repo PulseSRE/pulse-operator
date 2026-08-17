@@ -69,102 +69,89 @@ func (r *MCPReconciler) reconcileMCP(ctx context.Context, pulse *pulsev1alpha1.O
 }
 
 // reconcileMCPDeployment creates or updates the MCP server Deployment.
-// On update, only the container image and args are synced.
+// Uses CreateOrUpdate and only mutates the fields the operator owns (selector,
+// pod labels, container image/args/probes/resources) — anything else a user
+// manually patched on the Deployment (e.g. Spec.Replicas via `kubectl scale`)
+// is left untouched instead of being clobbered by a full spec replace.
 func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
 	name := mcpResourceName(pulse.Name)
 
-	desired := &appsv1.Deployment{
+	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: pulse.Namespace,
 		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": name},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": name},
-				},
-				Spec: corev1.PodSpec{
-					SecurityContext: defaultPodSecCtx(nil), // OCP assigns UID from namespace range via SCC
-					Containers: []corev1.Container{
-						{
-							Name: "mcp-server",
-							Image: func() string {
-								if pulse.Spec.Agent.MCP.Image != "" {
-									return pulse.Spec.Agent.MCP.Image
-								}
-								return defaultMCPServerImage
-							}(),
-							SecurityContext: defaultContainerSecCtx(),
-							Args: func() []string {
-								toolsets := pulse.Spec.Agent.MCP.Toolsets
-								if toolsets == "" {
-									toolsets = defaultMCPToolsets
-								}
-								return []string{
-									fmt.Sprintf("--port=%d", mcpServerPort),
-									fmt.Sprintf("--toolsets=%s", toolsets),
-								}
-							}(),
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "http",
-									ContainerPort: mcpServerPort,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/healthz",
-										Port: intstr.FromInt(int(mcpServerPort)),
-									},
-								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       10,
-							},
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/healthz",
-										Port: intstr.FromInt(int(mcpServerPort)),
-									},
-								},
-								InitialDelaySeconds: 15,
-								PeriodSeconds:       20,
-							},
-						},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+		if setErr := controllerutil.SetControllerReference(pulse, deploy, r.Scheme); setErr != nil {
+			return setErr
+		}
+		deploy.Spec.Selector = &metav1.LabelSelector{
+			MatchLabels: map[string]string{"app": name},
+		}
+		deploy.Spec.Template.Labels = map[string]string{"app": name}
+		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil) // OCP assigns UID from namespace range via SCC
+		deploy.Spec.Template.Spec.Containers = []corev1.Container{
+			{
+				Name: "mcp-server",
+				Image: func() string {
+					if pulse.Spec.Agent.MCP.Image != "" {
+						return pulse.Spec.Agent.MCP.Image
+					}
+					return defaultMCPServerImage
+				}(),
+				SecurityContext: defaultContainerSecCtx(),
+				Args: func() []string {
+					toolsets := pulse.Spec.Agent.MCP.Toolsets
+					if toolsets == "" {
+						toolsets = defaultMCPToolsets
+					}
+					return []string{
+						fmt.Sprintf("--port=%d", mcpServerPort),
+						fmt.Sprintf("--toolsets=%s", toolsets),
+					}
+				}(),
+				Ports: []corev1.ContainerPort{
+					{
+						Name:          "http",
+						ContainerPort: mcpServerPort,
+						Protocol:      corev1.ProtocolTCP,
 					},
 				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("512Mi"),
+					},
+				},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/healthz",
+							Port: intstr.FromInt(int(mcpServerPort)),
+						},
+					},
+					InitialDelaySeconds: 5,
+					PeriodSeconds:       10,
+				},
+				LivenessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{
+							Path: "/healthz",
+							Port: intstr.FromInt(int(mcpServerPort)),
+						},
+					},
+					InitialDelaySeconds: 15,
+					PeriodSeconds:       20,
+				},
 			},
-		},
-	}
-	if err := controllerutil.SetControllerReference(pulse, desired, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pulse.Namespace}, existing)
-	if apierrors.IsNotFound(err) {
-		return r.Create(ctx, desired)
-	}
-	if err != nil {
-		return err
-	}
-
-	// Sync full spec; image tag and args are the primary fields that change across releases.
-	existing.Spec = desired.Spec
-	return r.Update(ctx, existing)
+		}
+		return nil
+	})
+	return err
 }
 
 // reconcileMCPService creates or updates the ClusterIP Service fronting the MCP server.

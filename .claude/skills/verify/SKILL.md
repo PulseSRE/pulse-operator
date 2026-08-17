@@ -21,10 +21,12 @@ KUBEBUILDER_ASSETS=/tmp/kubebuilder-bin/k8s/1.31.0-darwin-arm64 go test ./...
 oc apply -f config/crd/bases/pulse.ai_openshiftpulses.yaml
 
 # Run operator (unique ports to avoid 8080/8081 conflicts)
+# --zap-devel: human-readable console logs; omit for the production default (JSON).
 /tmp/pulse-operator \
   --leader-elect=false \
   --metrics-bind-address=:9191 \
-  --health-probe-bind-address=:9292
+  --health-probe-bind-address=:9292 \
+  --zap-devel
 
 # Apply sample CR
 oc apply -f examples/pulse.yaml
@@ -32,8 +34,9 @@ oc apply -f examples/pulse.yaml
 
 ## Gotchas
 - Cache warmup takes ~60-90s over WAN. Don't kill before the first reconcile log line appears.
-- gp3-csi PVC provisioning takes 2-5min — agent Deployment is gated on Bound PVC.
-  Run operator for 5+ minutes to see the full stack created.
+- gp3-csi PVC provisioning takes 2-5min. The memory PVC is no longer a gate on the
+  agent Deployment (removed — see agent_reconciler_test.go "Deployment is created even
+  while memory PVC is Pending"); Kubernetes just holds the pod Pending until it binds.
 - `--metrics-bind-address` defaults to `:8082`. Specify a different port if 8082 is in use.
 - controller-runtime v0.24.1: startup sequence logs "Stopping and waiting..." during init,
   not during shutdown — ignore these; wait for "Reconciling OpenShiftPulse" log line.
@@ -47,6 +50,10 @@ metadata:
   name: pulse
   namespace: openshiftpulse
 spec:
+  vertexAI:
+    projectId: my-gcp-project
+    region: us-east5
+    credentialSecret: gcp-sa-key
   agent:
     image: quay.io/amobrem/pulse-agent:latest
     trustLevel: 2
