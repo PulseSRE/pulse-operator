@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -97,6 +96,7 @@ func (r *UIReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.Ope
 		{"ServiceAccount", r.reconcileUIServiceAccount},
 		{"ClusterRole", r.reconcileUIClusterRole},
 		{"ClusterRoleBinding", r.reconcileUIClusterRoleBinding},
+		{"AuthDelegatorBinding", r.reconcileUIAuthDelegatorBinding},
 		{"OAuthSecrets", r.reconcileUIOAuthSecrets},
 		{"Service", r.reconcileUIService},
 	} {
@@ -184,14 +184,16 @@ func resolvedOAuthProxyImage(cr *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo
 	return oauthImage
 }
 
-// generateCookieSecret returns a base64-encoded string of 32 random bytes.
-// The openshift oauth-proxy interprets --cookie-secret-file content as a base64 key.
+// generateCookieSecret returns exactly 32 raw random bytes as a string.
+// When --pass-access-token=true or --cookie-refresh is set, oauth-proxy uses
+// the cookie-secret-file content as an AES key, which must be 16, 24, or 32 bytes.
+// Base64-encoding a 32-byte key produces 44 characters — not a valid AES key length.
 func generateCookieSecret() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("crypto/rand: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(b), nil
+	return string(b), nil
 }
 
 // strMapToInterface converts map[string]string to map[string]interface{} for unstructured use.
@@ -330,7 +332,34 @@ func (r *UIReconciler) reconcileUIClusterRoleBinding(ctx context.Context, pulse 
 	return r.Update(ctx, existing)
 }
 
-// d. Secret — oauth-client-secret (hex) and cookie-secret (base64).
+// c2. ClusterRoleBinding: system:auth-delegator — required when oauth-proxy uses
+// --pass-access-token=true or --openshift-delegate-urls. Without it, the proxy cannot
+// create TokenReview or SubjectAccessReview resources and logs "is forbidden" errors.
+func (r *UIReconciler) reconcileUIAuthDelegatorBinding(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	bindingName := uiClusterRoleName(pulse.Name) + "-auth-delegator"
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        bindingName,
+			Annotations: clusterScopedAnnotations(pulse),
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, crb, func() error {
+		crb.RoleRef = rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:auth-delegator",
+		}
+		crb.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      uiResourceName(pulse.Name),
+			Namespace: pulse.Namespace,
+		}}
+		return nil
+	})
+	return err
+}
+
+// d. Secret — oauth-client-secret (hex) and cookie-secret (raw bytes).
 // Create-only: existing secrets are never overwritten to preserve live credentials.
 func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
 	name := uiOAuthSecretsName(pulse.Name)
