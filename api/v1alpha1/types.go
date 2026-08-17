@@ -14,16 +14,17 @@ import (
 type OpenShiftPulse struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec   OpenShiftPulseSpec   `json:"spec,omitempty"`
-	Status OpenShiftPulseStatus `json:"status,omitempty"`
+	Spec              OpenShiftPulseSpec   `json:"spec,omitempty"`
+	Status            OpenShiftPulseStatus `json:"status,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!(has(self.vertexAI) && has(self.anthropicApiKey))",message="spec.vertexAI and spec.anthropicApiKey are mutually exclusive — set at most one AI backend"
 type OpenShiftPulseSpec struct {
 	// +optional
 	VertexAI *VertexAIConfig `json:"vertexAI,omitempty"`
 	// +optional
 	AnthropicAPIKey *APIKeyConfig `json:"anthropicApiKey,omitempty"`
-	Agent AgentConfig `json:"agent"`
+	Agent           AgentConfig   `json:"agent"`
 	// +optional
 	UI UIConfig `json:"ui,omitempty"`
 	// +optional
@@ -56,7 +57,11 @@ type AgentConfig struct {
 	// which provides no integrity guarantee.
 	// +optional
 	Image string `json:"image,omitempty"`
+	// TrustLevel controls how much autonomy the agent has: 0=observe, 1=suggest,
+	// 2=confirm (default), 3=batch, 4=autonomous. See README.md#trust-levels.
 	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4
 	// +optional
 	TrustLevel int32 `json:"trustLevel,omitempty"`
 	// +optional
@@ -97,9 +102,16 @@ type DatabaseConfig struct {
 }
 
 type MonitoringConfig struct {
+	// Enabled is a *bool, not bool: a plain `bool` with `omitempty` cannot
+	// represent an explicit `false` over the wire (encoding/json's omitempty
+	// drops the zero value), which combined with this field's CRD default of
+	// `true` made "disable monitoring" unreachable via any typed Go client.
+	// nil means "unset" — the CRD default (true) applies once the object is
+	// stored; callers reading this field before that round-trip must treat
+	// nil the same way (see monitoringEnabled in the controller package).
 	// +kubebuilder:default=true
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type UIConfig struct {
@@ -137,7 +149,7 @@ type OpenShiftPulseStatus struct {
 type OpenShiftPulseList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items []OpenShiftPulse `json:"items"`
+	Items           []OpenShiftPulse `json:"items"`
 }
 
 func init() {

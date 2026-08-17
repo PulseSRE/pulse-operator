@@ -101,6 +101,29 @@ func databaseEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
 	return cr.Spec.Database.StorageSize != "" || cr.Spec.Database.Image != ""
 }
 
+// monitoringEnabled reports whether monitoring should be reconciled. Enabled is
+// a *bool defaulted to true by the CRD (+kubebuilder:default=true) — nil means
+// "not yet defaulted" (e.g. an in-memory struct built by a test or client code
+// that hasn't round-tripped through the API server), so nil is treated as true
+// to match the CRD default rather than as false.
+func monitoringEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
+	return cr.Spec.Monitoring.Enabled == nil || *cr.Spec.Monitoring.Enabled
+}
+
+// hasAIBackend reports whether the CR configures a usable AI backend. The CRD
+// does not require one (see the mutual-exclusion XValidation on OpenShiftPulseSpec
+// for why it isn't a hard "at least one" requirement), so callers that need to
+// warn about a misconfigured instance should check this explicitly.
+func hasAIBackend(cr *pulsev1alpha1.OpenShiftPulse) bool {
+	if cr.Spec.VertexAI != nil && cr.Spec.VertexAI.ProjectID != "" {
+		return true
+	}
+	if cr.Spec.AnthropicAPIKey != nil && cr.Spec.AnthropicAPIKey.ExistingSecret != "" {
+		return true
+	}
+	return false
+}
+
 // agentResources returns the spec-provided resources when non-empty, or sensible
 // defaults. CPU is omitted entirely from defaults: a CPU limit with no request
 // causes Kubernetes to auto-set Requests.CPU = Limits.CPU, which blocks scheduling
@@ -462,7 +485,7 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: name,
-				SecurityContext: defaultPodSecCtx(nil), // OCP assigns UID from namespace range via SCC
+				SecurityContext:    defaultPodSecCtx(nil), // OCP assigns UID from namespace range via SCC
 				Containers: []corev1.Container{
 					{
 						Name:            "agent",
@@ -600,13 +623,4 @@ func (r *AgentReconciler) reconcileService(ctx context.Context, cr *pulsev1alpha
 		return nil
 	})
 	return err
-}
-
-// isReady returns true when the agent Deployment has at least one ready replica.
-func (r *AgentReconciler) isReady(ctx context.Context, name, ns string) bool {
-	deploy := &appsv1.Deployment{}
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, deploy); err != nil {
-		return false
-	}
-	return deploy.Status.ReadyReplicas > 0
 }

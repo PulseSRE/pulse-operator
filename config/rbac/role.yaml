@@ -1,17 +1,80 @@
 ---
+# Canonical operator RBAC. This is the SINGLE SOURCE OF TRUTH for the manager's
+# ClusterRole — deploy/operator.yaml and bundle/manifests/*.clusterserviceversion.yaml
+# both mirror these rules. After editing this file, run:
+#
+#   scripts/sync-rbac.py --fix
+#
+# CI runs `scripts/sync-rbac.py --check` and fails the build if the three files
+# have drifted, so this file cannot go stale silently.
+#
+# Scoping rules followed here:
+#   - Only resource types the operator's own reconcile code (or the generated
+#     agent/UI ClusterRoles it must remain a permission-superset of) actually
+#     touches are listed. `nodes`, `namespaces`, `pods` and `pods/log` are
+#     READ-ONLY for the operator — it never creates/updates/deletes them.
+#   - `services/proxy`, cluster-wide Node/Namespace mutation, and the
+#     `escalate`/`bind` verbs on rbac.authorization.k8s.io have been removed.
+#     The operator creates ClusterRoles/ClusterRoleBindings for managed agent/UI
+#     instances, but every rule it ever writes into those generated roles is
+#     already covered (as an equal-or-lesser permission) by this ClusterRole,
+#     so Kubernetes' RBAC "you already hold this permission" escape hatch lets
+#     Create/Update succeed WITHOUT `escalate`/`bind`. If you add a new rule to
+#     the generated agent/UI ClusterRoles (agent_reconciler.go / ui_reconciler.go)
+#     that this ClusterRole does not already cover, add the equivalent
+#     read-level rule here too, or Create/Update of the generated role will
+#     start failing with "not permitted to escalate".
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: pulse-operator-manager-role
 rules:
+# Resources the operator directly creates/updates/deletes as managed sub-resources.
 - apiGroups: [""]
-  resources: [configmaps, persistentvolumeclaims, secrets, serviceaccounts, services,
-    pods, "pods/log", nodes, endpoints, limitranges, resourcequotas, "services/proxy",
-    namespaces, events]
+  resources: [configmaps, persistentvolumeclaims, secrets, serviceaccounts, services, events]
   verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [apps]
-  resources: [deployments, statefulsets, replicasets, daemonsets]
+  resources: [deployments, statefulsets]
   verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [policy]
+  resources: [poddisruptionbudgets]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [rbac.authorization.k8s.io]
+  resources: [clusterroles, clusterrolebindings, roles, rolebindings]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [monitoring.coreos.com]
+  resources: [servicemonitors, prometheusrules]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [route.openshift.io]
+  resources: [routes]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [oauth.openshift.io]
+  resources: [oauthclients]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [create, get, list, patch, update, watch]
+- apiGroups: [pulse.ai]
+  resources: [openshiftpulses, "openshiftpulses/status", "openshiftpulses/finalizers"]
+  verbs: [create, delete, get, list, patch, update, watch]
+# Pods: the operator only reads them, plus deletes a single stale-Pending
+# PostgreSQL pod (deletePendingPGPodIfStale) — it never creates/patches Pods
+# directly (they come from Deployment/StatefulSet controllers).
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch, delete]
+# Read-only. Also serves as the permission floor for the agent/UI ClusterRoles
+# this operator generates per managed instance (see the comment above) —
+# do not remove without checking agent_reconciler.go / ui_reconciler.go first.
+- apiGroups: [""]
+  resources: ["pods/log", nodes, namespaces, endpoints, limitranges, resourcequotas]
+  verbs: [get, list, watch]
+- apiGroups: [apps]
+  resources: [replicasets, daemonsets]
+  verbs: [get, list, watch]
 - apiGroups: [autoscaling]
   resources: [horizontalpodautoscalers]
   verbs: [get, list, watch]
@@ -28,32 +91,11 @@ rules:
   resources: [storageclasses]
   verbs: [get, list, watch]
 - apiGroups: [networking.k8s.io]
-  resources: [ingresses, networkpolicies]
-  verbs: [create, delete, get, list, patch, update, watch]
-- apiGroups: [policy]
-  resources: [poddisruptionbudgets]
-  verbs: [create, delete, get, list, patch, update, watch]
-- apiGroups: [rbac.authorization.k8s.io]
-  resources: [clusterroles, clusterrolebindings, roles, rolebindings]
-  verbs: [bind, create, delete, escalate, get, list, patch, update, watch]
-- apiGroups: [monitoring.coreos.com]
-  resources: [servicemonitors, prometheusrules]
-  verbs: [create, delete, get, list, patch, update, watch]
-- apiGroups: [route.openshift.io]
-  resources: [routes]
-  verbs: [create, delete, get, list, patch, update, watch]
-- apiGroups: [oauth.openshift.io]
-  resources: [oauthclients]
-  verbs: [create, delete, get, list, patch, update, watch]
-- apiGroups: [config.openshift.io]
   resources: [ingresses]
+  verbs: [get, list, watch]
+- apiGroups: [config.openshift.io]
+  resources: [ingresses, clusterversions, clusteroperators]
   verbs: [get, list, watch]
 - apiGroups: [image.openshift.io]
   resources: [imagestreams]
   verbs: [get, list, watch]
-- apiGroups: [coordination.k8s.io]
-  resources: [leases]
-  verbs: [create, get, list, patch, update, watch]
-- apiGroups: [pulse.ai]
-  resources: [openshiftpulses, "openshiftpulses/status", "openshiftpulses/finalizers"]
-  verbs: [create, delete, get, list, patch, update, watch]

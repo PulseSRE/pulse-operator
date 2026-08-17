@@ -77,6 +77,16 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	logger.Info("Reconciling OpenShiftPulse", "name", pulse.Name, "namespace", pulse.Namespace)
 
+	// The CRD does not require an AI backend (some tests/dev setups deploy the
+	// stack without one), but a real deployment without either configured will
+	// silently run an agent with no credentials. Surface that loudly instead of
+	// letting it fail opaquely inside the agent container.
+	if !hasAIBackend(pulse) {
+		logger.Info("no AI backend configured — agent will start without AI credentials", "name", pulse.Name)
+		r.Recorder.Event(pulse, corev1.EventTypeWarning, "NoAIBackendConfigured",
+			"Neither spec.vertexAI nor spec.anthropicApiKey is set — the agent has no AI backend and will not function")
+	}
+
 	// 1. Reconcile PostgreSQL sub-resources.
 	dbURL, err := r.reconcilePostgres(ctx, pulse)
 	if err != nil {
@@ -98,6 +108,39 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("reconcileNetworkPolicies: %w", err)
 	}
 
+	// 2b. PodDisruptionBudget — protect UI when replicas > 1.
+	if err := r.reconcileUIPodsDisruptionBudget(ctx, pulse); err != nil {
+		logger.Error(err, "PDB reconcile failed")
+		return ctrl.Result{}, fmt.Errorf("reconcileUIPodsDisruptionBudget: %w", err)
+	}
+
+	// 2c. Detect cluster topology (used by the MCP reconciler).
+	info := DetectClusterInfo(ctx, r.Client)
+
+	// 2d. Optional: Monitoring — ServiceMonitor + PrometheusRule. Deliberately
+	// reconciled before the UI/Route step below: alerting (PulseAgentDown,
+	// PulsePostgreSQLDown) must exist even while the Route is still being
+	// admitted, or stuck for any reason — otherwise there'd be no alert to
+	// fire about the very thing blocking a healthy install.
+	if monitoringEnabled(pulse) {
+		mr := &MonitoringReconciler{Client: r.Client, Scheme: r.Scheme}
+		if err := mr.reconcileMonitoring(ctx, pulse); err != nil {
+			logger.Error(err, "monitoring reconcile failed")
+			return ctrl.Result{}, fmt.Errorf("reconcileMonitoring: %w", err)
+		}
+	}
+
+	// 2e. Optional: MCP server Deployment + Service. Also reconciled before the
+	// UI/Route step — the agent depends on the MCP Service being reachable, and
+	// neither should ever be blocked on the Route (an unrelated resource).
+	if pulse.Spec.Agent.MCP.Enabled {
+		mcpr := &MCPReconciler{Client: r.Client, Scheme: r.Scheme}
+		if err := mcpr.reconcileMCP(ctx, pulse, info); err != nil {
+			logger.Error(err, "MCP reconcile failed")
+			return ctrl.Result{}, fmt.Errorf("reconcileMCP: %w", err)
+		}
+	}
+
 	// 3. Reconcile UI sub-resources (Route, OAuthClient, Deployment, Service, etc.).
 	uiResult, err := r.UIReconciler.reconcileUI(ctx, pulse)
 	if err != nil {
@@ -113,34 +156,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return uiResult, nil
 	}
 
-	// 3a. PodDisruptionBudget — protect UI when replicas > 1.
-	if err := r.reconcileUIPodsDisruptionBudget(ctx, pulse); err != nil {
-		logger.Error(err, "PDB reconcile failed")
-		return ctrl.Result{}, fmt.Errorf("reconcileUIPodsDisruptionBudget: %w", err)
-	}
-
-	// 4. Detect cluster topology (used by Monitoring and MCP reconcilers).
-	info := DetectClusterInfo(ctx, r.Client)
-
-	// 5. Optional: Monitoring — ServiceMonitor + PrometheusRule.
-	if pulse.Spec.Monitoring.Enabled {
-		mr := &MonitoringReconciler{Client: r.Client, Scheme: r.Scheme}
-		if err := mr.reconcileMonitoring(ctx, pulse); err != nil {
-			logger.Error(err, "monitoring reconcile failed")
-			return ctrl.Result{}, fmt.Errorf("reconcileMonitoring: %w", err)
-		}
-	}
-
-	// 6. Optional: MCP server Deployment + Service.
-	if pulse.Spec.Agent.MCP.Enabled {
-		mcpr := &MCPReconciler{Client: r.Client, Scheme: r.Scheme}
-		if err := mcpr.reconcileMCP(ctx, pulse, info); err != nil {
-			logger.Error(err, "MCP reconcile failed")
-			return ctrl.Result{}, fmt.Errorf("reconcileMCP: %w", err)
-		}
-	}
-
-	// 7. Determine health of each component and sync CR status.
+	// 4. Determine health of each component and sync CR status.
 	agentReady := r.isDeploymentReady(ctx, agentResourceName(pulse.Name), pulse.Namespace)
 	pgReady := r.isStatefulSetReady(ctx, pulse.Name+"-openshift-sre-agent-postgresql", pulse.Namespace)
 
@@ -180,12 +196,12 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		ObservedGeneration: pulse.Generation,
 	}
 	if pulse.Status.Phase == "Running" {
-		condition.Status  = metav1.ConditionTrue
-		condition.Reason  = "AllComponentsHealthy"
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "AllComponentsHealthy"
 		condition.Message = "Agent, database, and UI are healthy"
 	} else {
-		condition.Status  = metav1.ConditionFalse
-		condition.Reason  = "Installing"
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "Installing"
 		condition.Message = fmt.Sprintf("agentHealthy=%v databaseReady=%v uiAvailable=%v",
 			agentReady, pgReady, pulse.Status.UIAvailable)
 	}
@@ -216,6 +232,10 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}, "UI ClusterRole")
 	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}, "agent ClusterRoleBinding")
 	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}, "UI ClusterRoleBinding")
+	// system:auth-delegator binding (reconcileUIAuthDelegatorBinding) — same
+	// orphan risk as the two bindings above: cluster-scoped, can't carry an
+	// OwnerReference to a namespaced CR, so it must be cleaned up here too.
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name) + "-auth-delegator"}}, "UI auth-delegator ClusterRoleBinding")
 
 	// OAuthClient — cluster-scoped OpenShift resource; use unstructured because the
 	// oauth.openshift.io API group is not registered in the controller-runtime scheme.
@@ -233,7 +253,7 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 
 // reconcilePostgres delegates to PostgreSQLReconciler and returns the database URL.
 func (r *OpenShiftPulseReconciler) reconcilePostgres(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
-	pg := &PostgreSQLReconciler{Client: r.Client}
+	pg := &PostgreSQLReconciler{Client: r.Client, Scheme: r.Scheme}
 	return pg.reconcilePostgres(ctx, pulse)
 }
 

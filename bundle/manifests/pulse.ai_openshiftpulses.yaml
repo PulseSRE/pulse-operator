@@ -55,11 +55,31 @@ spec:
                   allowWriteOperations:
                     type: boolean
                   image:
+                    description: |-
+                      Image is the container image for the Pulse Agent.
+                      For production deployments, always specify a digest-pinned image reference
+                      (e.g. quay.io/amobrem/pulse-agent@sha256:<hash>) rather than a mutable tag.
+                      The operator falls back to quay.io/amobrem/pulse-agent:latest when unset,
+                      which provides no integrity guarantee.
                     type: string
                   mcp:
                     properties:
                       enabled:
                         type: boolean
+                      image:
+                        description: |-
+                          Image overrides the MCP server image. Defaults to the OCP fork image
+                          (quay.io/amobrem/pulse-agent:mcp-server, built from github.com/openshift/openshift-mcp-server).
+                        type: string
+                      toolsets:
+                        description: |-
+                          Toolsets is the comma-separated list of MCP toolsets to enable.
+                          Available: cluster-diagnostics, cni-diagnostics, config, core, helm, kcp,
+                          kubevirt, netedge, netobserv, oadp, observability/logs, observability/metrics,
+                          observability/otelcol, observability/traces, openshift, openshift/mustgather,
+                          ossm, ovn-kubernetes, tekton.
+                          Defaults to the full SRE set when empty.
+                        type: string
                     type: object
                   resources:
                     description: ResourceRequirements describes the compute resource
@@ -70,7 +90,7 @@ spec:
                           Claims lists the names of resources, defined in spec.resourceClaims,
                           that are used by this container.
 
-                          This is an alpha field and requires enabling the
+                          This field depends on the
                           DynamicResourceAllocation feature gate.
 
                           This field is immutable. It can only be set for containers.
@@ -123,7 +143,12 @@ spec:
                     type: object
                   trustLevel:
                     default: 2
+                    description: |-
+                      TrustLevel controls how much autonomy the agent has: 0=observe, 1=suggest,
+                      2=confirm (default), 3=batch, 4=autonomous. See README.md#trust-levels.
                     format: int32
+                    maximum: 4
+                    minimum: 0
                     type: integer
                 type: object
               anthropicApiKey:
@@ -168,7 +193,7 @@ spec:
                           Claims lists the names of resources, defined in spec.resourceClaims,
                           that are used by this container.
 
-                          This is an alpha field and requires enabling the
+                          This field depends on the
                           DynamicResourceAllocation feature gate.
 
                           This field is immutable. It can only be set for containers.
@@ -223,6 +248,12 @@ spec:
               vertexAI:
                 properties:
                   credentialSecret:
+                    description: |-
+                      CredentialSecret is the name of a Secret in the same namespace containing
+                      a GCP service account key. The Secret must have a data key named "key.json"
+                      holding the JSON key file. When empty, the agent uses Application Default
+                      Credentials (ADC), which requires workload identity or a mounted GOOGLE_APPLICATION_CREDENTIALS.
+                      Example: kubectl create secret generic gcp-sa-key --from-file=key.json=sa-key.json
                     type: string
                   projectId:
                     type: string
@@ -234,6 +265,10 @@ spec:
             required:
             - agent
             type: object
+            x-kubernetes-validations:
+            - rule: '!(has(self.vertexAI) && has(self.anthropicApiKey))'
+              message: spec.vertexAI and spec.anthropicApiKey are mutually exclusive
+                — set at most one AI backend
           status:
             properties:
               agentHealthy:
@@ -298,6 +333,9 @@ spec:
                 type: array
               databaseReady:
                 type: boolean
+              observedGeneration:
+                format: int64
+                type: integer
               phase:
                 type: string
               routeHost:

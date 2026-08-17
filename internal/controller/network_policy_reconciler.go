@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	networkingv1 "k8s.io/api/networking/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -50,15 +50,13 @@ func (r *OpenShiftPulseReconciler) reconcileUIPodNetworkPolicy(ctx context.Conte
 				{Protocol: &tcpProto, Port: &port8443},
 			},
 		},
-		// Same-namespace pods.
-		{
-			From: []networkingv1.NetworkPolicyPeer{
-				{PodSelector: &metav1.LabelSelector{}},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcpProto, Port: &port8443},
-			},
-		},
+		// NOTE: there used to be a "same-namespace pods" rule here using an
+		// empty PodSelector{}, which matches ALL pods in the namespace rather
+		// than a scoped subset. Nothing in this operator's traffic pattern
+		// needs sibling pods to call into the UI (nginx/oauth-proxy only ever
+		// makes outbound calls to the agent and the Kubernetes API), so it was
+		// removed rather than narrowed. Re-add it scoped to a specific
+		// PodSelector if a real caller shows up.
 		// user-workload-monitoring scrape.
 		{
 			From: []networkingv1.NetworkPolicyPeer{

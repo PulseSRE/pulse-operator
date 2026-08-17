@@ -44,7 +44,7 @@ func prometheusRuleName(crName string) string {
 // reconcileMonitoring creates/updates ServiceMonitor and PrometheusRule when
 // spec.monitoring.enabled is true. No-ops when monitoring is disabled.
 func (r *MonitoringReconciler) reconcileMonitoring(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	if !pulse.Spec.Monitoring.Enabled {
+	if !monitoringEnabled(pulse) {
 		return nil
 	}
 

@@ -1,0 +1,28 @@
+# File-Based Catalog (FBC) image for the pulse-operator CatalogSource.
+# Referenced by README.md#olm--operatorhub. Not built by CI (release.yml) —
+# publishing a catalog image is a deliberate manual step today because it
+# requires opm (not preinstalled in this repo's CI image) and a registry push
+# outside the scope of the operator/bundle image builds. README.md documents
+# the render-then-build procedure this Dockerfile is the last step of.
+#
+# This is the pattern `opm generate dockerfile catalog` produces — verified
+# against the actual rendered bundle (podman build + a running container that
+# serves the gRPC registry successfully) before being committed here. Do not
+# hand-roll a simpler version: opm's cache must be pre-populated at build time
+# (the --cache-only RUN step below) or `opm serve` fails at container startup
+# with "integrity check failed: read existing cache digest".
+FROM quay.io/operator-framework/opm:latest AS builder
+
+# Copy the FBC root (built by README.md's render step into ./catalog) into the
+# image at /configs and pre-populate the serve cache.
+ADD catalog /configs
+RUN ["/bin/opm", "serve", "/configs", "--cache-dir=/tmp/cache", "--cache-only"]
+
+FROM quay.io/operator-framework/opm:latest
+ENTRYPOINT ["/bin/opm"]
+CMD ["serve", "/configs", "--cache-dir=/tmp/cache"]
+
+COPY --from=builder /configs /configs
+COPY --from=builder /tmp/cache /tmp/cache
+
+LABEL operators.operatorframework.io.index.configs.v1=/configs

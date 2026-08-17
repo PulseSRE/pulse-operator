@@ -24,8 +24,8 @@ var _ = Describe("UIReconciler", func() {
 	)
 
 	var (
-		cr          *pulsev1alpha1.OpenShiftPulse
-		ctx         context.Context
+		cr           *pulsev1alpha1.OpenShiftPulse
+		ctx          context.Context
 		uiReconciler *UIReconciler
 	)
 
@@ -145,6 +145,12 @@ var _ = Describe("UIReconciler", func() {
 
 		Expect(isValidCookieSecret(regenerated.Data["cookie-secret"])).To(BeTrue(),
 			"operator must regenerate a valid 32-byte cookie secret after detecting a malformed one")
+
+		// Regression guard: fixing an unrelated cookie-secret format bug must never
+		// rotate client-secret — that invalidates the OAuthClient's live grant for
+		// no reason connected to the actual bug being fixed.
+		Expect(string(regenerated.Data["client-secret"])).To(Equal("some-client-secret"),
+			"client-secret must be preserved untouched when only cookie-secret is regenerated")
 	})
 
 	It("oauth-proxy args never contain --openshift-delegate-urls", func() {
@@ -170,6 +176,29 @@ var _ = Describe("UIReconciler", func() {
 			Expect(arg).NotTo(ContainSubstring("openshift-delegate-urls"),
 				"--openshift-delegate-urls must never appear — it hard-blocks login with 403")
 		}
+	})
+
+	It("oauth-proxy requests user:full scope (required for --pass-access-token to work against the K8s API)", func() {
+		// oauth-proxy's default scope (user:info user:check-access) can authenticate
+		// a user but cannot be used by nginx's /api/kubernetes/ proxy to actually list
+		// resources — that needs user:full requested explicitly. Regression guard for
+		// the "nodes/resources not loading in UI" symptom this chain of fixes targets.
+		cr.Spec.UI.Replicas = 1
+		info := &ClusterInfo{
+			IngressDomain:   "apps.example.com",
+			OAuthProxyImage: DefaultOAuthProxyImage,
+		}
+		err := uiReconciler.reconcileUIDeployment(ctx, cr, info, "testhash")
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiResourceName(uiCRName),
+			Namespace: namespace,
+		}, deploy)).To(Succeed())
+
+		Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
+		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--scope=user:full"))
 	})
 
 	It("OAuthClient is created with correct redirectURI after Route hostname is known", func() {

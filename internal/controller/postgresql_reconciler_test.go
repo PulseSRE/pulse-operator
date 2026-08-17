@@ -28,7 +28,7 @@ var _ = Describe("PostgreSQLReconciler", func() {
 
 	BeforeEach(func() {
 		ctx = testCtx
-		pg = &PostgreSQLReconciler{Client: k8sClient}
+		pg = &PostgreSQLReconciler{Client: k8sClient, Scheme: testScheme}
 
 		cr = &pulsev1alpha1.OpenShiftPulse{
 			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},

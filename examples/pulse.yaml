@@ -4,6 +4,13 @@ metadata:
   name: pulse
   namespace: openshiftpulse
 spec:
+  # Exactly one AI backend is required — the agent has no way to function
+  # without one. Replace with your GCP project, or delete this block and use
+  # anthropicApiKey.existingSecret instead (see README.md#cr-spec).
+  vertexAI:
+    projectId: my-gcp-project
+    region: us-east5
+    credentialSecret: gcp-sa-key
   agent:
     image: quay.io/amobrem/pulse-agent:latest
     trustLevel: 2

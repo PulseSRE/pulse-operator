@@ -367,10 +367,13 @@ KUBEBUILDER_ASSETS=/tmp/kubebuilder-bin/k8s/1.31.0-darwin-arm64 make test
 oc apply -f config/crd/bases/pulse.ai_openshiftpulses.yaml
 
 # Run operator process (skip leader election)
+# --zap-devel switches to human-readable console logs; the production default
+# (used by the shipped Deployment) is structured JSON.
 go run ./cmd/main.go \
   --leader-elect=false \
   --metrics-bind-address=:9191 \
-  --health-probe-bind-address=:9292
+  --health-probe-bind-address=:9292 \
+  --zap-devel
 
 # Apply a CR in another terminal
 oc apply -f examples/pulse.yaml
@@ -401,15 +404,20 @@ make manifests generate
 
 ### Build the catalog image
 
-The catalog image is a File-Based Catalog (FBC) served by `opm`. To rebuild it after bundle changes:
+The catalog image is a File-Based Catalog (FBC) served by `opm`. This is **not**
+automated by CI (see [Releasing a new version](#releasing-a-new-version) below) —
+rebuild and push it manually after bundle changes:
 
 ```bash
-# 1. Render the bundle into FBC YAML
+# 1. Render the bundle into FBC YAML. Must land inside ./catalog — Dockerfile.catalog's
+#    ADD instruction only has access to paths inside the build context (this repo root),
+#    not arbitrary host paths like /tmp.
+mkdir -p catalog
 podman run --rm -v $(pwd)/bundle:/bundle:z \
   quay.io/operator-framework/opm:latest render /bundle -o yaml > /tmp/catalog.yaml
 
 # 2. Prepend package + channel declarations
-cat - /tmp/catalog.yaml > /tmp/full-catalog.yaml <<'HEADER'
+cat - /tmp/catalog.yaml > catalog/full-catalog.yaml <<'HEADER'
 ---
 defaultChannel: alpha
 name: pulse-operator
@@ -422,11 +430,15 @@ package: pulse-operator
 schema: olm.channel
 HEADER
 
-# 3. Build catalog image (linux/amd64 — cluster nodes are x86)
+# 3. Build catalog image (linux/amd64 — cluster nodes are x86). Dockerfile.catalog
+#    pre-populates opm's serve cache at build time — required, or the container
+#    fails at startup with "integrity check failed: read existing cache digest".
 podman build --platform linux/amd64 \
   -f Dockerfile.catalog \
   -t quay.io/amobrem/pulse-operator-catalog:latest .
 podman push quay.io/amobrem/pulse-operator-catalog:latest
+
+rm -rf catalog  # generated — not committed (see .gitignore)
 ```
 
 ### Validate the bundle
@@ -444,9 +456,14 @@ git tag v0.2.0 -m "v0.2.0: ..."
 git push origin v0.2.0
 ```
 
-CI builds and pushes:
-- `quay.io/amobrem/pulse-operator:v0.2.0` + `:latest`
-- `quay.io/amobrem/pulse-operator-catalog:v0.2.0` + `:latest`
+CI ([`.github/workflows/release.yml`](.github/workflows/release.yml)) builds and pushes:
+- `quay.io/amobrem/pulse-operator:v0.2.0` + `:latest` (the operator image, from `Dockerfile`)
+- `quay.io/amobrem/pulse-operator-bundle:v0.2.0` + `:latest` (the OLM bundle, from `Dockerfile.bundle`)
+
+The **catalog** image (`pulse-operator-catalog`, used by the CatalogSource in
+[Install via OLM](#install-via-olm)) is *not* built by this workflow — publish it
+manually via [Build the catalog image](#build-the-catalog-image) above after
+tagging a release.
 
 Requires `QUAY_USERNAME` and `QUAY_TOKEN` as GitHub repository secrets.
 
@@ -579,11 +596,14 @@ Common causes: wrong image architecture (build with `--platform linux/amd64`), m
 
 ## Security
 
+See [SECURITY.md](SECURITY.md) to report a vulnerability.
+
 - All managed pods run as non-root with `AllowPrivilegeEscalation=false`, `Capabilities.Drop=ALL`, and `SeccompProfile=RuntimeDefault`.
 - PostgreSQL sets `ReadOnlyRootFilesystem=false` (PG requires writable socket and temp paths).
-- The operator's ClusterRole includes `escalate`+`bind` on RBAC resources — required to create ClusterRoles for managed instances, but represents a privilege escalation path. Restrict exec access to `pulse-operator-system` via NetworkPolicy.
+- The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict exec access to `pulse-operator-system` via NetworkPolicy.
 - OAuthClient names are scoped to `{namespace}-{name}` to prevent collision when multiple CRs coexist on the same cluster.
 - Secrets (pg-auth, ws-token, oauth cookie) are generated once and never rotated automatically. Rotate manually by deleting the Secret — the operator regenerates it on next reconcile.
+- Container images (`Dockerfile`, `Dockerfile.bundle`) are pinned by digest, not just tag, for reproducible builds; Dependabot (`.github/dependabot.yml`) opens a PR when a pinned digest moves.
 
 ---
 

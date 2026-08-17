@@ -20,9 +20,6 @@ func defaultPodSecCtx(uid *int64) *corev1.PodSecurityContext {
 	return ctx
 }
 
-// podUID is a convenience helper to create an *int64 for defaultPodSecCtx.
-func podUID(uid int64) *int64 { return &uid }
-
 // defaultContainerSecCtx returns a SecurityContext satisfying the restricted
 // PodSecurity admission policy at the container level.
 // ReadOnlyRootFilesystem is intentionally omitted — callers that need a writable

@@ -95,9 +95,9 @@ var _ = Describe("UIReconciler nginx config", func() {
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, secret) })
 
 		conf := reconcileNginxAndRead(ctx, ui, cr)
-		Expect(conf).To(ContainSubstring("token=" + testToken),
+		Expect(conf).To(ContainSubstring("token="+testToken),
 			"WS proxy URL must contain the shared token as a query param")
-		Expect(conf).To(ContainSubstring("Bearer " + testToken),
+		Expect(conf).To(ContainSubstring("Bearer "+testToken),
 			"REST proxy must set Authorization: Bearer <token>")
 	})
 
