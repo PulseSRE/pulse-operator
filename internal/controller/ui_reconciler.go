@@ -382,31 +382,99 @@ func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulse
 func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
 	name := uiNginxConfigMapName(pulse.Name)
 
-	nginxConf := `worker_processes auto;
+	// Read WS token from the agent's ws-token secret so it can be embedded in
+	// the nginx WebSocket proxy rules. Token is created by AgentReconciler on first
+	// reconcile and is stable across upgrades — fall back to empty string on lookup
+	// failure (agent not yet created) and the configmap will update on the next
+	// reconcile after the token secret appears.
+	wsToken := ""
+	tokenSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      wsTokenSecretName(pulse.Name),
+		Namespace: pulse.Namespace,
+	}, tokenSecret); err == nil {
+		wsToken = string(tokenSecret.Data["token"])
+	}
+
+	agentSvc := agentResourceName(pulse.Name) // e.g. "pulse-openshift-sre-agent"
+
+	nginxConf := fmt.Sprintf(`worker_processes auto;
+error_log /dev/stderr warn;
+pid /tmp/nginx.pid;
 events { worker_connections 1024; }
 http {
   include /etc/nginx/mime.types;
   default_type application/octet-stream;
+  access_log /dev/stdout;
+  sendfile on;
+  keepalive_timeout 65;
+  client_body_temp_path /tmp/client_temp;
+  proxy_temp_path /tmp/proxy_temp;
+  fastcgi_temp_path /tmp/fastcgi_temp;
+  uwsgi_temp_path /tmp/uwsgi_temp;
+  scgi_temp_path /tmp/scgi_temp;
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+  }
   server {
     listen 8080;
+    server_name _;
     root /opt/app-root/src;
     index index.html;
-    # Serve static assets directly; fall back to SPA index for unmatched paths.
-    location ~* \.(js|css|png|svg|ico|woff2?|ttf|eot|map)$ {
-      try_files $uri =404;
-      expires 1y;
-      add_header Cache-Control "public, immutable";
+
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Kubernetes API proxy — UI reads cluster resources directly.
+    location /api/kubernetes/ {
+      proxy_pass https://kubernetes.default.svc/;
+      proxy_ssl_verify on;
+      proxy_ssl_trusted_certificate /var/run/secrets/kubernetes.io/serviceaccount/ca.crt;
+      proxy_set_header Authorization "Bearer $http_x_forwarded_access_token";
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_http_version 1.1;
+      proxy_read_timeout 3600s;
     }
-    # Runtime config injected by the operator (agent URL, WS token, etc.)
+
+    # Agent WebSocket — appends the shared token as a query param.
+    location ~ ^/api/agent/ws/(sre|security|monitor|agent)$ {
+      proxy_pass http://%s:8080/ws/$1?token=%s;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header X-Forwarded-Access-Token $http_x_forwarded_access_token;
+      proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+      proxy_http_version 1.1;
+      proxy_read_timeout 3600s;
+    }
+
+    # Agent REST API (inbox, views, briefing, metrics, etc.).
+    location /api/agent/ {
+      proxy_pass http://%s:8080/;
+      proxy_set_header Authorization "Bearer %s";
+      proxy_set_header X-Forwarded-Access-Token $http_x_forwarded_access_token;
+      proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+      proxy_read_timeout 60s;
+    }
+
+    # Runtime config served by nginx (no disk file needed).
     location = /config.js {
       add_header Content-Type application/javascript;
       return 200 'window.__PULSE_CONFIG__={};';
     }
     location /healthz { return 200 'OK\n'; add_header Content-Type text/plain; }
+    location ~* \.(js|css|png|svg|ico|woff2?|ttf|eot|map)$ {
+      try_files $uri =404;
+      expires 1y;
+      add_header Cache-Control "public, immutable";
+    }
     location / { try_files $uri $uri/ /index.html; }
   }
 }
-`
+`, agentSvc, wsToken, agentSvc, wsToken)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
