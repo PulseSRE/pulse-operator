@@ -167,8 +167,11 @@ var _ = Describe("AgentReconciler", func() {
 		Expect(string(secret2.Data["token"])).To(Equal(token1))
 	})
 
-	It("Memory PVC pending blocks Deployment and requeues", func() {
-		// Use a unique CR name so this test has its own PVC with no shared state.
+	It("Deployment is created even while memory PVC is Pending (WaitForFirstConsumer)", func() {
+		// With WaitForFirstConsumer storage classes, the PVC only binds once a pod
+		// is scheduled. The gate (requeue until Bound) created a deadlock — removed.
+		// Now the Deployment is created immediately; Kubernetes holds the pod Pending
+		// until the volume is provisioned.
 		uniqueName := "test-pulse-pvcgate"
 		uniqueCR := &pulsev1alpha1.OpenShiftPulse{
 			ObjectMeta: metav1.ObjectMeta{Name: uniqueName, Namespace: namespace},
@@ -178,16 +181,14 @@ var _ = Describe("AgentReconciler", func() {
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, uniqueCR) })
 
 		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: uniqueName, Namespace: namespace}}
-		result, err := reconciler.Reconcile(ctx, req)
+		_, err := reconciler.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.RequeueAfter > 0).To(BeTrue(), "should requeue while PVC is Pending")
 
 		deploy := &appsv1.Deployment{}
-		getErr := k8sClient.Get(ctx, types.NamespacedName{
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      agentResourceName(uniqueName),
 			Namespace: namespace,
-		}, deploy)
-		Expect(getErr).To(HaveOccurred(), "Deployment must NOT exist while PVC is Pending")
+		}, deploy)).To(Succeed(), "Deployment should exist even with Pending PVC")
 	})
 
 	It("Deployment has readiness and liveness probes configured", func() {

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -80,18 +79,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
-	// Wait for the memory PVC to be Bound before creating the Deployment.
-	// The Deployment uses Recreate strategy and mounts the RWO PVC — it won't
-	// schedule until the volume is provisioned.
-	pvc := &corev1.PersistentVolumeClaim{}
-	if err := r.Get(ctx, types.NamespacedName{Name: memoryPVCName(cr.Name), Namespace: cr.Namespace}, pvc); err != nil {
-		return ctrl.Result{}, err
-	}
-	if pvc.Status.Phase != corev1.ClaimBound {
-		logger.Info("Memory PVC not yet Bound — requeuing", "pvc", pvc.Name, "phase", pvc.Status.Phase)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
+	// Create Deployment and Service unconditionally. With WaitForFirstConsumer
+	// storage classes (e.g. gp3-csi), the PVC only binds once a pod is
+	// scheduled — gating on Bound creates a chicken-and-egg deadlock.
+	// Kubernetes will hold the pod Pending until the volume is provisioned,
+	// and status.agentHealthy reflects actual pod readiness.
 	postPVCSteps := []step{
 		{"Deployment", r.reconcileDeployment},
 		{"Service", r.reconcileService},
