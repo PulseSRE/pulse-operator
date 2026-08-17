@@ -398,8 +398,11 @@ func (r *PostgreSQLReconciler) reconcilePGService(
 	return err
 }
 
-// generatePassword returns a hex-encoded random string of n bytes (produces 2n hex chars).
-// Caller requests n=24 which yields a 48-char hex string; we truncate to n chars.
+// generatePassword returns a hex-encoded random string exactly n characters
+// long. byteLen is sized (rounding up for odd n) so the hex encoding is
+// already exactly n chars — no wasted entropy from over-generating and
+// truncating. The final [:n] is a no-op for even n; it only trims the one
+// extra hex digit that rounding up produces for odd n.
 func generatePassword(n int) (string, error) {
 	// Use n/2 bytes so the hex output is exactly n chars (round up for odd n).
 	byteLen := (n + 1) / 2
