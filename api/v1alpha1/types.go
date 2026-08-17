@@ -33,8 +33,14 @@ type OpenShiftPulseSpec struct {
 }
 
 type VertexAIConfig struct {
-	ProjectID        string `json:"projectId"`
-	Region           string `json:"region,omitempty"`
+	ProjectID string `json:"projectId"`
+	Region    string `json:"region,omitempty"`
+	// CredentialSecret is the name of a Secret in the same namespace containing
+	// a GCP service account key. The Secret must have a data key named "key.json"
+	// holding the JSON key file. When empty, the agent uses Application Default
+	// Credentials (ADC), which requires workload identity or a mounted GOOGLE_APPLICATION_CREDENTIALS.
+	// Example: kubectl create secret generic gcp-sa-key --from-file=key.json=sa-key.json
+	// +optional
 	CredentialSecret string `json:"credentialSecret,omitempty"`
 }
 
