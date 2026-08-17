@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -27,6 +29,11 @@ const (
 	pgPort               = int32(5432)
 	pgUser               = "pulse"
 	pgDB                 = "pulse"
+
+	// pgRequeueDelay is used when a reconcile step needs a short requeue
+	// rather than an error (e.g. waiting for a selector-mismatched
+	// StatefulSet to finish terminating before it can be recreated).
+	pgRequeueDelay = 5 * time.Second
 )
 
 // PostgreSQLReconciler handles all PostgreSQL sub-resources for an OpenShiftPulse CR.
@@ -42,10 +49,12 @@ type PostgreSQLReconciler struct {
 // It returns the DATABASE_URL string. The caller (OpenShiftPulseReconciler) is
 // responsible for setting pulse.Status.DatabaseReady — PostgreSQLReconciler does
 // not touch the status field to avoid double-writes with the root reconciler.
+// Returns a non-zero ctrl.Result.RequeueAfter (with a nil error) when a step
+// needs a short requeue rather than a failure — see reconcilePGStatefulSet.
 func (r *PostgreSQLReconciler) reconcilePostgres(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
-) (string, error) {
+) (string, ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	secretName := pulse.Name + "-pg-auth"
@@ -55,13 +64,19 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 	// 1. Secret
 	password, err := r.reconcilePGSecret(ctx, pulse, secretName)
 	if err != nil {
-		return "", fmt.Errorf("pg secret: %w", err)
+		return "", ctrl.Result{}, fmt.Errorf("pg secret: %w", err)
 	}
 	logger.V(1).Info("pg secret ready", "secret", secretName)
 
 	// 2. StatefulSet
-	if err := r.reconcilePGStatefulSet(ctx, pulse, stsName, secretName); err != nil {
-		return "", fmt.Errorf("pg statefulset: %w", err)
+	stsResult, err := r.reconcilePGStatefulSet(ctx, pulse, stsName, secretName)
+	if err != nil {
+		return "", ctrl.Result{}, fmt.Errorf("pg statefulset: %w", err)
+	}
+	if stsResult.RequeueAfter > 0 {
+		// Waiting for a terminating/being-recreated StatefulSet — every step
+		// below depends on it existing, so stop here rather than erroring.
+		return "", stsResult, nil
 	}
 	logger.V(1).Info("pg statefulset ready", "sts", stsName)
 
@@ -76,13 +91,13 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 
 	// 3. ClusterIP Service
 	if err := r.reconcilePGService(ctx, pulse, svcName, false); err != nil {
-		return "", fmt.Errorf("pg service: %w", err)
+		return "", ctrl.Result{}, fmt.Errorf("pg service: %w", err)
 	}
 
 	// 4. Headless Service
 	headlessSvcName := svcName + "-headless"
 	if err := r.reconcilePGService(ctx, pulse, headlessSvcName, true); err != nil {
-		return "", fmt.Errorf("pg headless service: %w", err)
+		return "", ctrl.Result{}, fmt.Errorf("pg headless service: %w", err)
 	}
 
 	dbURL := fmt.Sprintf("postgresql://%s:%s@%s:5432/%s", pgUser, password, svcName, pgDB)
@@ -99,16 +114,26 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 			StringData: map[string]string{"database-url": dbURL},
 		}
 		if setErr := controllerutil.SetControllerReference(pulse, connSecret, r.Scheme); setErr != nil {
-			return "", fmt.Errorf("set owner on pg connection secret: %w", setErr)
+			return "", ctrl.Result{}, fmt.Errorf("set owner on pg connection secret: %w", setErr)
 		}
 		if createErr := r.Create(ctx, connSecret); createErr != nil {
-			return "", fmt.Errorf("create pg connection secret: %w", createErr)
+			return "", ctrl.Result{}, fmt.Errorf("create pg connection secret: %w", createErr)
 		}
 	} else if err != nil {
-		return "", err
+		return "", ctrl.Result{}, err
+	} else if string(connSecret.Data["database-url"]) != dbURL {
+		// The underlying pg-auth credentials changed (e.g. the legacy
+		// POSTGRES_*->POSTGRESQL_* migration path in reconcilePGSecret ran)
+		// but this connection secret was create-only, so database-url never
+		// got refreshed to match — the agent would keep using a stale URL
+		// indefinitely. Patch just this key; nothing else in the secret changes.
+		connSecret.StringData = map[string]string{"database-url": dbURL}
+		if updateErr := r.Update(ctx, connSecret); updateErr != nil {
+			return "", ctrl.Result{}, fmt.Errorf("update pg connection secret: %w", updateErr)
+		}
 	}
 
-	return dbURL, nil
+	return dbURL, ctrl.Result{}, nil
 }
 
 // reconcilePGSecret creates the pg-auth Secret if it does not exist and returns the password.
@@ -174,11 +199,18 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 
 // reconcilePGStatefulSet creates or updates the PostgreSQL StatefulSet.
 // VolumeClaimTemplates are immutable after creation and are only set on the create path.
+// Returns a non-zero ctrl.Result.RequeueAfter (with a nil error), not an
+// error, when it is waiting for a selector-mismatched StatefulSet to finish
+// terminating before it can be recreated: this is an expected step of a
+// normal migration (e.g. adopting a previously Helm-managed instance), and
+// returning it as an error used to surface as a Warning ReconcileFailed
+// event with exponential backoff, making a healthy self-heal look like a
+// broken operator.
 func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
 	stsName, secretName string,
-) error {
+) (ctrl.Result, error) {
 	image := pulse.Spec.Database.Image
 	if image == "" {
 		image = defaultPGImage
@@ -189,7 +221,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	}
 	storageQty, err := resource.ParseQuantity(storageSize)
 	if err != nil {
-		return fmt.Errorf("parse storageSize %q: %w", storageSize, err)
+		return ctrl.Result{}, fmt.Errorf("parse storageSize %q: %w", storageSize, err)
 	}
 
 	replicas := int32(1)
@@ -213,10 +245,11 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	// running, which prevents the new STS from ever creating its pod (AlreadyExists).
 	// PVCs survive because they are managed by the STS volumeClaimTemplate lifecycle.
 	if err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: stsName}, sts); err == nil {
-		// If the STS is already terminating, return an error so controller-runtime
-		// retries shortly — the watch will also re-trigger when deletion completes.
+		// If the STS is already terminating, requeue shortly — the watch will
+		// also re-trigger when deletion completes, but a short explicit
+		// requeue avoids relying on that alone.
 		if sts.DeletionTimestamp != nil {
-			return fmt.Errorf("postgresql StatefulSet %s is terminating; waiting for deletion", stsName)
+			return ctrl.Result{RequeueAfter: pgRequeueDelay}, nil
 		}
 		wantLabels := pgLabels(pulse.Name)
 		if sts.Spec.Selector != nil {
@@ -230,9 +263,9 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 			}
 			if mismatch {
 				if delErr := r.Delete(ctx, sts, client.PropagationPolicy(metav1.DeletePropagationBackground)); delErr != nil && !errors.IsNotFound(delErr) {
-					return fmt.Errorf("delete mismatched statefulset: %w", delErr)
+					return ctrl.Result{}, fmt.Errorf("delete mismatched statefulset: %w", delErr)
 				}
-				return fmt.Errorf("postgresql StatefulSet %s deleted (selector mismatch); waiting for removal", stsName)
+				return ctrl.Result{RequeueAfter: pgRequeueDelay}, nil
 			}
 		}
 		sts = &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: pulse.Namespace}}
@@ -326,7 +359,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 		}
 		return nil
 	})
-	return err
+	return ctrl.Result{}, err
 }
 
 // reconcilePGService creates or updates either a ClusterIP or headless Service for PostgreSQL.

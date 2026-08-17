@@ -8,8 +8,10 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -44,7 +46,7 @@ var _ = Describe("PostgreSQLReconciler", func() {
 	})
 
 	It("reconcilePostgres creates Secret, StatefulSet, and Service", func() {
-		_, err := pg.reconcilePostgres(ctx, cr)
+		_, _, err := pg.reconcilePostgres(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Secret
@@ -71,7 +73,7 @@ var _ = Describe("PostgreSQLReconciler", func() {
 	})
 
 	It("Secret uses POSTGRESQL_* keys, not POSTGRES_*", func() {
-		_, err := pg.reconcilePostgres(ctx, cr)
+		_, _, err := pg.reconcilePostgres(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
 		secret := &corev1.Secret{}
@@ -96,7 +98,7 @@ var _ = Describe("PostgreSQLReconciler", func() {
 	})
 
 	It("password is not rotated on second reconcile", func() {
-		_, err := pg.reconcilePostgres(ctx, cr)
+		_, _, err := pg.reconcilePostgres(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
 		secret1 := &corev1.Secret{}
@@ -106,7 +108,7 @@ var _ = Describe("PostgreSQLReconciler", func() {
 		}, secret1)).To(Succeed())
 		pass1 := string(secret1.Data["POSTGRESQL_PASSWORD"])
 
-		_, err = pg.reconcilePostgres(ctx, cr)
+		_, _, err = pg.reconcilePostgres(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
 		secret2 := &corev1.Secret{}
@@ -115,6 +117,128 @@ var _ = Describe("PostgreSQLReconciler", func() {
 			Namespace: namespace,
 		}, secret2)).To(Succeed())
 		Expect(string(secret2.Data["POSTGRESQL_PASSWORD"])).To(Equal(pass1))
+	})
+
+	// Regression: a selector-mismatched StatefulSet (e.g. previously
+	// Helm-managed) used to be handled by deleting it and returning a
+	// synthetic error purely to force a requeue, which controller-runtime
+	// turns into a Warning ReconcileFailed event with exponential backoff —
+	// making a normal, successful migration step look like a failing operator.
+	It("deletes a selector-mismatched StatefulSet and requeues cleanly, without an error", func() {
+		stsName := crName + "-openshift-sre-agent-postgresql"
+
+		// envtest does not run the garbage collector controller, so a real
+		// StatefulSet left behind by another spec in this suite (owned by
+		// the same CR name, never cascade-deleted) can still exist here.
+		// Clear it first so the fake "pre-existing, mismatched" object below
+		// can be created cleanly regardless of run order.
+		_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: namespace}},
+			client.PropagationPolicy(metav1.DeletePropagationBackground))
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: namespace}, &appsv1.StatefulSet{}))
+		}).Should(BeTrue())
+
+		one := int32(1)
+		preExisting := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: namespace},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas:    &one,
+				ServiceName: stsName + "-headless",
+				Selector:    &metav1.LabelSelector{MatchLabels: map[string]string{"app": "helm-managed-pg"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "helm-managed-pg"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "postgresql", Image: "busybox"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, preExisting)).To(Succeed())
+
+		result, err := pg.reconcilePGStatefulSet(ctx, cr, stsName, crName+"-pg-auth")
+		Expect(err).NotTo(HaveOccurred(), "a selector mismatch is an expected migration step, not a failure")
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0), "must signal a requeue instead of relying on an error")
+
+		sts := &appsv1.StatefulSet{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: namespace}, sts)
+		Expect(apierrors.IsNotFound(getErr)).To(BeTrue(), "mismatched StatefulSet must actually have been deleted")
+	})
+
+	It("requeues cleanly (without an error) while a StatefulSet is still terminating", func() {
+		stsName := crName + "-openshift-sre-agent-postgresql"
+
+		// Same run-order concern as the mismatch test above: clear out any
+		// real StatefulSet left behind by an earlier spec before creating
+		// the fake finalizer-blocked one this test needs.
+		_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: namespace}},
+			client.PropagationPolicy(metav1.DeletePropagationBackground))
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: namespace}, &appsv1.StatefulSet{}))
+		}).Should(BeTrue())
+
+		one := int32(1)
+		preExisting := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       stsName,
+				Namespace:  namespace,
+				Finalizers: []string{"pulse.ai/test-block-deletion"}, // keeps it around post-Delete for this test
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas:    &one,
+				ServiceName: stsName + "-headless",
+				Selector:    &metav1.LabelSelector{MatchLabels: pgLabels(crName)},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: pgLabels(crName)},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "postgresql", Image: "busybox"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, preExisting)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, preExisting)).To(Succeed())
+		DeferCleanup(func() {
+			sts := &appsv1.StatefulSet{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: namespace}, sts); err == nil {
+				sts.Finalizers = nil
+				_ = k8sClient.Update(ctx, sts)
+			}
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: namespace}, &appsv1.StatefulSet{}))
+			}).Should(BeTrue(), "test STS must be fully gone before the next spec runs")
+		})
+
+		result, err := pg.reconcilePGStatefulSet(ctx, cr, stsName, crName+"-pg-auth")
+		Expect(err).NotTo(HaveOccurred(), "waiting for termination is an expected step, not a failure")
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+	})
+
+	// Regression: the {name}-postgresql connection secret's database-url was
+	// create-only. If the underlying pg-auth password ever legitimately
+	// changes (e.g. the legacy POSTGRES_*->POSTGRESQL_* migration path in
+	// reconcilePGSecret, or any future rotation), the connection secret kept
+	// serving a stale URL forever, since nothing ever refreshed it.
+	It("refreshes database-url in the connection secret when the underlying password changes", func() {
+		_, _, err := pg.reconcilePostgres(ctx, cr)
+		Expect(err).NotTo(HaveOccurred())
+
+		connSecretName := crName + "-postgresql"
+		before := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connSecretName, Namespace: namespace}, before)).To(Succeed())
+		staleURL := string(before.Data["database-url"])
+		Expect(staleURL).NotTo(BeEmpty())
+
+		// Simulate the password having legitimately changed underneath
+		// (e.g. an external rotation) by editing pg-auth directly.
+		pgAuth := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-pg-auth", Namespace: namespace}, pgAuth)).To(Succeed())
+		pgAuth.Data["POSTGRESQL_PASSWORD"] = []byte("rotated-password-xyz")
+		Expect(k8sClient.Update(ctx, pgAuth)).To(Succeed())
+
+		_, _, err = pg.reconcilePostgres(ctx, cr)
+		Expect(err).NotTo(HaveOccurred())
+
+		after := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connSecretName, Namespace: namespace}, after)).To(Succeed())
+		Expect(string(after.Data["database-url"])).NotTo(Equal(staleURL),
+			"database-url must be refreshed to match the current pg-auth password, not left stale")
+		Expect(string(after.Data["database-url"])).To(ContainSubstring("rotated-password-xyz"))
 	})
 
 	It("reconcilePGService is idempotent", func() {

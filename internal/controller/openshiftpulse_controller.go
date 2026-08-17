@@ -88,18 +88,28 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// 1. Reconcile PostgreSQL sub-resources.
-	dbURL, err := r.reconcilePostgres(ctx, pulse)
+	dbURL, pgResult, err := r.reconcilePostgres(ctx, pulse)
 	if err != nil {
 		logger.Error(err, "postgres reconcile failed")
 		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "ReconcileFailed", "PostgreSQL reconcile failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("reconcilePostgres: %w", err)
 	}
+	if pgResult.RequeueAfter > 0 {
+		// A genuine "come back shortly" signal (e.g. waiting for a
+		// selector-mismatched StatefulSet to finish terminating before it can
+		// be recreated) — not a failure, so no Warning event.
+		logger.Info("PostgreSQL reconcile requeued", "name", pulse.Name)
+		return pgResult, nil
+	}
 
 	// 2. Reconcile Agent sub-resources, providing the database URL.
-	if err := r.reconcileAgent(ctx, pulse, dbURL); err != nil {
+	if agentResult, err := r.reconcileAgent(ctx, pulse, dbURL); err != nil {
 		logger.Error(err, "agent reconcile failed")
 		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "ReconcileFailed", "Agent reconcile failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("reconcileAgent: %w", err)
+	} else if agentResult.RequeueAfter > 0 {
+		logger.Info("Agent reconcile requeued", "name", pulse.Name)
+		return agentResult, nil
 	}
 
 	// 2a. NetworkPolicies — protect UI and PostgreSQL pods.
@@ -257,14 +267,19 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 }
 
 // reconcilePostgres delegates to PostgreSQLReconciler and returns the database URL.
-func (r *OpenShiftPulseReconciler) reconcilePostgres(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
+// Returns a non-zero ctrl.Result.RequeueAfter (with a nil error) when a step
+// needs a short requeue rather than a failure — see
+// PostgreSQLReconciler.reconcilePGStatefulSet.
+func (r *OpenShiftPulseReconciler) reconcilePostgres(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, ctrl.Result, error) {
 	pg := &PostgreSQLReconciler{Client: r.Client, Scheme: r.Scheme}
 	return pg.reconcilePostgres(ctx, pulse)
 }
 
 // reconcileAgent runs all agent sub-reconciler steps in order.
 // dbURL is available for future use (e.g. injecting directly rather than via Secret).
-func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, dbURL string) error {
+// Returns a non-zero ctrl.Result.RequeueAfter (with a nil error) when a step
+// needs a short requeue rather than a failure — see AgentReconciler.reconcileDeployment.
+func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, dbURL string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	_ = dbURL // consumed via K8s Secret by the agent Deployment today; reserved for future direct injection
 
@@ -280,17 +295,29 @@ func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pu
 		{"ClusterRoleBinding", ar.reconcileClusterRoleBinding},
 		{"WSTokenSecret", ar.reconcileWSTokenSecret},
 		{"MemoryPVC", ar.reconcileMemoryPVC},
-		{"Deployment", ar.reconcileDeployment},
-		{"Service", ar.reconcileService},
 	}
 
 	for _, s := range steps {
 		if err := s.fn(ctx, pulse); err != nil {
 			logger.Error(err, "agent reconcile step failed", "step", s.name)
-			return fmt.Errorf("%s: %w", s.name, err)
+			return ctrl.Result{}, fmt.Errorf("%s: %w", s.name, err)
 		}
 	}
-	return nil
+
+	// Deployment is not in the generic loop above: it can return a genuine
+	// (non-error) requeue signal instead of a failure.
+	if result, err := ar.reconcileDeployment(ctx, pulse); err != nil {
+		logger.Error(err, "agent reconcile step failed", "step", "Deployment")
+		return ctrl.Result{}, fmt.Errorf("deployment: %w", err)
+	} else if result.RequeueAfter > 0 {
+		return result, nil
+	}
+
+	if err := ar.reconcileService(ctx, pulse); err != nil {
+		logger.Error(err, "agent reconcile step failed", "step", "Service")
+		return ctrl.Result{}, fmt.Errorf("service: %w", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // isDeploymentReady returns true when the named Deployment has at least one ready replica.

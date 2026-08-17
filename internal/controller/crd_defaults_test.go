@@ -125,7 +125,7 @@ var _ = Describe("CRD object-level defaulting when a parent spec field is entire
 			pg := &PostgreSQLReconciler{Client: k8sClient, Scheme: testScheme}
 			cr := &pulsev1alpha1.OpenShiftPulse{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName, Namespace: namespace}, cr)).To(Succeed())
-			_, err := pg.reconcilePostgres(ctx, cr)
+			_, _, err := pg.reconcilePostgres(ctx, cr)
 			Expect(err).NotTo(HaveOccurred())
 
 			sts := &appsv1.StatefulSet{}

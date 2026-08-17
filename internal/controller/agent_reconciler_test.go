@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -206,6 +207,45 @@ var _ = Describe("AgentReconciler", func() {
 			Name:      agentResourceName(uniqueName),
 			Namespace: namespace,
 		}, deploy)).To(Succeed(), "Deployment should exist even with Pending PVC")
+	})
+
+	// Regression: a selector-mismatched Deployment (e.g. previously
+	// Helm-managed) used to be handled by deleting it and returning a
+	// synthetic error purely to force a requeue. controller-runtime turns
+	// that into a Warning ReconcileFailed event with exponential backoff, so
+	// a normal, successful migration step looked like a failing operator.
+	It("deletes a selector-mismatched Deployment and requeues cleanly, without an error", func() {
+		name := agentResourceName(crName)
+
+		// envtest does not run the garbage collector controller, so a real
+		// Deployment left behind by another spec in this suite (owned by the
+		// same CR name, never cascade-deleted) can still exist here. Clear it
+		// first so the fake "pre-existing, mismatched" object below can be
+		// created cleanly regardless of run order.
+		_ = k8sClient.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &appsv1.Deployment{}))
+		}).Should(BeTrue())
+
+		preExisting := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "helm-managed-agent"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "helm-managed-agent"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "agent", Image: "busybox"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, preExisting)).To(Succeed())
+
+		result, err := reconciler.reconcileDeployment(ctx, cr)
+		Expect(err).NotTo(HaveOccurred(), "a selector mismatch is an expected migration step, not a failure")
+		Expect(result.RequeueAfter).To(BeNumerically(">", 0), "must signal a requeue instead of relying on an error")
+
+		deploy := &appsv1.Deployment{}
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deploy)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "mismatched Deployment must actually have been deleted")
 	})
 
 	It("Deployment has readiness and liveness probes configured", func() {

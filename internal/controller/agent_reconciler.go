@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +31,11 @@ const (
 	annotationOwnerName      = "pulse.ai/owner-name"
 	annotationOwnerNamespace = "pulse.ai/owner-namespace"
 	annotationOwnerUID       = "pulse.ai/owner-uid"
+
+	// agentRequeueDelay is used when a reconcile step needs a short requeue
+	// rather than an error (e.g. after deleting a selector-mismatched
+	// Deployment so the next reconcile can recreate it cleanly).
+	agentRequeueDelay = 5 * time.Second
 )
 
 // AgentReconciler reconciles the agent sub-resources of an OpenShiftPulse CR.
@@ -66,12 +72,22 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		{"ClusterRoleBinding", r.reconcileClusterRoleBinding},
 		{"WSTokenSecret", r.reconcileWSTokenSecret},
 		{"MemoryPVC", r.reconcileMemoryPVC},
-		{"Deployment", r.reconcileDeployment},
-		{"Service", r.reconcileService},
 	} {
 		if err := s.fn(ctx, cr); err != nil {
 			return ctrl.Result{}, fmt.Errorf("%s: %w", s.name, err)
 		}
+	}
+
+	// Deployment is not in the generic loop above: it can return a genuine
+	// (non-error) requeue signal — see reconcileDeployment's doc comment.
+	if result, err := r.reconcileDeployment(ctx, cr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("deployment: %w", err)
+	} else if result.RequeueAfter > 0 {
+		return result, nil
+	}
+
+	if err := r.reconcileService(ctx, cr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("service: %w", err)
 	}
 	return ctrl.Result{}, nil
 }
@@ -549,7 +565,15 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 	}
 }
 
-func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
+// reconcileDeployment returns a non-zero ctrl.Result.RequeueAfter (with a nil
+// error) when it deletes a Deployment whose immutable selector no longer
+// matches (e.g. a Helm-managed Deployment being adopted). This is a normal,
+// expected step of a successful migration, not a failure: returning it as an
+// error here used to make controller-runtime log a Warning ReconcileFailed
+// event and apply exponential backoff, so a healthy self-heal looked like a
+// broken operator to anyone running `kubectl describe` or alerting on
+// Warning events.
+func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) (ctrl.Result, error) {
 	info := DetectClusterInfo(ctx, r.Client)
 	name := agentResourceName(cr.Name)
 	wantSelector := map[string]string{"app": name}
@@ -557,7 +581,7 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 	existing := &appsv1.Deployment{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, existing)
 	if getErr != nil && !errors.IsNotFound(getErr) {
-		return getErr
+		return ctrl.Result{}, getErr
 	}
 
 	if getErr == nil {
@@ -572,9 +596,9 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 		}
 		if mismatch {
 			if delErr := r.Delete(ctx, existing); delErr != nil && !errors.IsNotFound(delErr) {
-				return fmt.Errorf("delete mismatched deployment: %w", delErr)
+				return ctrl.Result{}, fmt.Errorf("delete mismatched deployment: %w", delErr)
 			}
-			return fmt.Errorf("deleted mismatched deployment %s, requeuing", name)
+			return ctrl.Result{RequeueAfter: agentRequeueDelay}, nil
 		}
 
 		// Selector matches — patch mutable fields in place.
@@ -583,9 +607,9 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 		spec.Selector = existing.Spec.Selector // selector is immutable, preserve it
 		updated.Spec = spec
 		if err := controllerutil.SetControllerReference(cr, updated, r.Scheme); err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
-		return r.Update(ctx, updated)
+		return ctrl.Result{}, r.Update(ctx, updated)
 	}
 
 	// Deployment does not exist — create it fresh.
@@ -594,9 +618,9 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 		Spec:       r.buildDeploymentSpec(cr, info),
 	}
 	if err := controllerutil.SetControllerReference(cr, deploy, r.Scheme); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
-	return r.Create(ctx, deploy)
+	return ctrl.Result{}, r.Create(ctx, deploy)
 }
 
 func (r *AgentReconciler) reconcileService(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
