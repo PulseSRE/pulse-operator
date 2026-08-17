@@ -102,9 +102,10 @@ func databaseEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
 }
 
 // agentResources returns the spec-provided resources when non-empty, or sensible
-// defaults. CPU requests are intentionally omitted from defaults so the pod remains
-// schedulable even on nodes at 100% CPU request allocation (common in dev clusters).
-// CPU and memory limits are set to prevent unbounded growth.
+// defaults. CPU is omitted entirely from defaults: a CPU limit with no request
+// causes Kubernetes to auto-set Requests.CPU = Limits.CPU, which blocks scheduling
+// on nodes at 100% CPU request allocation (common in dev/shared clusters).
+// Only memory is bounded by default; users set CPU via spec.agent.resources.
 func agentResources(cr *pulsev1alpha1.OpenShiftPulse) corev1.ResourceRequirements {
 	if cr.Spec.Agent.Resources.Requests != nil || cr.Spec.Agent.Resources.Limits != nil {
 		return cr.Spec.Agent.Resources
@@ -114,7 +115,6 @@ func agentResources(cr *pulsev1alpha1.OpenShiftPulse) corev1.ResourceRequirement
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
 		},
 		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("2"),
 			corev1.ResourceMemory: resource.MustParse("2Gi"),
 		},
 	}

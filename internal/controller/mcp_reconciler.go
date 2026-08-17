@@ -104,7 +104,6 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 									corev1.ResourceMemory: resource.MustParse("128Mi"),
 								},
 								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
 									corev1.ResourceMemory: resource.MustParse("512Mi"),
 								},
 							},
