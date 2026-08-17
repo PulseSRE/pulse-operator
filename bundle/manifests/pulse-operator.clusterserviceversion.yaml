@@ -189,10 +189,18 @@ spec:
     - claude
     - observability
   links:
-    - name: GitHub
+    - name: Operator Source
       url: https://github.com/PulseSRE/pulse-operator
     - name: Documentation
+      url: https://pulsesre.github.io/pulse-operator/
+    - name: Pulse Agent (AI SRE Backend)
       url: https://github.com/PulseSRE/pulse-agent
+    - name: Pulse UI (Frontend)
+      url: https://github.com/PulseSRE/pulse-ui
+    - name: Pulse Agent Docs
+      url: https://pulsesre.github.io/pulse-agent/
+    - name: Pulse UI Docs
+      url: https://pulsesre.github.io/pulse-ui/
   maintainers:
     - email: amobrem@redhat.com
       name: Ali Mobrem
