@@ -396,18 +396,19 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 
 	// Inject AI backend credentials.
 	if cr.Spec.VertexAI != nil && cr.Spec.VertexAI.ProjectID != "" {
+		region := cr.Spec.VertexAI.Region
+		if region == "" {
+			region = "us-east5"
+		}
 		envVars = append(envVars,
 			corev1.EnvVar{Name: "ANTHROPIC_VERTEX_PROJECT_ID", Value: cr.Spec.VertexAI.ProjectID},
-			corev1.EnvVar{Name: "CLOUD_ML_REGION", Value: func() string {
-				if cr.Spec.VertexAI.Region != "" {
-					return cr.Spec.VertexAI.Region
-				}
-				return "us-east5"
-			}()},
+			corev1.EnvVar{Name: "CLOUD_ML_REGION", Value: region},
 		)
+		// Only mount SA key if credentialSecret is specified — clusters using workload
+		// identity or ADC don't need a key file, just the project ID and region.
 		if cr.Spec.VertexAI.CredentialSecret != "" {
 			envVars = append(envVars, corev1.EnvVar{
-				Name: "GOOGLE_APPLICATION_CREDENTIALS",
+				Name:  "GOOGLE_APPLICATION_CREDENTIALS",
 				Value: "/var/secrets/google/key.json",
 			})
 		}
