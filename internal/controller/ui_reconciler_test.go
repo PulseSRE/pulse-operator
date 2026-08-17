@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -199,6 +200,39 @@ var _ = Describe("UIReconciler", func() {
 
 		Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
 		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--scope=user:full"))
+	})
+
+	It("applies spec.ui.resources to the openshiftpulse container, and defaults it when unset", func() {
+		// Regression: spec.ui.resources was defined in the CRD and read by zero
+		// code — the UI container ran unbounded regardless of what an operator
+		// configured. Cover both the override path and the default path.
+		cr.Spec.UI.Replicas = 1
+		cr.Spec.UI.Resources = corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("777Mi")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("999Mi")},
+		}
+		info := &ClusterInfo{IngressDomain: "apps.example.com", OAuthProxyImage: DefaultOAuthProxyImage}
+		Expect(uiReconciler.reconcileUIDeployment(ctx, cr, info, "testhash")).To(Succeed())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiResourceName(uiCRName),
+			Namespace: namespace,
+		}, deploy)).To(Succeed())
+
+		Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
+		got := deploy.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory]
+		Expect(got.String()).To(Equal("777Mi"), "spec.ui.resources override must reach the openshiftpulse container")
+
+		// Now the default path: a fresh CR that never sets spec.ui.resources.
+		cr.Spec.UI.Resources = corev1.ResourceRequirements{}
+		Expect(uiReconciler.reconcileUIDeployment(ctx, cr, info, "testhash2")).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiResourceName(uiCRName),
+			Namespace: namespace,
+		}, deploy)).To(Succeed())
+		gotDefault := deploy.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory]
+		Expect(gotDefault.IsZero()).To(BeFalse(), "openshiftpulse container must have a non-zero default request when spec.ui.resources is unset")
 	})
 
 	It("OAuthClient is created with correct redirectURI after Route hostname is known", func() {
