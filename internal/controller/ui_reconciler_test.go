@@ -6,6 +6,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -97,8 +98,78 @@ var _ = Describe("UIReconciler", func() {
 		_, hasClientSecret := secret.Data["client-secret"]
 		Expect(hasClientSecret).To(BeTrue(), "secret must contain key 'client-secret'")
 
-		_, hasCookieSecret := secret.Data["cookie-secret"]
+		cookieSecret, hasCookieSecret := secret.Data["cookie-secret"]
 		Expect(hasCookieSecret).To(BeTrue(), "secret must contain key 'cookie-secret'")
+
+		// Cookie secret must pass isValidCookieSecret — exactly 32 printable ASCII bytes.
+		// Raw random bytes risk nulls/newlines that truncate the AES key.
+		// 44-char base64 fails oauth-proxy's "must be 16/24/32 bytes" check when
+		// --pass-access-token=true is set. This test catches both regressions.
+		Expect(isValidCookieSecret(cookieSecret)).To(BeTrue(),
+			"cookie-secret must be 32 printable non-whitespace ASCII bytes for AES-256 compatibility")
+	})
+
+	It("reconcileUI replaces a malformed cookie-secret (raw bytes or wrong length)", func() {
+		// Use a unique CR so we start with no existing secret.
+		const badCRName = "test-ui-pulse-badcookie"
+		badCR := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: badCRName, Namespace: namespace},
+			Spec:       pulsev1alpha1.OpenShiftPulseSpec{},
+		}
+		Expect(k8sClient.Create(ctx, badCR)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, badCR) })
+
+		// Pre-create the secret with a 44-byte base64 cookie secret (old format).
+		badSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      uiOAuthSecretsName(badCRName),
+				Namespace: namespace,
+			},
+			Data: map[string][]byte{
+				"client-secret": []byte("some-client-secret"),
+				// 44-byte base64: invalid for AES when pass-access-token is set.
+				"cookie-secret": []byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, badSecret)).To(Succeed())
+
+		// Reconcile should detect the bad format and regenerate.
+		err := uiReconciler.reconcileUIOAuthSecrets(ctx, badCR)
+		Expect(err).NotTo(HaveOccurred())
+
+		regenerated := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiOAuthSecretsName(badCRName),
+			Namespace: namespace,
+		}, regenerated)).To(Succeed())
+
+		Expect(isValidCookieSecret(regenerated.Data["cookie-secret"])).To(BeTrue(),
+			"operator must regenerate a valid 32-byte cookie secret after detecting a malformed one")
+	})
+
+	It("oauth-proxy args never contain --openshift-delegate-urls", func() {
+		// delegate-urls blocks unauthenticated requests before OAuth redirect fires,
+		// trapping users in a 403 they cannot escape. This test prevents regression.
+		cr.Spec.UI.Replicas = 1
+		info := &ClusterInfo{
+			IngressDomain:   "apps.example.com",
+			OAuthProxyImage: DefaultOAuthProxyImage,
+		}
+		err := uiReconciler.reconcileUIDeployment(ctx, cr, info, "testhash")
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiResourceName(uiCRName),
+			Namespace: namespace,
+		}, deploy)).To(Succeed())
+
+		// Find the oauth-proxy container (index 1).
+		Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
+		for _, arg := range deploy.Spec.Template.Spec.Containers[1].Args {
+			Expect(arg).NotTo(ContainSubstring("openshift-delegate-urls"),
+				"--openshift-delegate-urls must never appear — it hard-blocks login with 403")
+		}
 	})
 
 	It("OAuthClient is created with correct redirectURI after Route hostname is known", func() {

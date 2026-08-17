@@ -198,6 +198,23 @@ func generateCookieSecret() (string, error) {
 	return base64.RawStdEncoding.EncodeToString(b), nil
 }
 
+// isValidCookieSecret returns true when the stored cookie-secret bytes are safe for
+// use as an AES-256 key with --pass-access-token=true. Requirements:
+//   - exactly 32 bytes (oauth-proxy AES requirement)
+//   - all bytes are printable ASCII with no whitespace/control characters
+//     (raw random bytes risk nulls or newlines that truncate the effective key)
+func isValidCookieSecret(b []byte) bool {
+	if len(b) != 32 {
+		return false
+	}
+	for _, c := range b {
+		if c < 33 || c > 126 { // printable non-space ASCII range
+			return false
+		}
+	}
+	return true
+}
+
 // strMapToInterface converts map[string]string to map[string]interface{} for unstructured use.
 func strMapToInterface(m map[string]string) map[string]interface{} {
 	out := make(map[string]interface{}, len(m))
@@ -361,17 +378,28 @@ func (r *UIReconciler) reconcileUIAuthDelegatorBinding(ctx context.Context, puls
 	return err
 }
 
-// d. Secret — oauth-client-secret (hex) and cookie-secret (raw bytes).
-// Create-only: existing secrets are never overwritten to preserve live credentials.
+// d. Secret — oauth-client-secret (hex) and cookie-secret (base64, 32 printable chars).
+// Validates the cookie-secret on every reconcile and regenerates if the format is
+// wrong (e.g. raw bytes with nulls, or 44-byte base64 from an older operator version).
+// client-secret is never rotated — rotating it invalidates all active OAuth grants.
 func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
 	name := uiOAuthSecretsName(pulse.Name)
 
 	existing := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pulse.Namespace}, existing)
 	if err == nil {
-		return nil // already exists — preserve
-	}
-	if !apierrors.IsNotFound(err) {
+		// Validate the cookie-secret format: must be exactly 32 printable ASCII bytes
+		// (base64 of 24 random bytes). Raw bytes or 44-char base64 break AES when
+		// --pass-access-token=true is set. Delete and recreate on format mismatch.
+		if cookie := existing.Data["cookie-secret"]; !isValidCookieSecret(cookie) {
+			if delErr := r.Delete(ctx, existing); delErr != nil && !apierrors.IsNotFound(delErr) {
+				return fmt.Errorf("delete malformed cookie-secret: %w", delErr)
+			}
+			// Fall through to creation below.
+		} else {
+			return nil // preserve valid secret
+		}
+	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
 
