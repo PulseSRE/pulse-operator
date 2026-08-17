@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -184,16 +185,17 @@ func resolvedOAuthProxyImage(cr *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo
 	return oauthImage
 }
 
-// generateCookieSecret returns exactly 32 raw random bytes as a string.
-// When --pass-access-token=true or --cookie-refresh is set, oauth-proxy uses
-// the cookie-secret-file content as an AES key, which must be 16, 24, or 32 bytes.
-// Base64-encoding a 32-byte key produces 44 characters — not a valid AES key length.
+// generateCookieSecret returns a 32-character base64-encoded string derived from
+// 24 random bytes. 24 bytes encode to exactly 32 base64 chars (no padding needed),
+// all printable ASCII with no whitespace or control characters. oauth-proxy uses
+// the file content as an AES-256 key when --pass-access-token is set; 32 printable
+// bytes satisfy the "must be 16/24/32 bytes" requirement reliably.
 func generateCookieSecret() (string, error) {
-	b := make([]byte, 32)
+	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("crypto/rand: %w", err)
 	}
-	return string(b), nil
+	return base64.RawStdEncoding.EncodeToString(b), nil
 }
 
 // strMapToInterface converts map[string]string to map[string]interface{} for unstructured use.
@@ -627,10 +629,9 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							"--cookie-secret-file=/etc/proxy/secrets/cookie-secret",
 							fmt.Sprintf("--openshift-service-account=%s", saName),
 							"--skip-provider-button",
-							// Forward the user's OAuth token so nginx can proxy /api/kubernetes/
-							// with the user's identity (token forwarding for K8s API proxy).
+							// Forward the user's OAuth token so nginx can proxy /api/kubernetes/.
+							// Requires cookie-secret to be exactly 16/24/32 bytes (AES key).
 							"--pass-access-token=true",
-							"--scope=user:full",
 							"--cookie-expire=168h",
 						},
 						VolumeMounts: []corev1.VolumeMount{
