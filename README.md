@@ -45,8 +45,8 @@ One `OpenShiftPulse` CR drives the full lifecycle:
 | **PostgreSQL** | StatefulSet (pg-data PVC retained on delete), pg-auth Secret, ClusterIP + headless Services |
 | **UI** | nginx ConfigMap, oauth-proxy Deployment (TLS on 8443), Service, Route, OAuthClient |
 | **Monitoring** | ServiceMonitor (agent `/metrics`), PrometheusRule (`PulseAgentDown`, `PulsePostgreSQLDown`) |
-| **MCP** | MCP server Deployment + Service (optional, `spec.agent.mcp.enabled: true`) |
-| **Network** | UI ingress NetworkPolicy (OCP ingress + Prometheus only), PostgreSQL access-only NetworkPolicy |
+| **MCP** | MCP server ServiceAccount + ClusterRole (read-only) + ClusterRoleBinding, Deployment, Service (optional, `spec.agent.mcp.enabled: true`) |
+| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent pod only), agent (UI pod + Prometheus), MCP server (agent pod only) |
 | **Cluster detect** | Reads ingress domain, oauth-proxy image digest, ACM availability on first reconcile |
 
 A `pulse.ai/cleanup` finalizer ensures ClusterRoles and OAuthClient are removed when the CR is deleted — no orphans on uninstall.
@@ -502,11 +502,14 @@ pulse-operator-system/
         │   └── {ns}/{name}-openshiftpulse       (PrometheusRule — 3 alert rules)
         │
         ├── MCPReconciler  [spec.agent.mcp.enabled]
-        │   └── {ns}/{name}-mcp-server           (Deployment + Service :8001)
+        │   ├── {ns}/{name}-mcp-server           (ServiceAccount + ClusterRole + ClusterRoleBinding, read-only)
+        │   ├── {ns}/{name}-mcp-server           (Deployment + Service :8081)
+        │   └── {ns}/{name}-mcp-server           (NetworkPolicy — ingress from the agent pod only)
         │
         └── NetworkPolicyReconciler
             ├── {ns}/{name}-openshiftpulse       (UI: ingress from OCP router + Prometheus only)
-            └── {ns}/{name}-pg-access            (PG: ingress from agent pods only)
+            ├── {ns}/{name}-pg-access            (PG: ingress from the agent pod only)
+            └── {ns}/{name}-agent-access         (Agent: ingress from the UI pod + Prometheus only)
 ```
 
 ### Cluster auto-detection
@@ -600,7 +603,8 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 - All managed pods run as non-root with `AllowPrivilegeEscalation=false`, `Capabilities.Drop=ALL`, and `SeccompProfile=RuntimeDefault`.
 - PostgreSQL sets `ReadOnlyRootFilesystem=false` (PG requires writable socket and temp paths).
-- The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict exec access to `pulse-operator-system` via NetworkPolicy.
+- The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict exec access to `pulse-operator-system` via NetworkPolicy.
+- The agent, UI, PostgreSQL, and MCP server pods each get their own NetworkPolicy restricting ingress to only the pods/namespaces that legitimately call them (e.g. only the UI pod may reach the agent on :8080; only the agent pod may reach the MCP server on :8081) — no pod is reachable cluster-wide by default.
 - OAuthClient names are scoped to `{namespace}-{name}` to prevent collision when multiple CRs coexist on the same cluster.
 - Secrets (pg-auth, ws-token, oauth cookie) are generated once and never rotated automatically. Rotate manually by deleting the Secret — the operator regenerates it on next reconcile.
 - Container images (`Dockerfile`, `Dockerfile.bundle`) are pinned by digest, not just tag, for reproducible builds; Dependabot (`.github/dependabot.yml`) opens a PR when a pinned digest moves.
