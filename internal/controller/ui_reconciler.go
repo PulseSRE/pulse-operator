@@ -598,6 +598,15 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							"--cookie-secret-file=/etc/proxy/secrets/cookie-secret",
 							fmt.Sprintf("--openshift-service-account=%s", saName),
 							"--skip-provider-button",
+							// Forward the user's OAuth token so nginx can proxy /api/kubernetes/
+							// with the user's identity (token forwarding for K8s API proxy).
+							"--pass-access-token=true",
+							"--scope=user:full",
+							"--cookie-expire=168h",
+							"--cookie-refresh=1h",
+							// Delegate /api/kubernetes/ authorization to OpenShift — requires
+							// the user to have at least namespace list permission before gaining access.
+							`--openshift-delegate-urls={"/api/kubernetes/":{"resource":"namespaces","verb":"list"}}`,
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
