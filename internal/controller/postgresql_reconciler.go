@@ -273,7 +273,6 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 						},
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("100m"),
 								corev1.ResourceMemory: resource.MustParse("256Mi"),
 							},
 							Limits: corev1.ResourceList{

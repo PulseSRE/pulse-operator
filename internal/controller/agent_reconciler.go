@@ -101,15 +101,16 @@ func databaseEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
 	return cr.Spec.Database.StorageSize != "" || cr.Spec.Database.Image != ""
 }
 
-// agentResources returns the spec-provided resources when non-empty, or conservative
-// defaults that prevent unbounded memory growth without throttling normal operation.
+// agentResources returns the spec-provided resources when non-empty, or sensible
+// defaults. CPU requests are intentionally omitted from defaults so the pod remains
+// schedulable even on nodes at 100% CPU request allocation (common in dev clusters).
+// CPU and memory limits are set to prevent unbounded growth.
 func agentResources(cr *pulsev1alpha1.OpenShiftPulse) corev1.ResourceRequirements {
 	if cr.Spec.Agent.Resources.Requests != nil || cr.Spec.Agent.Resources.Limits != nil {
 		return cr.Spec.Agent.Resources
 	}
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("100m"),
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
 		},
 		Limits: corev1.ResourceList{
