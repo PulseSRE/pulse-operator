@@ -632,7 +632,6 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							"--pass-access-token=true",
 							"--scope=user:full",
 							"--cookie-expire=168h",
-							"--cookie-refresh=1h",
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
