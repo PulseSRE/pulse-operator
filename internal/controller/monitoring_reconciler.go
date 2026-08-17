@@ -66,9 +66,12 @@ func (r *MonitoringReconciler) reconcileServiceMonitor(ctx context.Context, puls
 
 	endpoints := []interface{}{
 		map[string]interface{}{
-			"port":     "http",
-			"scheme":   "http",
-			"path":     "/metrics",
+			"port":   "http",
+			"scheme": "http",
+			// Trailing slash required: the agent's uvicorn server 307-redirects
+			// "/metrics" to "/metrics/", and Prometheus does not follow redirects
+			// when scraping, so the bare path silently produces zero samples.
+			"path":     "/metrics/",
 			"interval": "30s",
 		},
 	}

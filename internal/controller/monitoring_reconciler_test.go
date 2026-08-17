@@ -98,7 +98,10 @@ var _ = Describe("MonitoringReconciler", func() {
 			Expect(found).To(BeTrue())
 			Expect(endpoints).To(HaveLen(1))
 			ep := endpoints[0].(map[string]interface{})
-			Expect(ep["path"]).To(Equal("/metrics"))
+			// Regression: the agent's uvicorn server 307-redirects "/metrics" to
+			// "/metrics/", and Prometheus does not follow redirects when scraping,
+			// so a bare "/metrics" path here silently produces zero samples forever.
+			Expect(ep["path"]).To(Equal("/metrics/"))
 
 			selector, _, _ := unstructured.NestedStringMap(sm.Object, "spec", "selector", "matchLabels")
 			Expect(selector).To(HaveKeyWithValue("app", agentResourceName(crName)))
