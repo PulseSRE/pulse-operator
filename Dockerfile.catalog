@@ -11,14 +11,19 @@
 # hand-roll a simpler version: opm's cache must be pre-populated at build time
 # (the --cache-only RUN step below) or `opm serve` fails at container startup
 # with "integrity check failed: read existing cache digest".
-FROM quay.io/operator-framework/opm:latest AS builder
+#
+# Pinned by digest (not just tag), matching the main Dockerfile's rationale —
+# a mutable :latest tag can change under you between builds with no signal.
+# Dependabot (.github/dependabot.yml, docker ecosystem) opens a PR whenever
+# this digest moves, so this doesn't go stale.
+FROM quay.io/operator-framework/opm@sha256:4a82ebc6069905b87f3f6cf91b782cb267b0400a065ed8b0866cab8aa7f95d67 AS builder
 
 # Copy the FBC root (built by README.md's render step into ./catalog) into the
 # image at /configs and pre-populate the serve cache.
 ADD catalog /configs
 RUN ["/bin/opm", "serve", "/configs", "--cache-dir=/tmp/cache", "--cache-only"]
 
-FROM quay.io/operator-framework/opm:latest
+FROM quay.io/operator-framework/opm@sha256:4a82ebc6069905b87f3f6cf91b782cb267b0400a065ed8b0866cab8aa7f95d67
 ENTRYPOINT ["/bin/opm"]
 CMD ["serve", "/configs", "--cache-dir=/tmp/cache"]
 

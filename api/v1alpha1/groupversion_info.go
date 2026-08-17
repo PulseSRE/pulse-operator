@@ -1,3 +1,5 @@
+// Package v1alpha1 contains API Schema definitions for the pulse.ai v1alpha1 API group.
+// +kubebuilder:object:generate=true
 // +groupName=pulse.ai
 package v1alpha1
 

@@ -32,6 +32,19 @@ jobs:
           tags: |
             ${{ env.OPERATOR_IMG }}:${{ github.ref_name }}
             ${{ env.OPERATOR_IMG }}:latest
+      - name: Bump bundle CSV to this release's version
+        # Dockerfile.bundle copies bundle/manifests verbatim - without this,
+        # the CSV's name/version/containerImage/deployment-image stay
+        # hardcoded at whatever they were last set to, so every release
+        # after the first ships a bundle whose CSV doesn't match the tag
+        # (and doesn't register as an OLM upgrade at all). This also sets
+        # spec.replaces to the previous release, extending the upgrade graph.
+        # RELEASE_TAG is passed via env (not interpolated into the run:
+        # string) so a maliciously crafted tag name can't inject shell
+        # commands here.
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/bump-bundle-version.py "$RELEASE_TAG"
       - name: Build and push bundle image
         uses: docker/build-push-action@v5
         with:
