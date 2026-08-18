@@ -109,6 +109,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		// selector-mismatched StatefulSet to finish terminating before it can
 		// be recreated) — not a failure, so no Warning event.
 		logger.Info("PostgreSQL reconcile requeued", "name", pulse.Name)
+		r.flushInstallingStatus(ctx, pulse)
 		return pgResult, nil
 	}
 
@@ -119,6 +120,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("reconcileAgent: %w", err)
 	} else if agentResult.RequeueAfter > 0 {
 		logger.Info("Agent reconcile requeued", "name", pulse.Name)
+		r.flushInstallingStatus(ctx, pulse)
 		return agentResult, nil
 	}
 
@@ -171,8 +173,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// If the Route hostname is not yet assigned, flush the current status and requeue
 	// so the CR reflects the installing state rather than showing stale/empty status.
 	if uiResult.RequeueAfter > 0 {
-		pulse.Status.Phase = "Installing"
-		_ = r.Status().Update(ctx, pulse)
+		r.flushInstallingStatus(ctx, pulse)
 		return uiResult, nil
 	}
 
@@ -233,6 +234,25 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// flushInstallingStatus writes the "Installing" phase to the CR before an early
+// requeue return. Every requeue path in Reconcile exits before the status sync at
+// the bottom of the function, so without this the CR keeps reporting whatever
+// phase it last had — including a stale "Running" — for the entire window a
+// component is being torn down and recreated (a selector-mismatched StatefulSet
+// or Deployment during Helm-to-operator migration, or a Route awaiting
+// admission). That window is measured in minutes, and it is exactly when an
+// operator is watching `oc get openshiftpulse` for a signal.
+//
+// The update error is deliberately not propagated: the caller is already
+// returning a requeue, so a failed status write is retried on the next pass and
+// must not turn a healthy "come back shortly" into a reconcile failure.
+func (r *OpenShiftPulseReconciler) flushInstallingStatus(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) {
+	pulse.Status.Phase = "Installing"
+	if err := r.Status().Update(ctx, pulse); err != nil {
+		log.FromContext(ctx).V(1).Info("could not flush Installing status before requeue", "error", err.Error())
+	}
 }
 
 // deleteClusterScopedResources removes the cluster-scoped resources that are not
