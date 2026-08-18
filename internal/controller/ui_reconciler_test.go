@@ -462,6 +462,63 @@ var _ = Describe("UIReconciler", func() {
 		termination, _, _ := unstructured.NestedString(corrected.Object, "spec", "tls", "termination")
 		Expect(termination).To(Equal("reencrypt"), "spec.tls must be corrected back to reencrypt")
 	})
+
+	It("Route drift correction preserves spec.tls keys the operator does not manage", func() {
+		// destinationCACertificate (and certificate/key/caCertificate) are
+		// legitimate fields an admin or a cert-management controller may set on
+		// a reencrypt route. Correcting drift by replacing the whole spec.tls
+		// map would strip them — and, because their mere presence makes a
+		// whole-map comparison unequal forever, would also re-Update the Route
+		// on every single reconcile.
+		routeGVK := schema.GroupVersionKind{Group: "route.openshift.io", Version: "v1", Kind: "Route"}
+
+		_, _, err := uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
+		if isNoCRDError(err) {
+			Skip("Route CRD not installed in envtest — skipping Route TLS preservation check")
+		}
+		Expect(err).NotTo(HaveOccurred())
+
+		route := &unstructured.Unstructured{}
+		route.SetGroupVersionKind(routeGVK)
+		getErr := k8sClient.Get(ctx, types.NamespacedName{Name: uiResourceName(uiCRName), Namespace: namespace}, route)
+		if isNoCRDError(getErr) {
+			Skip("Route CRD not installed in envtest — skipping Route TLS preservation check")
+		}
+		Expect(getErr).NotTo(HaveOccurred())
+
+		const destCA = "-----BEGIN CERTIFICATE-----\nexternally-managed\n-----END CERTIFICATE-----"
+		Expect(unstructured.SetNestedField(route.Object, "manually-set-host.apps.example.com", "spec", "host")).To(Succeed())
+		Expect(unstructured.SetNestedField(route.Object, destCA, "spec", "tls", "destinationCACertificate")).To(Succeed())
+		// Also drift a managed key, so the correction path definitely runs.
+		Expect(unstructured.SetNestedField(route.Object, "Allow", "spec", "tls", "insecureEdgeTerminationPolicy")).To(Succeed())
+		Expect(k8sClient.Update(ctx, route)).To(Succeed())
+
+		_, _, err = uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
+		Expect(err).NotTo(HaveOccurred())
+
+		corrected := &unstructured.Unstructured{}
+		corrected.SetGroupVersionKind(routeGVK)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: uiResourceName(uiCRName), Namespace: namespace}, corrected)).To(Succeed())
+
+		policy, _, _ := unstructured.NestedString(corrected.Object, "spec", "tls", "insecureEdgeTerminationPolicy")
+		Expect(policy).To(Equal("Redirect"), "managed spec.tls keys must still be corrected")
+
+		gotCA, found, _ := unstructured.NestedString(corrected.Object, "spec", "tls", "destinationCACertificate")
+		Expect(found).To(BeTrue(), "unmanaged spec.tls keys must not be stripped")
+		Expect(gotCA).To(Equal(destCA))
+
+		// Now that nothing is drifted, a further reconcile must not write again:
+		// a repeated Update would bump resourceVersion every pass.
+		before := corrected.GetResourceVersion()
+		_, _, err = uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
+		Expect(err).NotTo(HaveOccurred())
+
+		after := &unstructured.Unstructured{}
+		after.SetGroupVersionKind(routeGVK)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: uiResourceName(uiCRName), Namespace: namespace}, after)).To(Succeed())
+		Expect(after.GetResourceVersion()).To(Equal(before),
+			"a settled Route must not be re-Updated on every reconcile")
+	})
 })
 
 // isNoCRDError returns true for "no kind is registered" or "no matches for kind" errors
