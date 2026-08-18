@@ -1010,22 +1010,42 @@ func (r *UIReconciler) reconcileUIRoute(ctx context.Context, pulse *pulsev1alpha
 	// wrote anything back once the Route existed). spec.host is deliberately
 	// never touched here: OCP assigns and owns it once admitted, and
 	// overwriting it would either be a no-op or, worse, race the router.
+	// spec.tls is reconciled key-by-key rather than as a whole map. Replacing
+	// the map wholesale would strip any sibling key this operator does not
+	// manage — destinationCACertificate, certificate, key, caCertificate are
+	// all legitimate fields an admin (or a cert-management controller) may set
+	// on a reencrypt route. Worse, the presence of any such key would make a
+	// whole-map DeepEqual unequal on every single reconcile, so the operator
+	// would issue an Update every 30s forever, fighting whoever set it.
+	wantTLS := map[string]string{
+		"termination":                   "reencrypt",
+		"insecureEdgeTerminationPolicy": "Redirect",
+	}
 	wantTo := map[string]interface{}{"kind": "Service", "name": name, "weight": int64(100)}
-	wantTLS := map[string]interface{}{"termination": "reencrypt", "insecureEdgeTerminationPolicy": "Redirect"}
 	gotTo, _, _ := unstructured.NestedMap(existing.Object, "spec", "to")
 	gotTargetPort, _, _ := unstructured.NestedFieldNoCopy(existing.Object, "spec", "port", "targetPort")
-	gotTLS, _, _ := unstructured.NestedMap(existing.Object, "spec", "tls")
+
+	tlsDrifted := false
+	for key, want := range wantTLS {
+		if got, _, _ := unstructured.NestedString(existing.Object, "spec", "tls", key); got != want {
+			tlsDrifted = true
+			break
+		}
+	}
+
 	if !reflect.DeepEqual(gotTo, wantTo) ||
 		!reflect.DeepEqual(gotTargetPort, int64(uiProxyPort)) ||
-		!reflect.DeepEqual(gotTLS, wantTLS) {
+		tlsDrifted {
 		if setErr := unstructured.SetNestedField(existing.Object, wantTo, "spec", "to"); setErr != nil {
 			return "", ctrl.Result{}, fmt.Errorf("correct route spec.to: %w", setErr)
 		}
 		if setErr := unstructured.SetNestedField(existing.Object, int64(uiProxyPort), "spec", "port", "targetPort"); setErr != nil {
 			return "", ctrl.Result{}, fmt.Errorf("correct route spec.port.targetPort: %w", setErr)
 		}
-		if setErr := unstructured.SetNestedField(existing.Object, wantTLS, "spec", "tls"); setErr != nil {
-			return "", ctrl.Result{}, fmt.Errorf("correct route spec.tls: %w", setErr)
+		for key, want := range wantTLS {
+			if setErr := unstructured.SetNestedField(existing.Object, want, "spec", "tls", key); setErr != nil {
+				return "", ctrl.Result{}, fmt.Errorf("correct route spec.tls.%s: %w", key, setErr)
+			}
 		}
 		if updateErr := r.Update(ctx, existing); updateErr != nil {
 			return "", ctrl.Result{}, fmt.Errorf("correct route drift: %w", updateErr)
