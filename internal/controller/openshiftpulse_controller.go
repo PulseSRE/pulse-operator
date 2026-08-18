@@ -251,6 +251,7 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName(pulse.Name, pulse.Namespace)}}, "agent ClusterRole")
 	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name, pulse.Namespace)}}, "UI ClusterRole")
 	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName(pulse.Name, pulse.Namespace)}}, "agent ClusterRoleBinding")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentMonitoringViewBindingName(pulse.Name, pulse.Namespace)}}, "agent monitoring-view ClusterRoleBinding")
 	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name, pulse.Namespace)}}, "UI ClusterRoleBinding")
 	// system:auth-delegator binding (reconcileUIAuthDelegatorBinding) — same
 	// orphan risk as the two bindings above: cluster-scoped, can't carry an
@@ -333,6 +334,7 @@ func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pu
 		{"ServiceAccount", ar.reconcileServiceAccount},
 		{"ClusterRole", ar.reconcileClusterRole},
 		{"ClusterRoleBinding", ar.reconcileClusterRoleBinding},
+		{"MonitoringViewBinding", ar.reconcileAgentMonitoringViewBinding},
 		{"WSTokenSecret", ar.reconcileWSTokenSecret},
 		{"MemoryPVC", ar.reconcileMemoryPVC},
 	}

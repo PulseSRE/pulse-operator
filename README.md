@@ -498,6 +498,7 @@ pulse-operator-system/
         │
         ├── AgentReconciler
         │   ├── {ns}/{name}-openshift-sre-agent  (ServiceAccount + ClusterRole + ClusterRoleBinding)
+        │   ├── {ns}/{name}-...-monitoring-view  (ClusterRoleBinding → built-in cluster-monitoring-view, for the agent's own Thanos-querier reads)
         │   ├── {ns}/{name}-ws-token             (Secret — random 32-char hex, never rotated)
         │   ├── {ns}/{name}-openshift-sre-agent-memory  (PVC 1Gi RWO — gated before Deployment)
         │   └── {ns}/{name}-openshift-sre-agent  (Deployment + Service :8080)
@@ -590,6 +591,21 @@ oc get pvc -n openshiftpulse
 oc describe statefulset -n openshiftpulse
 ```
 
+### Agent restarting with exit code 137 and no errors in its own logs
+
+**Symptom:** `oc get pod -o jsonpath='{...lastState}'` shows `"reason":"Error","exitCode":137`, and `oc get events` shows `Liveness probe failed: ... context deadline exceeded` — but the agent's own logs show nothing wrong, and `oc adm top pod` shows normal CPU/memory usage.
+
+**Cause:** The agent deliberately has no CPU request (see `agentResources` in [`agent_reconciler.go`](internal/controller/agent_reconciler.go)), so it gets minimal scheduling priority. On a cluster where other pods on the same node are bursting CPU, the agent's process can occasionally take longer than the probe timeout to answer `/healthz` even though it's healthy — the probes now use a 5s timeout (was the Kubernetes default of 1s) to tolerate that. If restarts continue after upgrading, check node-level CPU contention (`oc adm top nodes`, `oc describe node <node>` → Allocated resources) rather than the agent itself.
+
+### Agent inbox shows "Prometheus monitoring degraded" / "Trend monitoring degraded"
+
+**Cause:** The agent's alert-scanning queries hit `thanos-querier` directly using its own ServiceAccount token; that read is gated by binding to the built-in `cluster-monitoring-view` ClusterRole, not by anything addable to the agent's own ClusterRole. If this binding is missing (e.g. a CR created before this was added), a normal reconcile creates it — force one with:
+
+```bash
+oc get clusterrolebinding | grep monitoring-view
+# If absent, touch an annotation to trigger reconcile, or restart the operator pod
+```
+
 ### Migrating from Helm install
 
 The operator cannot adopt Helm-managed Deployments/StatefulSets because their label selectors are immutable. The operator detects selector mismatches and replaces the resources automatically (StatefulSet with orphan cascade to preserve the PVC). If the agent Deployment is stuck:
@@ -625,6 +641,7 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict exec access to `pulse-operator-system` via NetworkPolicy.
 - The agent, UI, PostgreSQL, and MCP server pods each get their own NetworkPolicy restricting ingress to only the pods/namespaces that legitimately call them (e.g. only the UI pod may reach the agent on :8080; only the agent pod may reach the MCP server on :8081) — no pod is reachable cluster-wide by default.
 - OAuthClient names are scoped to `{namespace}-{name}` to prevent collision when multiple CRs coexist on the same cluster.
+- The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
 - Secrets (pg-auth, ws-token, oauth cookie) are generated once and never rotated automatically. Rotate manually by deleting the Secret — the operator regenerates it on next reconcile.
 - Container images (`Dockerfile`, `Dockerfile.bundle`) are pinned by digest, not just tag, for reproducible builds; Dependabot (`.github/dependabot.yml`) opens a PR when a pinned digest moves.
 
