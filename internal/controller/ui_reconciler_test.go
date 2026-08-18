@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -9,7 +10,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -277,25 +277,29 @@ var _ = Describe("UIReconciler", func() {
 
 		_, _, err := uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
 		if err != nil {
-			// Route CRD not installed in envtest — skip gracefully.
-			if apierrors.IsNotFound(err) || isNoCRDError(err) {
+			// Only a genuinely absent CRD is an environment limitation worth
+			// skipping for. IsNotFound must NOT be treated the same way here:
+			// reconcileUIRoute's own Get-then-Create logic already handles a
+			// not-yet-existing Route internally and never propagates that as
+			// an error to callers — if IsNotFound ever reaches here, the
+			// Route genuinely failed to get created, which is exactly the
+			// regression this test exists to catch, not a reason to skip it.
+			if isNoCRDError(err) {
 				Skip("Route CRD not installed in envtest — skipping Route creation check")
 			}
-			// Any other error is a real failure.
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		// If reconcileUIRoute succeeded (no error), verify the Route object exists.
 		route := &unstructured.Unstructured{}
 		route.SetGroupVersionKind(routeGVK)
 		getErr := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      uiResourceName(uiCRName),
 			Namespace: namespace,
 		}, route)
-		if apierrors.IsNotFound(getErr) || isNoCRDError(getErr) {
+		if isNoCRDError(getErr) {
 			Skip("Route CRD not installed in envtest — skipping Route existence check")
 		}
-		Expect(getErr).NotTo(HaveOccurred())
+		Expect(getErr).NotTo(HaveOccurred(), "the Route must actually exist after reconcileUIRoute succeeded")
 		Expect(route.GetName()).To(Equal(uiResourceName(uiCRName)))
 	})
 
@@ -340,7 +344,10 @@ var _ = Describe("UIReconciler", func() {
 		routeGVK := schema.GroupVersionKind{Group: "route.openshift.io", Version: "v1", Kind: "Route"}
 
 		_, _, err := uiReconciler.reconcileUIRoute(ctx, cr, &ClusterInfo{})
-		if err != nil && (apierrors.IsNotFound(err) || isNoCRDError(err)) {
+		// Only a genuinely absent CRD is an environment limitation worth
+		// skipping for — see the "Route is created" test above for why
+		// IsNotFound must never be treated the same way.
+		if err != nil && isNoCRDError(err) {
 			Skip("Route CRD not installed in envtest — skipping Route drift check")
 		}
 		Expect(err).NotTo(HaveOccurred())
@@ -348,7 +355,7 @@ var _ = Describe("UIReconciler", func() {
 		route := &unstructured.Unstructured{}
 		route.SetGroupVersionKind(routeGVK)
 		getErr := k8sClient.Get(ctx, types.NamespacedName{Name: uiResourceName(uiCRName), Namespace: namespace}, route)
-		if apierrors.IsNotFound(getErr) || isNoCRDError(getErr) {
+		if isNoCRDError(getErr) {
 			Skip("Route CRD not installed in envtest — skipping Route drift check")
 		}
 		Expect(getErr).NotTo(HaveOccurred())
@@ -387,21 +394,8 @@ func isNoCRDError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return contains(msg, "no kind is registered") ||
-		contains(msg, "no matches for kind") ||
-		contains(msg, "no match for kind") ||
-		contains(msg, "the server could not find the requested resource")
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
-}
-
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(msg, "no kind is registered") ||
+		strings.Contains(msg, "no matches for kind") ||
+		strings.Contains(msg, "no match for kind") ||
+		strings.Contains(msg, "the server could not find the requested resource")
 }
