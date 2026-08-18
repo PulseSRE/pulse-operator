@@ -81,9 +81,6 @@ spec:
         trustLevel: 2
     ```
   displayName: OpenShift Pulse
-  icon:
-    - base64data: ""
-      mediatype: image/svg+xml
   install:
     spec:
       clusterPermissions:
