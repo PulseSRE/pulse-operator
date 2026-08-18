@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -123,6 +124,34 @@ var _ = Describe("PostgreSQLReconciler", func() {
 			Namespace: namespace,
 		}, secret2)).To(Succeed())
 		Expect(string(secret2.Data["POSTGRESQL_PASSWORD"])).To(Equal(pass1))
+	})
+
+	// Regression: reconcilePGStatefulSet used to unconditionally rebuild and
+	// reassign sts.Spec.Template on every reconcile, even when the desired
+	// state (image, secret name, labels) was byte-for-byte identical to last
+	// time. That discarded API-server-added defaults (imagePullPolicy,
+	// terminationMessagePath, probe defaults, etc.) from the freshly-built
+	// literal, so CreateOrUpdate's diff check always saw a change and always
+	// issued an Update — repeatedly racing the StatefulSet controller's own
+	// status writes ("the object has been modified" conflicts) on a live
+	// cluster. A second reconcile with no CR changes must be a true no-op.
+	It("does not rewrite the StatefulSet on a second reconcile with no changes", func() {
+		stsName := crName + "-openshift-sre-agent-postgresql"
+
+		_, err := pg.reconcilePGStatefulSet(ctx, cr, stsName, crName+"-pg-auth")
+		Expect(err).NotTo(HaveOccurred())
+
+		sts1 := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: namespace}, sts1)).To(Succeed())
+
+		_, err = pg.reconcilePGStatefulSet(ctx, cr, stsName, crName+"-pg-auth")
+		Expect(err).NotTo(HaveOccurred())
+
+		sts2 := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: namespace}, sts2)).To(Succeed())
+
+		Expect(sts2.ResourceVersion).To(Equal(sts1.ResourceVersion),
+			"a no-op reconcile must not write to the StatefulSet at all")
 	})
 
 	// Regression: a selector-mismatched StatefulSet (e.g. previously
@@ -374,5 +403,42 @@ var _ = Describe("PostgreSQLReconciler", func() {
 			Name:      svcName,
 			Namespace: namespace,
 		}, svc)).To(Succeed())
+	})
+
+	// Regression coverage for the incident this grace period fixes: without
+	// it, deletePendingPGPodIfStale deleted pod-0 the instant it observed
+	// Pending, on every reconcile — which, on a cluster reconciling faster
+	// than a pod's normal startup, deleted every fresh pod-0 before it ever
+	// reached Running, in a continuous, indefinite create-delete loop.
+	Describe("isPGPodStale", func() {
+		newPendingPod := func(age time.Duration, now time.Time) *corev1.Pod {
+			return &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-age))},
+				Status:     corev1.PodStatus{Phase: corev1.PodPending},
+			}
+		}
+
+		It("is false for a Pending pod that just started (normal scheduling/volume-attach/image-pull)", func() {
+			now := time.Now()
+			Expect(isPGPodStale(newPendingPod(5*time.Second, now), now)).To(BeFalse())
+		})
+
+		It("is false for a Pending pod just under the stale threshold", func() {
+			now := time.Now()
+			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold-time.Second, now), now)).To(BeFalse())
+		})
+
+		It("is true for a Pending pod at or beyond the stale threshold", func() {
+			now := time.Now()
+			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold, now), now)).To(BeTrue())
+			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold+time.Minute, now), now)).To(BeTrue())
+		})
+
+		It("is false for a Running pod regardless of age", func() {
+			now := time.Now()
+			pod := newPendingPod(time.Hour, now)
+			pod.Status.Phase = corev1.PodRunning
+			Expect(isPGPodStale(pod, now)).To(BeFalse())
+		})
 	})
 })

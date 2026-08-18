@@ -320,56 +320,76 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 			}
 		}
 
-		// Sync mutable fields on both create and update.
-		sts.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{
-				Labels: pgLabels(pulse.Name),
-			},
-			Spec: corev1.PodSpec{
-				// OCP assigns UIDs from the namespace range via the restricted SCC.
-				// Do not set RunAsUser — hardcoding 26 (postgres uid) is rejected by
-				// restricted-v2 SCC which enforces namespace-allocated UID ranges.
-				SecurityContext: defaultPodSecCtx(nil),
-				Containers: []corev1.Container{
-					{
-						Name:  "postgresql",
-						Image: image,
-						Ports: []corev1.ContainerPort{
-							{Name: "postgresql", ContainerPort: pgPort, Protocol: corev1.ProtocolTCP},
-						},
-						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse("256Mi"),
+		// Sync mutable fields on both create and update — but only rebuild
+		// Template when something we actually manage has drifted (in
+		// practice, just the image; everything else here is a hardcoded
+		// constant). Unconditionally reassigning the whole PodTemplateSpec
+		// on every reconcile — even when the desired state is byte-for-byte
+		// identical to last time — discards fields the API server had
+		// defaulted onto the stored object (imagePullPolicy,
+		// terminationMessagePath, probe defaults, etc.), since those are
+		// zero-valued in this literal. CreateOrUpdate's DeepEqual check then
+		// always sees a diff and always issues an Update, forever, which (a)
+		// repeatedly races the StatefulSet controller's own concurrent
+		// status writes — the "object has been modified" conflict loop —
+		// and (b) was observed to make the StatefulSet controller treat
+		// every single one of those Updates as a genuine template change,
+		// continuously rolling pod-0.
+		existingImage := ""
+		if len(sts.Spec.Template.Spec.Containers) > 0 {
+			existingImage = sts.Spec.Template.Spec.Containers[0].Image
+		}
+		if sts.CreationTimestamp.IsZero() || existingImage != image {
+			sts.Spec.Template = corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: pgLabels(pulse.Name),
+				},
+				Spec: corev1.PodSpec{
+					// OCP assigns UIDs from the namespace range via the restricted SCC.
+					// Do not set RunAsUser — hardcoding 26 (postgres uid) is rejected by
+					// restricted-v2 SCC which enforces namespace-allocated UID ranges.
+					SecurityContext: defaultPodSecCtx(nil),
+					Containers: []corev1.Container{
+						{
+							Name:  "postgresql",
+							Image: image,
+							Ports: []corev1.ContainerPort{
+								{Name: "postgresql", ContainerPort: pgPort, Protocol: corev1.ProtocolTCP},
 							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse("1Gi"),
-							},
-						},
-						EnvFrom: []corev1.EnvFromSource{
-							{
-								SecretRef: &corev1.SecretEnvSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceMemory: resource.MustParse("1Gi"),
 								},
 							},
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+									},
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "pg-data", MountPath: "/var/lib/pgsql/data"},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler:        pgProbeHandler,
+								InitialDelaySeconds: 5,
+								PeriodSeconds:       10,
+								FailureThreshold:    3,
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler:        pgProbeHandler,
+								InitialDelaySeconds: 30,
+								PeriodSeconds:       30,
+							},
+							SecurityContext: writableContainerSecCtx(),
 						},
-						VolumeMounts: []corev1.VolumeMount{
-							{Name: "pg-data", MountPath: "/var/lib/pgsql/data"},
-						},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler:        pgProbeHandler,
-							InitialDelaySeconds: 5,
-							PeriodSeconds:       10,
-							FailureThreshold:    3,
-						},
-						LivenessProbe: &corev1.Probe{
-							ProbeHandler:        pgProbeHandler,
-							InitialDelaySeconds: 30,
-							PeriodSeconds:       30,
-						},
-						SecurityContext: writableContainerSecCtx(),
 					},
 				},
-			},
+			}
 		}
 		return nil
 	})
@@ -473,12 +493,39 @@ func (r *PostgreSQLReconciler) deletePGDataOnRequest(ctx context.Context, pulse 
 	return goerrors.Join(errs...)
 }
 
-// deletePendingPGPodIfStale deletes the ordinal-0 PostgreSQL pod when it is
-// Pending. The StatefulSet RollingUpdate controller waits for pod-0 to be
-// Running before rolling it — a pod stuck Pending (e.g. due to stale resource
-// requests that were later updated) blocks the rollout indefinitely.
-// Deleting a Pending pod is safe: it never served traffic, so there's no
-// disruption. The StatefulSet controller recreates it with the current template.
+// pgPendingPodStaleThreshold is how long pod-0 must have been Pending before
+// isPGPodStale considers it genuinely stuck rather than just mid-startup.
+// See isPGPodStale's doc comment for why this grace period is required, not
+// optional.
+const pgPendingPodStaleThreshold = 2 * time.Minute
+
+// isPGPodStale reports whether pod is a Pending pod that has been Pending
+// for at least pgPendingPodStaleThreshold as of now. now is taken as a
+// parameter (rather than calling time.Now() internally) so this can be unit
+// tested without needing to fake a Pod's server-assigned, otherwise
+// immutable CreationTimestamp.
+//
+// The grace period is load-bearing, not cosmetic: every pod is transiently
+// Pending for a few seconds to tens of seconds during entirely normal
+// scheduling/volume-attach/image-pull, and the caller runs on every
+// reconcile of the owning CR. Without this grace period, on a cluster where
+// reconciles happen more often than a pod's startup takes (e.g. because
+// something else is churning watches), every fresh pod-0 got deleted before
+// it ever reached Running — a self-inflicted, indefinite create-delete loop
+// indistinguishable from the node/CNI instability it produces as a side
+// effect (addLogicalPort/FailedMount errors racing a pod that's deleted
+// mid-setup), rather than the one genuinely-stuck-rollout case this was
+// written for.
+func isPGPodStale(pod *corev1.Pod, now time.Time) bool {
+	return pod.Status.Phase == corev1.PodPending &&
+		now.Sub(pod.CreationTimestamp.Time) >= pgPendingPodStaleThreshold
+}
+
+// deletePendingPGPodIfStale deletes the ordinal-0 PostgreSQL pod when
+// isPGPodStale reports it stuck. The StatefulSet RollingUpdate controller
+// waits for pod-0 to be Running before rolling it — a pod stuck Pending
+// (e.g. due to stale resource requests that were later updated) blocks the
+// rollout indefinitely.
 func (r *PostgreSQLReconciler) deletePendingPGPodIfStale(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
@@ -493,7 +540,7 @@ func (r *PostgreSQLReconciler) deletePendingPGPodIfStale(
 	if err != nil {
 		return err
 	}
-	if pod.Status.Phase != corev1.PodPending {
+	if !isPGPodStale(pod, time.Now()) {
 		return nil
 	}
 	return r.Delete(ctx, pod)
