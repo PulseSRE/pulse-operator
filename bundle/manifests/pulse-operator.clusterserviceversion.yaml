@@ -81,9 +81,6 @@ spec:
         trustLevel: 2
     ```
   displayName: OpenShift Pulse
-  icon:
-    - base64data: ""
-      mediatype: image/svg+xml
   install:
     spec:
       clusterPermissions:
@@ -185,7 +182,7 @@ spec:
                     image: quay.io/amobrem/pulse-operator:v0.1.0
                     name: manager
                     ports:
-                      - containerPort: 8080
+                      - containerPort: 8082
                         name: metrics
                         protocol: TCP
                     resources:
@@ -200,20 +197,30 @@ spec:
                       capabilities:
                         drop:
                           - ALL
-                livenessProbe:
-                  httpGet:
-                    path: /healthz
-                    port: 8081
-                  initialDelaySeconds: 15
-                  periodSeconds: 20
-                readinessProbe:
-                  httpGet:
-                    path: /readyz
-                    port: 8081
-                  initialDelaySeconds: 5
-                  periodSeconds: 10
+                    # livenessProbe/readinessProbe MUST live here, inside the
+                    # container entry — not as siblings of `containers` at the
+                    # pod-spec level. OLM's Deployment materialization only
+                    # copies fields PodSpec actually has; a probe placed at
+                    # this container's sibling level is silently dropped, so
+                    # the OLM-installed operator ran with no health probes at
+                    # all while deploy/operator.yaml (manifest install, same
+                    # probes nested correctly) always had them.
+                    livenessProbe:
+                      httpGet:
+                        path: /healthz
+                        port: 8081
+                      initialDelaySeconds: 15
+                      periodSeconds: 20
+                    readinessProbe:
+                      httpGet:
+                        path: /readyz
+                        port: 8081
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
                 securityContext:
                   runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
                 serviceAccountName: pulse-operator-controller-manager
                 terminationGracePeriodSeconds: 10
     strategy: deployment
@@ -251,8 +258,29 @@ spec:
     - email: amobrem@redhat.com
       name: Ali Mobrem
   maturity: alpha
-  minKubeVersion: 1.28.0
+  # Matches the README's "OpenShift 4.12+" badge (OCP 4.12 ships Kubernetes
+  # 1.25) — was previously 1.28.0, which silently blocked installs on any
+  # 4.12-4.14 cluster the README claimed to support.
+  minKubeVersion: 1.25.0
   provider:
     name: Red Hat CoE
     url: https://github.com/PulseSRE
+  # Best-effort for disconnected/air-gapped mirroring: none of these are
+  # digest-pinned yet (each is a mutable tag in its reconciler's default —
+  # see agent_reconciler.go, ui_reconciler.go, postgresql_reconciler.go,
+  # mcp_reconciler.go, cluster_detect.go), so `oc adm catalog mirror` can
+  # discover and mirror them by tag, but re-mirroring is required whenever
+  # any of these tags move. Digest-pinning the defaults is tracked
+  # separately from this list.
+  relatedImages:
+    - name: pulse-agent
+      image: quay.io/amobrem/pulse-agent:latest
+    - name: pulse-ui
+      image: quay.io/amobrem/openshiftpulse:latest
+    - name: pulse-mcp-server
+      image: quay.io/amobrem/pulse-agent:mcp-server
+    - name: postgresql
+      image: registry.redhat.io/rhel9/postgresql-15:latest
+    - name: oauth-proxy
+      image: quay.io/openshift/origin-oauth-proxy:4.15
   version: 0.1.0

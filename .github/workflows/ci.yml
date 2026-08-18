@@ -44,11 +44,41 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - run: pip install pyyaml
       - name: RBAC must not have drifted from config/rbac/role.yaml
         run: python3 scripts/sync-rbac.py --check
       - name: bundle CRD copy must match config/crd/bases
         run: diff config/crd/bases/pulse.ai_openshiftpulses.yaml bundle/manifests/pulse.ai_openshiftpulses.yaml
+      - name: generated CRD/deepcopy must match api/v1alpha1 markers
+        # Regenerates both from source and fails if that produces any diff —
+        # otherwise a field added to types.go with no matching CRD/deepcopy
+        # update stays green here while the API server silently prunes the
+        # field on every write (structural schema drops unknown properties).
+        run: |
+          make generate manifests
+          git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go config/crd/bases/ || {
+            echo "::error::api/v1alpha1/zz_generated.deepcopy.go or config/crd/bases/ is out of date. Run 'make generate manifests' (and 'make bundle' if config/crd/bases changed) and commit the result.";
+            exit 1;
+          }
+
+  bundle-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install operator-sdk
+        run: |
+          OSDK_VERSION=v1.42.3
+          curl -sSLo /usr/local/bin/operator-sdk \
+            "https://github.com/operator-framework/operator-sdk/releases/download/${OSDK_VERSION}/operator-sdk_linux_amd64"
+          chmod +x /usr/local/bin/operator-sdk
+      - name: Validate the OLM bundle
+        # Catches structural bugs the RBAC/CRD diff checks above can't see —
+        # e.g. a probe nested at the wrong level in the CSV, which this repo
+        # shipped for a while because nothing ever ran this validator in CI.
+        run: make bundle-validate
 
   security:
     runs-on: ubuntu-latest

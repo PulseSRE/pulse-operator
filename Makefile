@@ -22,13 +22,30 @@ fmt:
 vet:
 	go vet ./...
 
-## manifests: generate CRD and RBAC manifests via controller-gen
-manifests:
-	echo "TODO: run controller-gen"
+LOCALBIN ?= $(shell pwd)/bin
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+CONTROLLER_TOOLS_VERSION ?= v0.21.0
 
-## generate: generate DeepCopy and other generated code via controller-gen
-generate:
-	echo "TODO: run controller-gen"
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+.PHONY: controller-gen
+controller-gen: $(LOCALBIN) ## Install controller-gen locally if not present
+	test -s $(CONTROLLER_GEN) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+## manifests: generate the CRD (config/crd/bases) from api/v1alpha1 markers.
+## Does NOT touch config/rbac/role.yaml: this operator's RBAC includes many
+## OpenShift-specific groups that are hand-curated rather than derived from
+## +kubebuilder:rbac markers (see scripts/sync-rbac.py's docstring) — running
+## controller-gen's rbac generator here would silently blow those away.
+## After running, also sync bundle/manifests/*.yaml (see the `bundle` target)
+## so the two CRD copies don't drift — CI's rbac-and-crd-sync job checks that.
+manifests: controller-gen
+	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
+
+## generate: regenerate zz_generated.deepcopy.go from api/v1alpha1 types.
+generate: controller-gen
+	$(CONTROLLER_GEN) object paths="./api/..."
 
 # Bundle targets
 BUNDLE_IMG ?= quay.io/amobrem/pulse-operator-bundle:v0.1.0
@@ -72,6 +89,12 @@ deploy: ## Deploy operator to cluster (requires kubectl/oc and cluster access)
 
 .PHONY: undeploy
 undeploy: ## Remove operator from cluster
+	# Delete CR instances (and wait for the pulse.ai/cleanup finalizer to
+	# clear) *before* removing the operator. Doing this in the other order
+	# leaves nothing running to process the finalizer, so any live CR hangs
+	# in Terminating forever, and the CRD delete below then blocks behind it
+	# (K8s waits for all instances of a CRD to be gone before removing it).
+	oc delete openshiftpulse --all --all-namespaces --wait=true --timeout=120s --ignore-not-found=true
 	oc delete -f deploy/operator.yaml --ignore-not-found=true
 	oc delete -f config/crd/bases/pulse.ai_openshiftpulses.yaml --ignore-not-found=true
 
