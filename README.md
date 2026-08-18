@@ -497,8 +497,9 @@ pulse-operator-system/
         ├── pulse.ai/cleanup finalizer  ← removes cluster-scoped resources on CR delete
         │
         ├── AgentReconciler
-        │   ├── {ns}/{name}-openshift-sre-agent  (ServiceAccount + ClusterRole + ClusterRoleBinding)
-        │   ├── {ns}/{name}-...-monitoring-view  (ClusterRoleBinding → built-in cluster-monitoring-view, for the agent's own Thanos-querier reads)
+        │   ├── {ns}/{name}-openshift-sre-agent  (ServiceAccount)
+        │   ├── {ns}-{name}-openshift-sre-agent  (ClusterRole + ClusterRoleBinding — cluster-scoped, namespace-qualified)
+        │   ├── {ns}-{name}-openshift-sre-agent-monitoring-view  (ClusterRoleBinding → built-in cluster-monitoring-view, for the agent's own Thanos-querier reads)
         │   ├── {ns}/{name}-ws-token             (Secret — random 32-char hex, never rotated)
         │   ├── {ns}/{name}-openshift-sre-agent-memory  (PVC 1Gi RWO — gated before Deployment)
         │   └── {ns}/{name}-openshift-sre-agent  (Deployment + Service :8080)
@@ -509,7 +510,8 @@ pulse-operator-system/
         │   └── {ns}/{name}-openshift-sre-agent-postgresql[-headless]  (Services)
         │
         ├── UIReconciler
-        │   ├── {ns}/{name}-openshiftpulse       (ServiceAccount + ClusterRole)
+        │   ├── {ns}/{name}-openshiftpulse       (ServiceAccount)
+        │   ├── {ns}-{name}-openshiftpulse-reader  (ClusterRole + ClusterRoleBinding [+ -auth-delegator] — cluster-scoped)
         │   ├── {ns}/{name}-oauth-secrets        (Secret — client-secret + cookie-secret)
         │   ├── {ns}/{name}-nginx                (ConfigMap — nginx.conf, root /opt/app-root/src)
         │   ├── {ns}/{name}-openshiftpulse       (Deployment: nginx + oauth-proxy sidecars)
@@ -640,9 +642,10 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - PostgreSQL sets `ReadOnlyRootFilesystem=false` (PG requires writable socket and temp paths).
 - The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict exec access to `pulse-operator-system` via NetworkPolicy.
 - The agent, UI, PostgreSQL, and MCP server pods each get their own NetworkPolicy restricting ingress to only the pods/namespaces that legitimately call them (e.g. only the UI pod may reach the agent on :8080; only the agent pod may reach the MCP server on :8081) — no pod is reachable cluster-wide by default.
-- OAuthClient names are scoped to `{namespace}-{name}` to prevent collision when multiple CRs coexist on the same cluster.
+- Every cluster-scoped resource the operator creates — the agent/UI/MCP ClusterRoles and ClusterRoleBindings, the agent's `-monitoring-view` binding, and the OAuthClient — is named `{namespace}-{name}-…` to prevent collision when multiple CRs coexist on the same cluster. Namespaced resources keep plain `{name}-…` names; Kubernetes already scopes those.
 - The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
-- Secrets (pg-auth, ws-token, oauth cookie) are generated once and never rotated automatically. Rotate manually by deleting the Secret — the operator regenerates it on next reconcile.
+- Secrets are generated once and never rotated automatically. `{name}-ws-token` and `{name}-oauth-secrets` can be rotated by deleting the Secret — the operator regenerates it on the next reconcile.
+- **Do not rotate `{name}-pg-auth` this way.** Deleting it makes the operator generate a fresh random password, but postgres only bakes a password into `PGDATA` during `initdb` on an empty data directory — the retained pg-data PVC still holds the old one, so the agent is left permanently unable to authenticate ([see above](#postgresql-data-survives-cr-deletion-by-design)). Rotating the PostgreSQL password means changing it inside the running database and in the Secret together, or tearing both down with `pulse.ai/delete-data=true` and letting the stack reinitialise.
 - Container images (`Dockerfile`, `Dockerfile.bundle`) are pinned by digest, not just tag, for reproducible builds; Dependabot (`.github/dependabot.yml`) opens a PR when a pinned digest moves.
 
 ---
