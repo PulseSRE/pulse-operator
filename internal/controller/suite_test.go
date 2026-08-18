@@ -47,13 +47,16 @@ var _ = BeforeSuite(func() {
 		// testdata/crds holds minimal permissive stand-ins for OpenShift/Prometheus
 		// Operator APIs (Route, OAuthClient, ServiceMonitor, PrometheusRule) that
 		// envtest's vanilla kube-apiserver doesn't serve natively — without these,
-		// every test that touches those GVKs would silently Skip() instead of run.
-		// ErrorIfCRDPathMissing=false lets the suite start even before generation.
+		// every test that touches those GVKs would silently skip instead of run.
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "crd", "bases"),
 			filepath.Join("testdata", "crds"),
 		},
-		ErrorIfCRDPathMissing: false,
+		// true, not false: with false a missing CRD directory starts envtest
+		// anyway, the Route/OAuthClient/ServiceMonitor GVKs are simply absent,
+		// and every test touching them skips itself. That turns a broken test
+		// environment into a green board. Fail at suite start instead.
+		ErrorIfCRDPathMissing: true,
 	}
 
 	cfg, err := testEnv.Start()
