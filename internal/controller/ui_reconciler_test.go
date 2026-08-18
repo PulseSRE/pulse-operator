@@ -301,6 +301,25 @@ var _ = Describe("UIReconciler", func() {
 		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--scope=user:full"))
 	})
 
+	It("enables oauth-proxy request logging (the only visibility into this hop when something fails between browser and nginx)", func() {
+		cr.Spec.UI.Replicas = 1
+		info := &ClusterInfo{
+			IngressDomain:   "apps.example.com",
+			OAuthProxyImage: DefaultOAuthProxyImage,
+		}
+		err := uiReconciler.reconcileUIDeployment(ctx, cr, info, "testhash")
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiResourceName(uiCRName),
+			Namespace: namespace,
+		}, deploy)).To(Succeed())
+
+		Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
+		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--request-logging=true"))
+	})
+
 	It("applies spec.ui.resources to the openshiftpulse container, and defaults it when unset", func() {
 		// Regression: spec.ui.resources was defined in the CRD and read by zero
 		// code — the UI container ran unbounded regardless of what an operator

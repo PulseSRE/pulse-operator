@@ -844,6 +844,13 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							// safely addable until the explicit-OAuthClient switch above.
 							"--scope=user:full",
 							"--cookie-expire=168h",
+							// oauth-proxy logs nothing per-request by default, which makes
+							// diagnosing anything that fails between the browser and nginx
+							// (auth rejections, WebSocket upgrade handling, header forwarding)
+							// impossible without guessing — there is no other visibility into
+							// this hop. Logs go to the container's stdout like everything else;
+							// this does not expose request bodies or cookie/token values.
+							"--request-logging=true",
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
