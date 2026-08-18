@@ -72,6 +72,36 @@ var _ = Describe("UIReconciler", func() {
 		Expect(cm.Data["nginx.conf"]).To(ContainSubstring("listen 8080"))
 	})
 
+	// Regression: kube-apiserver's WebSocket watch handler (used by the
+	// frontend's live resource watches, e.g. ?watch=1 on pods/deployments)
+	// rejects the upgrade with a bare 403 unless it sees an Origin header —
+	// its own CSRF guard, since a WS handshake bypasses normal CORS
+	// preflight. Confirmed live against a real cluster: identical requests
+	// succeeded (101 Switching Protocols) with Origin present and failed
+	// (403, empty body) without it, even with a valid, otherwise-working
+	// bearer token. nginx forwards unset headers through by default, so
+	// this "worked" implicitly before too — pin it explicitly so a future
+	// edit to this location block can't silently drop it.
+	It("forwards the Origin header on the /api/kubernetes/ proxy (required for kube-apiserver's WebSocket watch handler)", func() {
+		_, err := uiReconciler.reconcileUINginxConfigMap(ctx, cr)
+		Expect(err).NotTo(HaveOccurred())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiNginxConfigMapName(uiCRName),
+			Namespace: namespace,
+		}, cm)).To(Succeed())
+
+		conf := cm.Data["nginx.conf"]
+		k8sBlockStart := strings.Index(conf, "location /api/kubernetes/")
+		Expect(k8sBlockStart).To(BeNumerically(">=", 0), "the /api/kubernetes/ proxy block must exist")
+		k8sBlockEnd := strings.Index(conf[k8sBlockStart:], "\n    }")
+		Expect(k8sBlockEnd).To(BeNumerically(">", 0))
+		k8sBlock := conf[k8sBlockStart : k8sBlockStart+k8sBlockEnd]
+
+		Expect(k8sBlock).To(ContainSubstring("proxy_set_header Origin $http_origin;"))
+	})
+
 	It("reconcileUI creates the Service on port 8443", func() {
 		err := uiReconciler.reconcileUIService(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
