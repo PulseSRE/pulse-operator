@@ -62,6 +62,16 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 					"Some cluster-scoped resources could not be deleted: %v", err)
 				return ctrl.Result{}, err
 			}
+			// pg-auth Secret and the PG data PVC deliberately outlive CR
+			// deletion by default (see PostgreSQLReconciler.reconcilePGSecret's
+			// doc comment) — only remove them here if the CR explicitly opted
+			// into a full teardown via annotationDeleteData.
+			pg := &PostgreSQLReconciler{Client: r.Client, Scheme: r.Scheme}
+			if err := pg.deletePGDataOnRequest(ctx, pulse); err != nil {
+				r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "DeleteFailed",
+					"PostgreSQL data/credentials could not be deleted: %v", err)
+				return ctrl.Result{}, err
+			}
 			r.Recorder.Event(pulse, corev1.EventTypeNormal, "Deleted", "Cluster-scoped resources cleaned up")
 			controllerutil.RemoveFinalizer(pulse, finalizerName)
 			if err := r.Update(ctx, pulse); err != nil {

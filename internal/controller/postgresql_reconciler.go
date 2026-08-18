@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	goerrors "errors"
 	"fmt"
 	"time"
 
@@ -137,6 +138,22 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 }
 
 // reconcilePGSecret creates the pg-auth Secret if it does not exist and returns the password.
+//
+// Deliberately NOT given an OwnerReference to pulse, unlike every other
+// PostgreSQL sub-resource. The PG data PVC (from the StatefulSet's
+// volumeClaimTemplates, see reconcilePGStatefulSet) has no retention policy
+// set and is intentionally retained across CR deletion — see this package's
+// README row for PostgreSQL. postgres only runs initdb (which is what bakes
+// a password into PGDATA) on an empty data directory, so if this Secret were
+// owned/GC'd and a fresh one got generated on CR recreation, the new random
+// password would never match what's already on the retained volume: the
+// agent would get permanent authentication failures with no self-heal short
+// of an operator manually deleting the PVC. Leaving this Secret unowned
+// means reconcilePGSecret's "already exists — return stored password" branch
+// above naturally reuses the matching credentials whenever the CR is
+// recreated with the same name, keeping data and credentials as a pair with
+// the same lifetime. See deletePGDataOnRequest for the explicit opt-in path
+// that deletes both together when a real teardown is actually wanted.
 func (r *PostgreSQLReconciler) reconcilePGSecret(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
@@ -187,9 +204,6 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 			"POSTGRESQL_PASSWORD": password,
 			"POSTGRESQL_DATABASE": pgDB,
 		},
-	}
-	if err := controllerutil.SetControllerReference(pulse, secret, r.Scheme); err != nil {
-		return "", fmt.Errorf("set owner on pg-auth secret: %w", err)
 	}
 	if err := r.Create(ctx, secret); err != nil {
 		return "", err
@@ -421,6 +435,42 @@ func pgLabels(crName string) map[string]string {
 		"app.kubernetes.io/component":  "database",
 		"app.kubernetes.io/managed-by": "pulse-operator",
 	}
+}
+
+// annotationDeleteData is an explicit, deliberate opt-in: set to "true" on
+// the OpenShiftPulse CR *before* deleting it to also delete the pg-auth
+// Secret and the PostgreSQL data PVC, which otherwise survive CR deletion by
+// design (see reconcilePGSecret's doc comment). Without this annotation,
+// deleting and recreating a CR with the same name reuses the existing data
+// and matching credentials; with it, deletion is a real, full teardown.
+const annotationDeleteData = "pulse.ai/delete-data"
+
+// deletePGDataOnRequest deletes the pg-auth Secret and the PostgreSQL data
+// PVC when pulse carries annotationDeleteData=="true" — the explicit opt-in
+// path for a real teardown (see annotationDeleteData's doc comment). A no-op
+// otherwise. Called from the finalizer, before the StatefulSet's own
+// OwnerReference-driven garbage collection removes everything else.
+func (r *PostgreSQLReconciler) deletePGDataOnRequest(ctx context.Context, pulse *v1alpha1.OpenShiftPulse) error {
+	if pulse.Annotations[annotationDeleteData] != "true" {
+		return nil
+	}
+
+	stsName := pulse.Name + "-openshift-sre-agent-postgresql"
+	secretName := pulse.Name + "-pg-auth"
+	// StatefulSet volumeClaimTemplate PVCs are named
+	// "<claimTemplateName>-<statefulSetName>-<ordinal>" — see the "pg-data"
+	// claim template in reconcilePGStatefulSet; replicas is always 1, so
+	// there is only ever ordinal 0.
+	pvcName := "pg-data-" + stsName + "-0"
+
+	var errs []error
+	if err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: pulse.Namespace}}); err != nil && !errors.IsNotFound(err) {
+		errs = append(errs, fmt.Errorf("delete pg-auth secret: %w", err))
+	}
+	if err := r.Delete(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: pulse.Namespace}}); err != nil && !errors.IsNotFound(err) {
+		errs = append(errs, fmt.Errorf("delete pg-data PVC: %w", err))
+	}
+	return goerrors.Join(errs...)
 }
 
 // deletePendingPGPodIfStale deletes the ordinal-0 PostgreSQL pod when it is

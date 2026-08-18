@@ -112,9 +112,17 @@ var _ = Describe("OpenShiftPulseReconciler.Reconcile — full lifecycle", func()
 		// PostgreSQL — the exact class of bug this test guards against: these
 		// resources previously only got a non-blocking annotation, never a real
 		// OwnerReference, and silently outlived CR deletion forever.
+		//
+		// pg-auth is the deliberate exception: it must NOT have an
+		// OwnerReference, so it (and the matching PGDATA on the retained PVC)
+		// survive CR deletion together and get correctly reused if the CR is
+		// recreated with the same name — see reconcilePGSecret's doc comment,
+		// and postgresql_reconciler_test.go's "credentials and data survive a
+		// CR delete+recreate cycle" test for the actual regression coverage.
 		pgAuth := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-pg-auth", Namespace: namespace}, pgAuth)).To(Succeed())
-		mustHaveOwner(pgAuth, crName, "pg-auth Secret")
+		Expect(pgAuth.GetOwnerReferences()).To(BeEmpty(),
+			"pg-auth must have no OwnerReference — it's designed to outlive CR deletion, matching the retained PG data PVC")
 
 		pgSTS := &appsv1.StatefulSet{}
 		stsName := crName + "-openshift-sre-agent-postgresql"

@@ -42,7 +42,7 @@ One `OpenShiftPulse` CR drives the full lifecycle:
 | Reconciler | Resources managed |
 |---|---|
 | **Agent** | ClusterRole (read-only cluster access), WS token Secret, memory PVC, Deployment, Service |
-| **PostgreSQL** | StatefulSet (pg-data PVC retained on delete), pg-auth Secret, ClusterIP + headless Services |
+| **PostgreSQL** | StatefulSet (pg-data PVC retained on delete), pg-auth Secret (also retained — see below), ClusterIP + headless Services |
 | **UI** | nginx ConfigMap, oauth-proxy Deployment (TLS on 8443), Service, Route, OAuthClient |
 | **Monitoring** | ServiceMonitor (agent `/metrics`), PrometheusRule (`PulseAgentDown`, `PulsePostgreSQLDown`) |
 | **MCP** | MCP server ServiceAccount + ClusterRole (read-only) + ClusterRoleBinding, Deployment, Service (optional, `spec.agent.mcp.enabled: true`) |
@@ -50,6 +50,19 @@ One `OpenShiftPulse` CR drives the full lifecycle:
 | **Cluster detect** | Reads ingress domain, oauth-proxy image digest, ACM availability on first reconcile |
 
 A `pulse.ai/cleanup` finalizer ensures ClusterRoles and OAuthClient are removed when the CR is deleted — no orphans on uninstall.
+
+### PostgreSQL data survives CR deletion by design
+
+The pg-data PVC (from the StatefulSet's `volumeClaimTemplates`) has no retention policy and is never deleted automatically, and the `{name}-pg-auth` credentials Secret has no `OwnerReference` for the same reason — postgres only runs `initdb` (which bakes a password into `PGDATA`) on an empty data directory, so if the Secret were garbage-collected with the CR, recreating a CR with the same name would generate a fresh random password that could never match the already-initialized data on the retained volume, leaving the agent permanently unable to authenticate with no self-heal short of manually deleting the PVC. Retaining both together means recreating a CR with the same name transparently reuses the matching credentials.
+
+If you actually want a full teardown (delete the data and credentials, not just the CR), annotate the CR **before** deleting it:
+
+```bash
+oc annotate openshiftpulse pulse -n openshiftpulse pulse.ai/delete-data=true
+oc delete openshiftpulse pulse -n openshiftpulse
+```
+
+Without this annotation, `{name}-pg-auth` and the pg-data PVC are left behind after `oc delete openshiftpulse pulse` — this is intentional, not a leak.
 
 ---
 

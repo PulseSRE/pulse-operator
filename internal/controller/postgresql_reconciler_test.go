@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -43,6 +44,11 @@ var _ = Describe("PostgreSQLReconciler", func() {
 
 	AfterEach(func() {
 		_ = k8sClient.Delete(ctx, cr)
+		// pg-auth deliberately has no OwnerReference (see reconcilePGSecret's
+		// doc comment) so it survives CR deletion by design — clean it up
+		// explicitly here so it doesn't leak into other specs in this suite
+		// that reuse crName.
+		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: crName + "-pg-auth", Namespace: namespace}})
 	})
 
 	It("reconcilePostgres creates Secret, StatefulSet, and Service", func() {
@@ -239,6 +245,122 @@ var _ = Describe("PostgreSQLReconciler", func() {
 		Expect(string(after.Data["database-url"])).NotTo(Equal(staleURL),
 			"database-url must be refreshed to match the current pg-auth password, not left stale")
 		Expect(string(after.Data["database-url"])).To(ContainSubstring("rotated-password-xyz"))
+	})
+
+	// Regression: recreating a CR with the same name after deletion used to
+	// generate a fresh random pg-auth password every time (the Secret had an
+	// OwnerReference and was garbage-collected with the CR), but the PG data
+	// PVC has no retention policy and is intentionally retained — postgres
+	// only runs initdb (which bakes in a password) on an empty data
+	// directory, so the new random password would never match what's
+	// already on the retained volume, and the agent would get permanent
+	// authentication failures with no self-heal. Not owning the Secret means
+	// it survives right alongside the retained PVC and gets correctly reused.
+	It("reuses the same pg-auth password across a CR delete+recreate cycle with the same name", func() {
+		_, _, err := pg.reconcilePostgres(ctx, cr)
+		Expect(err).NotTo(HaveOccurred())
+
+		pgAuth := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-pg-auth", Namespace: namespace}, pgAuth)).To(Succeed())
+		originalPassword := string(pgAuth.Data["POSTGRESQL_PASSWORD"])
+		Expect(originalPassword).NotTo(BeEmpty())
+		Expect(pgAuth.GetOwnerReferences()).To(BeEmpty(),
+			"pg-auth must have no OwnerReference so a real cluster's garbage collector never removes it on CR deletion")
+
+		// Delete the CR (not pg-auth) and recreate a fresh CR object with the
+		// same name — simulating exactly the scenario that used to strand
+		// the agent: same name, freshly-generated CR, but pg-auth (and the
+		// retained PVC it matches) still around from before.
+		Expect(k8sClient.Delete(ctx, cr)).To(Succeed())
+		recreated := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Database: pulsev1alpha1.DatabaseConfig{StorageSize: "5Gi"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, recreated)).To(Succeed())
+		cr = recreated // let AfterEach clean up the recreated object
+
+		_, _, err = pg.reconcilePostgres(ctx, recreated)
+		Expect(err).NotTo(HaveOccurred())
+
+		afterRecreate := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-pg-auth", Namespace: namespace}, afterRecreate)).To(Succeed())
+		Expect(string(afterRecreate.Data["POSTGRESQL_PASSWORD"])).To(Equal(originalPassword),
+			"the recreated CR must get the SAME password back, matching what's already initialized on the retained PG data volume")
+	})
+
+	// Regression coverage for the explicit opt-in teardown path: without
+	// annotationDeleteData, pg-auth and the data PVC must NOT be touched by
+	// deletePGDataOnRequest; with it, both must actually be deleted.
+	Describe("deletePGDataOnRequest", func() {
+		var pvcName string
+
+		BeforeEach(func() {
+			pvcName = "pg-data-" + crName + "-openshift-sre-agent-postgresql-0"
+		})
+
+		It("does nothing without the delete-data annotation", func() {
+			_, _, err := pg.reconcilePostgres(ctx, cr)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(pg.deletePGDataOnRequest(ctx, cr)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-pg-auth", Namespace: namespace}, &corev1.Secret{})).To(Succeed(),
+				"pg-auth must survive when the CR did not opt into a full teardown")
+		})
+
+		It("deletes pg-auth and the data PVC when annotationDeleteData is set", func() {
+			_, _, err := pg.reconcilePostgres(ctx, cr)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The data PVC normally comes from the StatefulSet's
+			// volumeClaimTemplates, materialized by the StatefulSet
+			// controller — which doesn't run in envtest (only the API
+			// server + etcd do). Create the PVC object directly at the name
+			// deletePGDataOnRequest expects, so this test can deterministically
+			// exercise the actual delete call rather than depend on
+			// unavailable controller behavior.
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: namespace},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("5Gi")},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+
+			cr.Annotations = map[string]string{annotationDeleteData: "true"}
+			Expect(k8sClient.Update(ctx, cr)).To(Succeed())
+
+			Expect(pg.deletePGDataOnRequest(ctx, cr)).To(Succeed())
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx,
+				types.NamespacedName{Name: crName + "-pg-auth", Namespace: namespace}, &corev1.Secret{}))).To(BeTrue(),
+				"pg-auth must be deleted when the CR explicitly opted into a full teardown")
+
+			// A real Delete was requested (proves deletePGDataOnRequest
+			// actually called it): envtest's API server auto-adds the
+			// kubernetes.io/pvc-protection finalizer, which only the (not
+			// running in envtest) pv-protection controller ever removes, so
+			// the PVC stays in Terminating rather than fully disappearing
+			// here — strip it manually to assert full deletion rather than
+			// just a DeletionTimestamp.
+			afterDelete := &corev1.PersistentVolumeClaim{}
+			getErr := k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: namespace}, afterDelete)
+			if getErr == nil {
+				Expect(afterDelete.DeletionTimestamp).NotTo(BeNil(), "the data PVC must have been marked for deletion")
+				afterDelete.Finalizers = nil
+				Expect(k8sClient.Update(ctx, afterDelete)).To(Succeed())
+			} else {
+				Expect(apierrors.IsNotFound(getErr)).To(BeTrue())
+			}
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: namespace}, &corev1.PersistentVolumeClaim{}))
+			}).Should(BeTrue(), "the data PVC must be fully deleted when the CR explicitly opted into a full teardown")
+		})
 	})
 
 	It("reconcilePGService is idempotent", func() {
