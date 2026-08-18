@@ -306,6 +306,32 @@ var _ = Describe("AgentReconciler", func() {
 			types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, &rbacv1.ClusterRoleBinding{})).To(Succeed())
 	})
 
+	// Regression: the agent's own Prometheus alert-scanning/trend-monitoring
+	// queries thanos-querier directly using its own ServiceAccount token, but
+	// nothing ever bound that ServiceAccount to the built-in
+	// cluster-monitoring-view ClusterRole that gates read access to it —
+	// every query 403'd, surfacing as "Prometheus monitoring degraded" /
+	// "Trend monitoring degraded" in the agent's own inbox.
+	It("binds the agent's ServiceAccount to the built-in cluster-monitoring-view ClusterRole", func() {
+		Expect(reconciler.reconcileAgentMonitoringViewBinding(ctx, cr)).To(Succeed())
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: agentMonitoringViewBindingName(crName, namespace),
+		}, crb)).To(Succeed())
+
+		Expect(crb.RoleRef).To(Equal(rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "cluster-monitoring-view",
+		}))
+		Expect(crb.Subjects).To(ConsistOf(rbacv1.Subject{
+			Kind:      "ServiceAccount",
+			Name:      agentResourceName(crName),
+			Namespace: namespace,
+		}))
+	})
+
 	It("Deployment has readiness and liveness probes configured", func() {
 		_, err := reconcileWithBoundPVC(ctx, crName, namespace)
 		Expect(err).NotTo(HaveOccurred())
@@ -329,6 +355,16 @@ var _ = Describe("AgentReconciler", func() {
 		Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
 		Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/healthz"))
 		Expect(c.LivenessProbe.InitialDelaySeconds).To(Equal(int32(15)))
+
+		// Regression: the agent has no CPU request (deliberate), so under
+		// node-level CPU contention from unrelated neighboring pods it can
+		// occasionally miss the Kubernetes default 1s probe timeout even
+		// though the process itself is healthy — this looked like
+		// unexplained crashlooping (exit 137, nothing in the agent's own
+		// logs) on a busy shared cluster. A 1s timeout is too tight for that.
+		Expect(c.ReadinessProbe.TimeoutSeconds).To(BeNumerically(">", 1),
+			"probe timeout must tolerate brief node-level scheduling delays, not just the K8s default of 1s")
+		Expect(c.LivenessProbe.TimeoutSeconds).To(BeNumerically(">", 1))
 	})
 
 	It("Deployment uses Recreate strategy", func() {

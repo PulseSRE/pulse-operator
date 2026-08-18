@@ -70,6 +70,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		{"ServiceAccount", r.reconcileServiceAccount},
 		{"ClusterRole", r.reconcileClusterRole},
 		{"ClusterRoleBinding", r.reconcileClusterRoleBinding},
+		{"MonitoringViewBinding", r.reconcileAgentMonitoringViewBinding},
 		{"WSTokenSecret", r.reconcileWSTokenSecret},
 		{"MemoryPVC", r.reconcileMemoryPVC},
 	} {
@@ -385,6 +386,46 @@ func (r *AgentReconciler) reconcileClusterRoleBinding(ctx context.Context, cr *p
 	return err
 }
 
+// agentMonitoringViewBindingName returns the namespace-qualified name for the
+// agent's binding to the built-in cluster-monitoring-view ClusterRole — same
+// naming convention as agentClusterRoleName, since this is also cluster-scoped.
+func agentMonitoringViewBindingName(crName, crNamespace string) string {
+	return agentClusterRoleName(crName, crNamespace) + "-monitoring-view"
+}
+
+// reconcileAgentMonitoringViewBinding binds the agent's ServiceAccount to
+// OpenShift's built-in cluster-monitoring-view ClusterRole. The agent's own
+// alert-scanning and trend-monitoring features query Thanos-querier directly
+// (same as the UI's /api/prometheus/ proxy, but server-side using the
+// agent's own SA token, not a forwarded user token) — reading that endpoint
+// is gated on this specific ClusterRole, not on any rule addable to the
+// agent's own ClusterRole (querying Prometheus isn't a "resource" RBAC can
+// express; it's checked via an authorization webhook keyed on this role).
+// Without this binding every query 403s, which is exactly what surfaced as
+// "Prometheus monitoring degraded" / "Trend monitoring degraded" in the
+// agent's own inbox.
+func (r *AgentReconciler) reconcileAgentMonitoringViewBinding(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
+	name := agentMonitoringViewBindingName(cr.Name, cr.Namespace)
+	crb := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, crb, func() error {
+		crb.Annotations = clusterScopedAnnotations(cr)
+		crb.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      agentResourceName(cr.Name),
+			Namespace: cr.Namespace,
+		}}
+		if crb.RoleRef.Name == "" {
+			crb.RoleRef = rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     "cluster-monitoring-view",
+			}
+		}
+		return nil
+	})
+	return err
+}
+
 func (r *AgentReconciler) reconcileWSTokenSecret(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
 	name := wsTokenSecretName(cr.Name)
 	existing := &corev1.Secret{}
@@ -582,11 +623,25 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 							ProbeHandler:        healthzProbeHandler,
 							InitialDelaySeconds: 15,
 							PeriodSeconds:       20,
+							// The agent has no CPU request (deliberate — see
+							// agentResources' doc comment on why CPU limits/requests
+							// are dropped), so under node-level CPU contention from
+							// unrelated neighboring pods it gets minimal scheduling
+							// priority and can occasionally take longer than the
+							// Kubernetes default of 1s to answer even a cheap HTTP
+							// healthz check — not because the agent itself is
+							// unhealthy. That looked like unexplained crashlooping
+							// (exit 137, no error in the agent's own logs) on a
+							// busy shared cluster. A more generous timeout tolerates
+							// that without weakening the check's actual sensitivity
+							// (still restarts after 3 genuine consecutive failures).
+							TimeoutSeconds: 5,
 						},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler:        healthzProbeHandler,
 							InitialDelaySeconds: 5,
 							PeriodSeconds:       10,
+							TimeoutSeconds:      5,
 						},
 					},
 				},

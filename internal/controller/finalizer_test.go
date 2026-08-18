@@ -79,6 +79,7 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 			_ = k8sClient.Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: name}})
 			_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}})
 		}
+		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentMonitoringViewBindingName(crName, namespace)}})
 		for _, name := range []string{uiClusterRoleName(crName, namespace), uiClusterRoleNameUnqualified(crName)} {
 			_ = k8sClient.Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: name}})
 			_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}})
@@ -145,6 +146,13 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 		}
 		Expect(k8sClient.Create(ctx, mcpCRB)).To(Succeed())
 
+		monitoringViewCRB := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: agentMonitoringViewBindingName(crName, namespace)},
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-monitoring-view"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: agentResourceName(crName), Namespace: namespace}},
+		}
+		Expect(k8sClient.Create(ctx, monitoringViewCRB)).To(Succeed())
+
 		oac := &unstructured.Unstructured{}
 		oac.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
 		oac.SetName(oauthClientName(crName, namespace))
@@ -181,6 +189,7 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 			uiClusterRole+"-auth-delegator", // UI auth-delegator ClusterRoleBinding
 			mcpClusterRole,                  // MCP ClusterRole
 			mcpClusterRole,                  // MCP ClusterRoleBinding
+			agentMonitoringViewBindingName(crName, namespace), // agent monitoring-view ClusterRoleBinding
 			oauthClientName(crName, namespace),
 		))
 
@@ -191,6 +200,8 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRole + "-auth-delegator"}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: mcpClusterRole}, &rbacv1.ClusterRole{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: mcpClusterRole}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx,
+			types.NamespacedName{Name: agentMonitoringViewBindingName(crName, namespace)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		freshOAC := &unstructured.Unstructured{}
 		freshOAC.SetGroupVersionKind(schema.GroupVersionKind{Group: "oauth.openshift.io", Version: "v1", Kind: "OAuthClient"})
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: oauthClientName(crName, namespace)}, freshOAC))).To(BeTrue())
