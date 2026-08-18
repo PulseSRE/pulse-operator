@@ -178,7 +178,15 @@ func uiOAuthSecretsName(crName string) string {
 	return crName + "-oauth-secrets"
 }
 
-func uiNginxConfigMapName(crName string) string {
+// uiNginxSecretName names the rendered nginx.conf object. It is a Secret, not
+// a ConfigMap: the config embeds the agent's shared WS token twice — as a query
+// param on the WebSocket proxy_pass, and as a static Authorization bearer on
+// the REST proxy — while both generated ClusterRoles grant cluster-wide
+// configmaps get/list/watch. As a ConfigMap the token was therefore readable by
+// anything holding those rights, which includes the agent and UI themselves.
+// The object name is unchanged so the Deployment's mount path and subPath stay
+// exactly as they were.
+func uiNginxSecretName(crName string) string {
 	return crName + "-nginx"
 }
 
@@ -534,7 +542,7 @@ func (r *UIReconciler) reconcileUIServiceCABundle(ctx context.Context, pulse *pu
 // pod-template annotation — Kubernetes then rolls out new pods automatically
 // whenever the nginx config changes (subPath mounts never live-update).
 func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
-	name := uiNginxConfigMapName(pulse.Name)
+	name := uiNginxSecretName(pulse.Name)
 
 	// Read WS token from the agent's ws-token secret so it can be embedded in
 	// the nginx WebSocket proxy rules. Token is created by AgentReconciler on first
@@ -688,7 +696,7 @@ http {
   }
 }
 `, agentSvc, wsToken, agentSvc, wsToken)
-	cm := &corev1.ConfigMap{
+	cm := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: pulse.Namespace,
@@ -701,12 +709,24 @@ http {
 		if err := controllerutil.SetControllerReference(pulse, cm, r.Scheme); err != nil {
 			return err
 		}
-		cm.Data = map[string]string{
+		cm.StringData = map[string]string{
 			"nginx.conf": nginxConf,
 		}
 		return nil
 	})
-	return hash, err
+	if err != nil {
+		return hash, err
+	}
+
+	// Upgrade path: installs from before this was a Secret left a ConfigMap of
+	// the same name holding the token in plain sight. It is no longer read by
+	// anything, so remove it rather than leaving the exposure behind.
+	staleCM := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace}}
+	if delErr := r.Delete(ctx, staleCM); delErr != nil && !apierrors.IsNotFound(delErr) {
+		return hash, fmt.Errorf("delete stale nginx ConfigMap: %w", delErr)
+	}
+
+	return hash, nil
 }
 
 // f. Deployment — openshiftpulse (nginx) + oauth-proxy sidecar.
@@ -718,7 +738,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 	saName := uiResourceName(pulse.Name)
 	tlsSecretName := uiTLSSecretName(pulse.Name)
 	oauthSecretsName := uiOAuthSecretsName(pulse.Name)
-	nginxCMName := uiNginxConfigMapName(pulse.Name)
+	nginxCMName := uiNginxSecretName(pulse.Name)
 
 	maxSurge := intstr.FromInt(1)
 	maxUnavailable := intstr.FromInt(0)
@@ -892,8 +912,8 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 					{
 						Name: "nginx-conf",
 						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{Name: nginxCMName},
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: nginxCMName,
 							},
 						},
 					},
