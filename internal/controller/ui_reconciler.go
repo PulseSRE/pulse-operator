@@ -583,11 +583,24 @@ http {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     # Kubernetes API proxy — UI reads cluster resources directly.
+    #
+    # proxy_set_header Origin below is load-bearing, not cosmetic: the
+    # frontend watches resources (pods, deployments, etc.) over a raw
+    # WebSocket-upgraded connection to kube-apiserver's own watch endpoint
+    # (?watch=1), and kube-apiserver's WebSocket watch handler rejects the
+    # upgrade with a bare 403 (no body) unless it sees a same-origin-looking
+    # Origin header — its own CSRF guard, since a WS handshake bypasses
+    # normal CORS preflight. nginx forwards unset headers through by
+    # default, so this "worked" implicitly before too, but only as long as
+    # nothing between the browser and here (Route, oauth-proxy) ever drops
+    # or rewrites Origin — pinning it explicitly here removes that
+    # assumption and documents why it must never be removed.
     location /api/kubernetes/ {
       proxy_pass https://kubernetes.default.svc/;
       proxy_ssl_verify on;
       proxy_ssl_trusted_certificate /var/run/secrets/kubernetes.io/serviceaccount/ca.crt;
       proxy_set_header Authorization "Bearer $http_x_forwarded_access_token";
+      proxy_set_header Origin $http_origin;
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection $connection_upgrade;
       proxy_http_version 1.1;
