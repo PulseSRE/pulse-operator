@@ -864,13 +864,20 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							// safely addable until the explicit-OAuthClient switch above.
 							"--scope=user:full",
 							"--cookie-expire=168h",
-							// oauth-proxy logs nothing per-request by default, which makes
-							// diagnosing anything that fails between the browser and nginx
-							// (auth rejections, WebSocket upgrade handling, header forwarding)
-							// impossible without guessing — there is no other visibility into
-							// this hop. Logs go to the container's stdout like everything else;
-							// this does not expose request bodies or cookie/token values.
-							"--request-logging=true",
+							// MUST stay false. oauth-proxy's LoggingHandler wraps every
+							// ResponseWriter in a *responseLogger that implements only
+							// Header/Write/WriteHeader — not http.Hijacker. Its WebSocket path
+							// (yhat/wsutil, used for every /api/kubernetes/...watch=1 and
+							// /api/agent/ws/* connection) type-asserts the ResponseWriter to
+							// http.Hijacker to take over the raw TCP connection, and with
+							// request-logging on that assertion always fails, so oauth-proxy
+							// answers every single WebSocket upgrade with an instant
+							// "Not a hijacker?" 500 — the root cause of every WebSocket
+							// connection failure this UI exhibited. request-logging was
+							// briefly enabled here to diagnose an unrelated proxy issue, which
+							// is exactly how this got found: it was the diagnostic tool
+							// breaking the very thing it was added to observe.
+							"--request-logging=false",
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{

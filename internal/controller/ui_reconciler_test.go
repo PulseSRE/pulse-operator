@@ -301,7 +301,16 @@ var _ = Describe("UIReconciler", func() {
 		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--scope=user:full"))
 	})
 
-	It("enables oauth-proxy request logging (the only visibility into this hop when something fails between browser and nginx)", func() {
+	It("never enables oauth-proxy request logging (its LoggingHandler breaks every WebSocket upgrade)", func() {
+		// Regression: oauth-proxy's LoggingHandler wraps every ResponseWriter in
+		// a *responseLogger implementing only Header/Write/WriteHeader — not
+		// http.Hijacker. Its WebSocket path (yhat/wsutil) type-asserts the
+		// ResponseWriter to http.Hijacker to take over the connection, and with
+		// request-logging on that assertion always fails: every single
+		// /api/kubernetes/...watch=1 and /api/agent/ws/* connection gets an
+		// instant "Not a hijacker?" 500 instead of upgrading. This was briefly
+		// enabled here as a diagnostic and turned out to be the root cause of
+		// exactly the WebSocket failures it was added to help diagnose.
 		cr.Spec.UI.Replicas = 1
 		info := &ClusterInfo{
 			IngressDomain:   "apps.example.com",
@@ -317,7 +326,8 @@ var _ = Describe("UIReconciler", func() {
 		}, deploy)).To(Succeed())
 
 		Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
-		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--request-logging=true"))
+		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--request-logging=false"))
+		Expect(deploy.Spec.Template.Spec.Containers[1].Args).NotTo(ContainElement("--request-logging=true"))
 	})
 
 	It("applies spec.ui.resources to the openshiftpulse container, and defaults it when unset", func() {
