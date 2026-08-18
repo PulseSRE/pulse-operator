@@ -624,6 +624,27 @@ http {
       proxy_read_timeout 60s;
     }
 
+    # Alertmanager proxy — UI's Alerts view reads firing alerts/rules via
+    # /api/prometheus/ above, but silences (list/create/expire) are an
+    # Alertmanager-only API with no Thanos equivalent. Without this location
+    # /api/alertmanager/* fell through to the SPA catch-all below, silently
+    # returning index.html (200, text/html) instead of proxying anywhere —
+    # the UI correctly treated the non-JSON response as "backend down", but
+    # the real cause was a missing proxy, not a misconfigured/absent
+    # Prometheus. Same serving-ca bundle as Thanos (both are signed by the
+    # cluster's own service-ca). Reading/writing this endpoint requires the
+    # logged-in user to hold (or be bound to) monitoring-alertmanager-view
+    # (read) or monitoring-alertmanager-edit (read+write silences) in the
+    # openshift-monitoring project — see that Service's own
+    # openshift.io/description annotation.
+    location /api/alertmanager/ {
+      proxy_pass https://alertmanager-main.openshift-monitoring.svc:9094/;
+      proxy_ssl_verify on;
+      proxy_ssl_trusted_certificate /etc/pki/service-ca/service-ca.crt;
+      proxy_set_header Authorization "Bearer $http_x_forwarded_access_token";
+      proxy_read_timeout 60s;
+    }
+
     # Agent WebSocket — appends the shared token as a query param.
     # SECURITY NOTE: unlike the REST proxy below (Authorization: Bearer header),
     # this passes the token via the upstream URL, which risks it appearing in

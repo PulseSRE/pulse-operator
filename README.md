@@ -608,6 +608,17 @@ oc get clusterrolebinding | grep monitoring-view
 # If absent, touch an annotation to trigger reconcile, or restart the operator pod
 ```
 
+### UI Alerts view shows "Unable to reach alerting backend"
+
+**Cause:** The Alerts view reads firing alerts/rules from `/api/prometheus/` (Thanos-querier) but silences from a separate `/api/alertmanager/` proxy — a pre-existing gap where that location didn't exist in nginx at all, so requests fell through to the SPA's own `index.html` (200 OK, `text/html`) instead of reaching Alertmanager. The UI correctly detected the non-JSON response and reported the backend as unreachable, even though Prometheus itself was fine.
+
+```bash
+# Confirm the proxy exists in the live ConfigMap
+oc get configmap {name}-nginx -n <namespace> -o jsonpath='{.data.nginx\.conf}' | grep -A5 'location /api/alertmanager/'
+```
+
+If it's missing, the operator image predates this fix — upgrade and restart the UI pods. Also confirm the logged-in user holds `monitoring-alertmanager-view` (or `-edit`) in `openshift-monitoring`; `cluster-monitoring-view` alone (which covers the Thanos path) is not sufficient for silences.
+
 ### Migrating from Helm install
 
 The operator cannot adopt Helm-managed Deployments/StatefulSets because their label selectors are immutable. The operator detects selector mismatches and replaces the resources automatically (StatefulSet with orphan cascade to preserve the PVC). If the agent Deployment is stuck:
@@ -644,6 +655,7 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - The agent, UI, PostgreSQL, and MCP server pods each get their own NetworkPolicy restricting ingress to only the pods/namespaces that legitimately call them (e.g. only the UI pod may reach the agent on :8080; only the agent pod may reach the MCP server on :8081) — no pod is reachable cluster-wide by default.
 - Every cluster-scoped resource the operator creates — the agent/UI/MCP ClusterRoles and ClusterRoleBindings, the agent's `-monitoring-view` binding, and the OAuthClient — is named `{namespace}-{name}-…` to prevent collision when multiple CRs coexist on the same cluster. Namespaced resources keep plain `{name}-…` names; Kubernetes already scopes those.
 - The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
+- The UI's nginx proxies both `/api/prometheus/` (Thanos-querier — firing alerts, rules, CPU/memory charts) and `/api/alertmanager/` (Alertmanager — silences: list/create/expire) to `openshift-monitoring`, forwarding the logged-in user's own OAuth token. Reading/writing silences requires the user to additionally hold `monitoring-alertmanager-view` (read) or `monitoring-alertmanager-edit` (read+write) in the `openshift-monitoring` project — a narrower grant than `cluster-monitoring-view`, which only covers the Thanos path.
 - Secrets are generated once and never rotated automatically. `{name}-ws-token` and `{name}-oauth-secrets` can be rotated by deleting the Secret — the operator regenerates it on the next reconcile.
 - **Do not rotate `{name}-pg-auth` this way.** Deleting it makes the operator generate a fresh random password, but postgres only bakes a password into `PGDATA` during `initdb` on an empty data directory — the retained pg-data PVC still holds the old one, so the agent is left permanently unable to authenticate ([see above](#postgresql-data-survives-cr-deletion-by-design)). Rotating the PostgreSQL password means changing it inside the running database and in the Secret together, or tearing both down with `pulse.ai/delete-data=true` and letting the stack reinitialise.
 - Container images (`Dockerfile`, `Dockerfile.bundle`) are pinned by digest, not just tag, for reproducible builds; Dependabot (`.github/dependabot.yml`) opens a PR when a pinned digest moves.

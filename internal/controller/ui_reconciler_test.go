@@ -102,6 +102,27 @@ var _ = Describe("UIReconciler", func() {
 		Expect(k8sBlock).To(ContainSubstring("proxy_set_header Origin $http_origin;"))
 	})
 
+	// Regression: /api/alertmanager/* had no nginx location at all, so it
+	// fell through to the SPA catch-all and returned index.html (200,
+	// text/html) instead of proxying to Alertmanager — the Alerts view
+	// correctly detected the non-JSON response and showed "Unable to reach
+	// alerting backend", but the real cause was a missing proxy location,
+	// not a misconfigured Prometheus/Alertmanager.
+	It("proxies /api/alertmanager/ to the cluster's Alertmanager service", func() {
+		_, err := uiReconciler.reconcileUINginxConfigMap(ctx, cr)
+		Expect(err).NotTo(HaveOccurred())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiNginxConfigMapName(uiCRName),
+			Namespace: namespace,
+		}, cm)).To(Succeed())
+
+		conf := cm.Data["nginx.conf"]
+		Expect(conf).To(ContainSubstring("location /api/alertmanager/"))
+		Expect(conf).To(ContainSubstring("proxy_pass https://alertmanager-main.openshift-monitoring.svc:9094/;"))
+	})
+
 	It("reconcileUI creates the Service on port 8443", func() {
 		err := uiReconciler.reconcileUIService(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
