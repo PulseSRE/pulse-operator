@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -296,6 +297,39 @@ var _ = Describe("UIReconciler", func() {
 		}
 		Expect(getErr).NotTo(HaveOccurred())
 		Expect(route.GetName()).To(Equal(uiResourceName(uiCRName)))
+	})
+
+	// Regression: two OpenShiftPulse CRs sharing a name in different
+	// namespaces must not collide on one shared cluster-scoped
+	// ClusterRole/ClusterRoleBinding — the CSV declares AllNamespaces as the
+	// only supported install mode, so this is an expected shape, not an edge case.
+	It("namespace-qualifies the UI ClusterRole/Binding so two CRs with the same name in different namespaces don't collide", func() {
+		otherNamespace := "other-ns-" + uiCRName
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherNamespace}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+		otherCR := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: uiCRName, Namespace: otherNamespace},
+			Spec:       pulsev1alpha1.OpenShiftPulseSpec{},
+		}
+		Expect(k8sClient.Create(ctx, otherCR)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, otherCR) }()
+
+		Expect(uiReconciler.reconcileUIClusterRoleBinding(ctx, cr)).To(Succeed())
+		Expect(uiReconciler.reconcileUIClusterRoleBinding(ctx, otherCR)).To(Succeed())
+
+		ourCRB := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(uiCRName, namespace)}, ourCRB)).To(Succeed())
+		Expect(ourCRB.Subjects).To(ConsistOf(rbacv1.Subject{
+			Kind: "ServiceAccount", Name: uiResourceName(uiCRName), Namespace: namespace,
+		}), "our CR's binding must still point at our own ServiceAccount after the other CR reconciled")
+
+		otherCRB := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: uiClusterRoleName(uiCRName, otherNamespace)}, otherCRB)).To(Succeed())
+		Expect(otherCRB.Subjects).To(ConsistOf(rbacv1.Subject{
+			Kind: "ServiceAccount", Name: uiResourceName(uiCRName), Namespace: otherNamespace,
+		}))
 	})
 
 	// Regression: reconcileUIRoute used to only ever read spec.host on an

@@ -98,6 +98,15 @@ func agentResourceName(crName string) string {
 	return crName + "-openshift-sre-agent"
 }
 
+// agentClusterRoleName returns a namespace-qualified name for the agent's
+// cluster-scoped ClusterRole/ClusterRoleBinding — see
+// deleteStaleUnqualifiedClusterScopedResource's doc comment for why this
+// can't just be agentResourceName(crName) the way the agent's namespaced
+// resources (ServiceAccount, Deployment, Service, ...) are named.
+func agentClusterRoleName(crName, crNamespace string) string {
+	return crNamespace + "-" + agentResourceName(crName)
+}
+
 func memoryPVCName(crName string) string {
 	return crName + "-openshift-sre-agent-memory"
 }
@@ -167,6 +176,38 @@ func clusterScopedAnnotations(cr *pulsev1alpha1.OpenShiftPulse) map[string]strin
 	}
 }
 
+// deleteStaleUnqualifiedClusterScopedResource is a one-time migration helper.
+// Before this fix, the agent/UI/MCP ClusterRole and ClusterRoleBinding names
+// were derived from crName alone (e.g. "<crName>-openshift-sre-agent") with
+// no namespace qualifier — a cluster-scoped resource with no namespace of
+// its own. Two OpenShiftPulse CRs sharing the same name in different
+// namespaces (an expected shape: the CSV declares AllNamespaces as the only
+// supported install mode) would collide on that one name and silently
+// overwrite each other's RBAC on every reconcile. Cluster-scoped resources
+// now get a namespace-qualified name instead (see e.g. agentClusterRoleName),
+// but any resource created under the old scheme before this fix needs to be
+// cleaned up so it doesn't leak forever as an orphan. Deletes obj (looked up
+// by oldName) only if its owner-uid annotation matches cr's UID — this is
+// the exact case this bug caused, so if the annotation belongs to some other
+// CR (the collision already happened), leave it alone rather than risk
+// deleting a resource that CR still depends on.
+func deleteStaleUnqualifiedClusterScopedResource(ctx context.Context, c client.Client, obj client.Object, oldName string, cr *pulsev1alpha1.OpenShiftPulse) error {
+	obj.SetName(oldName)
+	if err := c.Get(ctx, types.NamespacedName{Name: oldName}, obj); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if obj.GetAnnotations()[annotationOwnerUID] != string(cr.UID) {
+		return nil
+	}
+	if err := c.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 // generateToken returns a 32-character lowercase hex string from 16 crypto-random bytes.
 func generateToken() (string, error) {
 	b := make([]byte, 16)
@@ -198,7 +239,10 @@ func (r *AgentReconciler) reconcileServiceAccount(ctx context.Context, cr *pulse
 }
 
 func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
-	name := agentResourceName(cr.Name)
+	name := agentClusterRoleName(cr.Name, cr.Namespace)
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRole{}, agentResourceName(cr.Name), cr); err != nil {
+		return fmt.Errorf("migrate stale agent ClusterRole: %w", err)
+	}
 	desired := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
@@ -299,7 +343,14 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 }
 
 func (r *AgentReconciler) reconcileClusterRoleBinding(ctx context.Context, cr *pulsev1alpha1.OpenShiftPulse) error {
-	name := agentResourceName(cr.Name)
+	name := agentClusterRoleName(cr.Name, cr.Namespace)
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRoleBinding{}, agentResourceName(cr.Name), cr); err != nil {
+		return fmt.Errorf("migrate stale agent ClusterRoleBinding: %w", err)
+	}
+	// saName (not name): the ServiceAccount subject is a namespaced resource,
+	// still named plainly by agentResourceName — only this Binding and its
+	// ClusterRole need the namespace-qualified name.
+	saName := agentResourceName(cr.Name)
 	desired := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
@@ -313,7 +364,7 @@ func (r *AgentReconciler) reconcileClusterRoleBinding(ctx context.Context, cr *p
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
-				Name:      name,
+				Name:      saName,
 				Namespace: cr.Namespace,
 			},
 		},

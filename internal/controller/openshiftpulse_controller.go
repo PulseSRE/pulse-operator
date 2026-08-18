@@ -238,19 +238,49 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 		}
 	}
 
-	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}, "agent ClusterRole")
-	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}, "UI ClusterRole")
-	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentResourceName(pulse.Name)}}, "agent ClusterRoleBinding")
-	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name)}}, "UI ClusterRoleBinding")
+	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName(pulse.Name, pulse.Namespace)}}, "agent ClusterRole")
+	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name, pulse.Namespace)}}, "UI ClusterRole")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: agentClusterRoleName(pulse.Name, pulse.Namespace)}}, "agent ClusterRoleBinding")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name, pulse.Namespace)}}, "UI ClusterRoleBinding")
 	// system:auth-delegator binding (reconcileUIAuthDelegatorBinding) — same
 	// orphan risk as the two bindings above: cluster-scoped, can't carry an
 	// OwnerReference to a namespaced CR, so it must be cleaned up here too.
-	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name) + "-auth-delegator"}}, "UI auth-delegator ClusterRoleBinding")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: uiClusterRoleName(pulse.Name, pulse.Namespace) + "-auth-delegator"}}, "UI auth-delegator ClusterRoleBinding")
 	// MCP server's ClusterRole/ClusterRoleBinding — same orphan risk: cluster-scoped,
 	// reconciled unconditionally on delete regardless of whether MCP is (or ever
 	// was) enabled, matching the pattern of the other cluster-scoped resources here.
-	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(pulse.Name)}}, "MCP ClusterRole")
-	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: mcpResourceName(pulse.Name)}}, "MCP ClusterRoleBinding")
+	del(&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: mcpClusterRoleName(pulse.Name, pulse.Namespace)}}, "MCP ClusterRole")
+	del(&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: mcpClusterRoleName(pulse.Name, pulse.Namespace)}}, "MCP ClusterRoleBinding")
+
+	// Best-effort migration cleanup: these three reconcilers already migrate
+	// away from the old, non-namespace-qualified names on every normal
+	// reconcile (see deleteStaleUnqualifiedClusterScopedResource), but a CR
+	// deleted before ever completing a full reconcile pass could still have
+	// old-named resources around. Owner-uid-checked, so this can never touch
+	// a same-named resource belonging to a different CR (the exact collision
+	// this naming scheme exists to prevent).
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRole{}, agentResourceName(pulse.Name), pulse); err != nil {
+		errs = append(errs, fmt.Errorf("delete stale unqualified agent ClusterRole: %w", err))
+	}
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRoleBinding{}, agentResourceName(pulse.Name), pulse); err != nil {
+		errs = append(errs, fmt.Errorf("delete stale unqualified agent ClusterRoleBinding: %w", err))
+	}
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRole{}, uiClusterRoleNameUnqualified(pulse.Name), pulse); err != nil {
+		errs = append(errs, fmt.Errorf("delete stale unqualified UI ClusterRole: %w", err))
+	}
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRoleBinding{}, uiClusterRoleNameUnqualified(pulse.Name), pulse); err != nil {
+		errs = append(errs, fmt.Errorf("delete stale unqualified UI ClusterRoleBinding: %w", err))
+	}
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client,
+		&rbacv1.ClusterRoleBinding{}, uiClusterRoleNameUnqualified(pulse.Name)+"-auth-delegator", pulse); err != nil {
+		errs = append(errs, fmt.Errorf("delete stale unqualified UI auth-delegator ClusterRoleBinding: %w", err))
+	}
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRole{}, mcpResourceName(pulse.Name), pulse); err != nil {
+		errs = append(errs, fmt.Errorf("delete stale unqualified MCP ClusterRole: %w", err))
+	}
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRoleBinding{}, mcpResourceName(pulse.Name), pulse); err != nil {
+		errs = append(errs, fmt.Errorf("delete stale unqualified MCP ClusterRoleBinding: %w", err))
+	}
 
 	// OAuthClient — cluster-scoped OpenShift resource; use unstructured because the
 	// oauth.openshift.io API group is not registered in the controller-runtime scheme.

@@ -38,9 +38,17 @@ func MCPServiceURL(name, ns string) string {
 }
 
 // mcpResourceName returns the MCP server Deployment/Service/ServiceAccount/
-// ClusterRole/ClusterRoleBinding name for a given CR name.
+// NetworkPolicy name for a given CR name.
 func mcpResourceName(crName string) string {
 	return crName + "-mcp-server"
+}
+
+// mcpClusterRoleName returns a namespace-qualified name for the MCP server's
+// cluster-scoped ClusterRole/ClusterRoleBinding — see
+// deleteStaleUnqualifiedClusterScopedResource's doc comment for why this
+// can't be mcpResourceName(crName) the way MCP's namespaced resources are named.
+func mcpClusterRoleName(crName, crNamespace string) string {
+	return crNamespace + "-" + mcpResourceName(crName)
 }
 
 // MCPReconciler reconciles the MCP server Deployment and Service for an OpenShiftPulse CR.
@@ -109,7 +117,10 @@ func (r *MCPReconciler) reconcileMCPServiceAccount(ctx context.Context, pulse *p
 // OpenShift platform resources (routes, clusteroperators, clusterversions)
 // the "openshift" toolset needs, which the agent's role does not carry.
 func (r *MCPReconciler) reconcileMCPClusterRole(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	name := mcpResourceName(pulse.Name)
+	name := mcpClusterRoleName(pulse.Name, pulse.Namespace)
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRole{}, mcpResourceName(pulse.Name), pulse); err != nil {
+		return fmt.Errorf("migrate stale MCP ClusterRole: %w", err)
+	}
 	rules := []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{""},
@@ -159,13 +170,20 @@ func (r *MCPReconciler) reconcileMCPClusterRole(ctx context.Context, pulse *puls
 
 // reconcileMCPClusterRoleBinding binds the MCP ServiceAccount to its ClusterRole.
 func (r *MCPReconciler) reconcileMCPClusterRoleBinding(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	name := mcpResourceName(pulse.Name)
+	name := mcpClusterRoleName(pulse.Name, pulse.Namespace)
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRoleBinding{}, mcpResourceName(pulse.Name), pulse); err != nil {
+		return fmt.Errorf("migrate stale MCP ClusterRoleBinding: %w", err)
+	}
+	// saName (not name): the ServiceAccount subject is a namespaced resource,
+	// still named plainly by mcpResourceName — only this Binding and its
+	// ClusterRole need the namespace-qualified name.
+	saName := mcpResourceName(pulse.Name)
 	desired := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, desired, func() error {
 		desired.Annotations = clusterScopedAnnotations(pulse)
 		desired.Subjects = []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
-			Name:      name,
+			Name:      saName,
 			Namespace: pulse.Namespace,
 		}}
 		// RoleRef is immutable — set only on creation.

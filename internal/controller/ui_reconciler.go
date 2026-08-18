@@ -157,8 +157,20 @@ func uiResourceName(crName string) string {
 	return crName + "-openshiftpulse"
 }
 
-func uiClusterRoleName(crName string) string {
+// uiClusterRoleNameUnqualified is the pre-namespace-qualification form of the
+// UI's cluster-scoped ClusterRole/ClusterRoleBinding name — kept only as the
+// "old" side of deleteStaleUnqualifiedClusterScopedResource's migration.
+func uiClusterRoleNameUnqualified(crName string) string {
 	return crName + "-openshiftpulse-reader"
+}
+
+// uiClusterRoleName returns a namespace-qualified name for the UI's
+// cluster-scoped ClusterRole/ClusterRoleBinding (and the auth-delegator
+// binding derived from it) — see deleteStaleUnqualifiedClusterScopedResource's
+// doc comment for why this can't be crName alone the way the UI's namespaced
+// resources (ServiceAccount, Deployment, Service, Route, ...) are named.
+func uiClusterRoleName(crName, crNamespace string) string {
+	return crNamespace + "-" + uiClusterRoleNameUnqualified(crName)
 }
 
 func uiOAuthSecretsName(crName string) string {
@@ -310,7 +322,10 @@ func (r *UIReconciler) reconcileUIServiceAccount(ctx context.Context, pulse *pul
 
 // b. ClusterRole — read-only access to namespace and cluster resources needed by the UI.
 func (r *UIReconciler) reconcileUIClusterRole(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	name := uiClusterRoleName(pulse.Name)
+	name := uiClusterRoleName(pulse.Name, pulse.Namespace)
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRole{}, uiClusterRoleNameUnqualified(pulse.Name), pulse); err != nil {
+		return fmt.Errorf("migrate stale UI ClusterRole: %w", err)
+	}
 	desired := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
@@ -359,7 +374,10 @@ func (r *UIReconciler) reconcileUIClusterRole(ctx context.Context, pulse *pulsev
 
 // c. ClusterRoleBinding
 func (r *UIReconciler) reconcileUIClusterRoleBinding(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	name := uiClusterRoleName(pulse.Name)
+	name := uiClusterRoleName(pulse.Name, pulse.Namespace)
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRoleBinding{}, uiClusterRoleNameUnqualified(pulse.Name), pulse); err != nil {
+		return fmt.Errorf("migrate stale UI ClusterRoleBinding: %w", err)
+	}
 	desired := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
@@ -397,7 +415,11 @@ func (r *UIReconciler) reconcileUIClusterRoleBinding(ctx context.Context, pulse 
 // --pass-access-token=true or --openshift-delegate-urls. Without it, the proxy cannot
 // create TokenReview or SubjectAccessReview resources and logs "is forbidden" errors.
 func (r *UIReconciler) reconcileUIAuthDelegatorBinding(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	bindingName := uiClusterRoleName(pulse.Name) + "-auth-delegator"
+	bindingName := uiClusterRoleName(pulse.Name, pulse.Namespace) + "-auth-delegator"
+	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client,
+		&rbacv1.ClusterRoleBinding{}, uiClusterRoleNameUnqualified(pulse.Name)+"-auth-delegator", pulse); err != nil {
+		return fmt.Errorf("migrate stale UI auth-delegator ClusterRoleBinding: %w", err)
+	}
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        bindingName,

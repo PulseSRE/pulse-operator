@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -246,6 +247,63 @@ var _ = Describe("AgentReconciler", func() {
 		deploy := &appsv1.Deployment{}
 		err = k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deploy)
 		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "mismatched Deployment must actually have been deleted")
+	})
+
+	// Regression: two OpenShiftPulse CRs sharing a name in different
+	// namespaces must not collide on one shared cluster-scoped
+	// ClusterRole/ClusterRoleBinding — the CSV declares AllNamespaces as the
+	// only supported install mode, so this is an expected shape, not an edge case.
+	It("namespace-qualifies the agent ClusterRole/Binding so two CRs with the same name in different namespaces don't collide", func() {
+		otherNamespace := "other-ns-" + crName
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherNamespace}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+		otherCR := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: otherNamespace},
+			Spec:       pulsev1alpha1.OpenShiftPulseSpec{},
+		}
+		Expect(k8sClient.Create(ctx, otherCR)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, otherCR) }()
+
+		Expect(reconciler.reconcileClusterRoleBinding(ctx, cr)).To(Succeed())
+		Expect(reconciler.reconcileClusterRoleBinding(ctx, otherCR)).To(Succeed())
+
+		ourCRB := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, ourCRB)).To(Succeed())
+		Expect(ourCRB.Subjects).To(ConsistOf(rbacv1.Subject{
+			Kind: "ServiceAccount", Name: agentResourceName(crName), Namespace: namespace,
+		}), "our CR's binding must still point at our own ServiceAccount after the other CR reconciled")
+
+		otherCRB := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, otherNamespace)}, otherCRB)).To(Succeed())
+		Expect(otherCRB.Subjects).To(ConsistOf(rbacv1.Subject{
+			Kind: "ServiceAccount", Name: agentResourceName(crName), Namespace: otherNamespace,
+		}))
+	})
+
+	// Regression: migration cleanup of the old (pre-namespace-qualification)
+	// ClusterRoleBinding name must only remove a resource this CR actually
+	// owns (owner-uid annotation matches) — never a same-named resource that
+	// belongs to some other CR.
+	It("migrates away from the old unqualified ClusterRoleBinding name it owns, on a normal reconcile", func() {
+		stale := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        agentResourceName(crName),
+				Annotations: clusterScopedAnnotations(cr),
+			},
+			RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: agentResourceName(crName)},
+			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: agentResourceName(crName), Namespace: namespace}},
+		}
+		Expect(k8sClient.Create(ctx, stale)).To(Succeed())
+
+		Expect(reconciler.reconcileClusterRoleBinding(ctx, cr)).To(Succeed())
+
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx,
+			types.NamespacedName{Name: agentResourceName(crName)}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue(),
+			"the old-named ClusterRoleBinding this CR owns must be migrated away on a normal reconcile")
+		Expect(k8sClient.Get(ctx,
+			types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, &rbacv1.ClusterRoleBinding{})).To(Succeed())
 	})
 
 	It("Deployment has readiness and liveness probes configured", func() {

@@ -172,8 +172,9 @@ var _ = Describe("MCPReconciler", func() {
 		It("creates a ClusterRole and ClusterRoleBinding granting the MCP ServiceAccount read access", func() {
 			Expect(mcp.reconcileMCP(ctx, cr, nil)).To(Succeed())
 
+			qualifiedName := mcpClusterRoleName(crName, namespace)
 			cr2 := &rbacv1.ClusterRole{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpResourceName(crName)}, cr2)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: qualifiedName}, cr2)).To(Succeed())
 			Expect(cr2.Rules).NotTo(BeEmpty())
 			for _, rule := range cr2.Rules {
 				for _, verb := range rule.Verbs {
@@ -183,12 +184,46 @@ var _ = Describe("MCPReconciler", func() {
 			}
 
 			crb := &rbacv1.ClusterRoleBinding{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpResourceName(crName)}, crb)).To(Succeed())
-			Expect(crb.RoleRef.Name).To(Equal(mcpResourceName(crName)))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: qualifiedName}, crb)).To(Succeed())
+			Expect(crb.RoleRef.Name).To(Equal(qualifiedName))
 			Expect(crb.Subjects).To(ConsistOf(rbacv1.Subject{
 				Kind:      "ServiceAccount",
 				Name:      mcpResourceName(crName),
 				Namespace: namespace,
+			}))
+		})
+
+		// Regression: two OpenShiftPulse CRs sharing a name in different
+		// namespaces must not collide on one shared cluster-scoped
+		// ClusterRole/ClusterRoleBinding — the CSV declares AllNamespaces as
+		// the only supported install mode, so this is an expected shape, not
+		// an edge case.
+		It("namespace-qualifies the ClusterRole/Binding names so two CRs with the same name in different namespaces don't collide", func() {
+			otherNamespace := "other-ns-" + crName
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherNamespace}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+			otherCR := &pulsev1alpha1.OpenShiftPulse{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: otherNamespace},
+				Spec:       pulsev1alpha1.OpenShiftPulseSpec{Agent: pulsev1alpha1.AgentConfig{MCP: pulsev1alpha1.MCPConfig{Enabled: true}}},
+			}
+			Expect(k8sClient.Create(ctx, otherCR)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, otherCR) }()
+
+			Expect(mcp.reconcileMCP(ctx, cr, nil)).To(Succeed())
+			Expect(mcp.reconcileMCP(ctx, otherCR, nil)).To(Succeed())
+
+			ourCRB := &rbacv1.ClusterRoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpClusterRoleName(crName, namespace)}, ourCRB)).To(Succeed())
+			Expect(ourCRB.Subjects).To(ConsistOf(rbacv1.Subject{
+				Kind: "ServiceAccount", Name: mcpResourceName(crName), Namespace: namespace,
+			}), "our CR's binding must still point at our own ServiceAccount after the other CR reconciled")
+
+			otherCRB := &rbacv1.ClusterRoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpClusterRoleName(crName, otherNamespace)}, otherCRB)).To(Succeed())
+			Expect(otherCRB.Subjects).To(ConsistOf(rbacv1.Subject{
+				Kind: "ServiceAccount", Name: mcpResourceName(crName), Namespace: otherNamespace,
 			}))
 		})
 

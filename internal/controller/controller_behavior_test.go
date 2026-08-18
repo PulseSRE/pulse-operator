@@ -51,7 +51,7 @@ var _ = Describe("Controller behavior — AUDIT regression tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			clusterRole := &rbacv1.ClusterRole{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, clusterRole)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
 
 			for _, rule := range clusterRole.Rules {
 				for _, res := range rule.Resources {
@@ -73,7 +73,7 @@ var _ = Describe("Controller behavior — AUDIT regression tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			clusterRole := &rbacv1.ClusterRole{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, clusterRole)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
 
 			for _, rule := range clusterRole.Rules {
 				for _, verb := range rule.Verbs {

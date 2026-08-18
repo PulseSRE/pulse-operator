@@ -329,7 +329,7 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			clusterRole := &rbacv1.ClusterRole{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, clusterRole)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
 			Expect(hasVerb(clusterRole, "pods", "delete")).To(BeFalse(),
 				"delete verb must NOT be in ClusterRole by default")
 		})
@@ -347,7 +347,7 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			clusterRole := &rbacv1.ClusterRole{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, clusterRole)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
 			Expect(hasVerb(clusterRole, "pods", "delete")).To(BeTrue(),
 				"delete verb must be present when AllowWriteOperations=true")
 			Expect(hasVerb(clusterRole, "deployments", "patch")).To(BeTrue(),
@@ -367,7 +367,7 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			clusterRole := &rbacv1.ClusterRole{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentResourceName(crName)}, clusterRole)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
 			Expect(hasVerb(clusterRole, "secrets", "get")).To(BeTrue(),
 				"get verb on secrets must be present when AllowSecretAccess=true")
 		})
