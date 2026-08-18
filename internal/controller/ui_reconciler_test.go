@@ -58,18 +58,18 @@ var _ = Describe("UIReconciler", func() {
 		_ = k8sClient.Delete(ctx, cr)
 	})
 
-	It("reconcileUI creates the nginx ConfigMap", func() {
+	It("reconcileUI creates the nginx Secret", func() {
 		_, err := uiReconciler.reconcileUINginxConfigMap(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
-		cm := &corev1.ConfigMap{}
+		sec := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
-			Name:      uiNginxConfigMapName(uiCRName),
+			Name:      uiNginxSecretName(uiCRName),
 			Namespace: namespace,
-		}, cm)).To(Succeed())
+		}, sec)).To(Succeed())
 
-		Expect(cm.Data).To(HaveKey("nginx.conf"))
-		Expect(cm.Data["nginx.conf"]).To(ContainSubstring("listen 8080"))
+		Expect(sec.Data).To(HaveKey("nginx.conf"))
+		Expect(string(sec.Data["nginx.conf"])).To(ContainSubstring("listen 8080"))
 	})
 
 	// Regression: kube-apiserver's WebSocket watch handler (used by the
@@ -86,13 +86,13 @@ var _ = Describe("UIReconciler", func() {
 		_, err := uiReconciler.reconcileUINginxConfigMap(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
-		cm := &corev1.ConfigMap{}
+		sec := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
-			Name:      uiNginxConfigMapName(uiCRName),
+			Name:      uiNginxSecretName(uiCRName),
 			Namespace: namespace,
-		}, cm)).To(Succeed())
+		}, sec)).To(Succeed())
 
-		conf := cm.Data["nginx.conf"]
+		conf := string(sec.Data["nginx.conf"])
 		k8sBlockStart := strings.Index(conf, "location /api/kubernetes/")
 		Expect(k8sBlockStart).To(BeNumerically(">=", 0), "the /api/kubernetes/ proxy block must exist")
 		k8sBlockEnd := strings.Index(conf[k8sBlockStart:], "\n    }")
@@ -112,13 +112,13 @@ var _ = Describe("UIReconciler", func() {
 		_, err := uiReconciler.reconcileUINginxConfigMap(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 
-		cm := &corev1.ConfigMap{}
+		sec := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
-			Name:      uiNginxConfigMapName(uiCRName),
+			Name:      uiNginxSecretName(uiCRName),
 			Namespace: namespace,
-		}, cm)).To(Succeed())
+		}, sec)).To(Succeed())
 
-		conf := cm.Data["nginx.conf"]
+		conf := string(sec.Data["nginx.conf"])
 		Expect(conf).To(ContainSubstring("location /api/alertmanager/"))
 		Expect(conf).To(ContainSubstring("proxy_pass https://alertmanager-main.openshift-monitoring.svc:9094/;"))
 	})

@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -19,15 +20,16 @@ func reconcileNginxAndRead(ctx context.Context, ui *UIReconciler, cr *pulsev1alp
 	_, err := ui.reconcileUINginxConfigMap(ctx, cr)
 	Expect(err).NotTo(HaveOccurred())
 
-	cm := &corev1.ConfigMap{}
+	sec := &corev1.Secret{}
 	Expect(k8sClient.Get(ctx, types.NamespacedName{
-		Name:      uiNginxConfigMapName(cr.Name),
+		Name:      uiNginxSecretName(cr.Name),
 		Namespace: cr.Namespace,
-	}, cm)).To(Succeed())
+	}, sec)).To(Succeed())
 
-	conf, ok := cm.Data["nginx.conf"]
-	Expect(ok).To(BeTrue(), "ConfigMap must have nginx.conf key")
-	return conf
+	// Written via StringData; the API server surfaces it back under Data.
+	conf, ok := sec.Data["nginx.conf"]
+	Expect(ok).To(BeTrue(), "Secret must have nginx.conf key")
+	return string(conf)
 }
 
 var _ = Describe("UIReconciler nginx config", func() {
@@ -56,8 +58,8 @@ var _ = Describe("UIReconciler nginx config", func() {
 
 	AfterEach(func() {
 		_ = k8sClient.Delete(ctx, cr)
-		// Clean up ConfigMap
-		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: uiNginxConfigMapName(crName), Namespace: namespace}}
+		// Clean up the rendered nginx Secret
+		cm := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: uiNginxSecretName(crName), Namespace: namespace}}
 		_ = k8sClient.Delete(ctx, cm)
 	})
 
@@ -129,7 +131,7 @@ var _ = Describe("UIReconciler nginx config", func() {
 		Expect(conf).To(ContainSubstring("/api/agent/ws/"))
 	})
 
-	It("ConfigMap is idempotent — second reconcile does not change hash", func() {
+	It("Secret is idempotent — second reconcile does not change hash", func() {
 		hash1, err := ui.reconcileUINginxConfigMap(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())
 		hash2, err := ui.reconcileUINginxConfigMap(ctx, cr)
@@ -159,5 +161,49 @@ var _ = Describe("UIReconciler nginx config", func() {
 		Expect(catchAllIdx).To(BeNumerically(">", 0), "SPA catch-all block must be present")
 		Expect(agentIdx).To(BeNumerically("<", catchAllIdx),
 			"/api/agent/ must appear before the catch-all / in the config")
+	})
+})
+
+var _ = Describe("UIReconciler nginx object is a Secret, not a ConfigMap", func() {
+	const (
+		crName    = "nginx-secret-pulse"
+		namespace = "default"
+	)
+
+	It("stores the rendered config in a Secret and removes any stale ConfigMap", func() {
+		ctx := context.Background()
+		ui := &UIReconciler{Client: k8sClient, Scheme: testScheme}
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+		}
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, cr) }()
+
+		// Simulate an install from before this change: a ConfigMap of the same
+		// name holding the token in plain sight.
+		stale := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: uiNginxSecretName(crName), Namespace: namespace},
+			Data:       map[string]string{"nginx.conf": "stale"},
+		}
+		Expect(k8sClient.Create(ctx, stale)).To(Succeed())
+
+		_, err := ui.reconcileUINginxConfigMap(ctx, cr)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The config now lives in a Secret...
+		sec := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: uiNginxSecretName(crName), Namespace: namespace,
+		}, sec)).To(Succeed())
+		Expect(string(sec.Data["nginx.conf"])).To(ContainSubstring("location /api/agent/"))
+
+		// ...and the old ConfigMap is gone, so the token is not left readable by
+		// anything holding the cluster-wide configmaps read the agent and UI have.
+		leftover := &corev1.ConfigMap{}
+		getErr := k8sClient.Get(ctx, types.NamespacedName{
+			Name: uiNginxSecretName(crName), Namespace: namespace,
+		}, leftover)
+		Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+			"the pre-Secret ConfigMap must be deleted, not left behind with the token in it")
 	})
 })
