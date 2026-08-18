@@ -67,6 +67,16 @@ rules:
 - apiGroups: [authorization.k8s.io]
   resources: [subjectaccessreviews]
   verbs: [create]
+# Required to create the per-instance agent "...-monitoring-view" ClusterRoleBinding
+# to the built-in cluster-monitoring-view ClusterRole (agent_reconciler.go), so the
+# agent can query thanos-querier for its own alert-scanning/trend-monitoring
+# features. Same escalation-check requirement as auth-delegator above — this rule
+# must mirror cluster-monitoring-view's prometheuses/api rule exactly (its other
+# rule, `namespaces get`, is already covered above).
+- apiGroups: [monitoring.coreos.com]
+  resources: ["prometheuses/api"]
+  resourceNames: [k8s]
+  verbs: [get, create, update]
 - apiGroups: [pulse.ai]
   resources: [openshiftpulses, "openshiftpulses/status", "openshiftpulses/finalizers"]
   verbs: [create, delete, get, list, patch, update, watch]
