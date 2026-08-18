@@ -87,6 +87,53 @@ var _ = Describe("UIReconciler", func() {
 		Expect(svc.Spec.Ports[0].Name).To(Equal("https"))
 	})
 
+	It("reconcileUI creates a service-ca bundle ConfigMap annotated for CA injection", func() {
+		Expect(uiReconciler.reconcileUIServiceCABundle(ctx, cr)).To(Succeed())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiServiceCABundleName(uiCRName),
+			Namespace: namespace,
+		}, cm)).To(Succeed())
+
+		Expect(cm.Annotations).To(HaveKeyWithValue("service.beta.openshift.io/inject-cabundle", "true"),
+			"the service-ca operator only populates configmaps carrying this annotation")
+		Expect(cm.GetOwnerReferences()).NotTo(BeEmpty())
+	})
+
+	It("UI Deployment mounts the service-ca bundle for the /api/prometheus/ proxy to trust thanos-querier's cert", func() {
+		cr.Spec.UI.Replicas = 1
+		info := &ClusterInfo{IngressDomain: "apps.example.com", OAuthProxyImage: DefaultOAuthProxyImage}
+		Expect(uiReconciler.reconcileUIDeployment(ctx, cr, info, "testhash")).To(Succeed())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      uiResourceName(uiCRName),
+			Namespace: namespace,
+		}, deploy)).To(Succeed())
+
+		spec := deploy.Spec.Template.Spec
+		var found bool
+		for _, v := range spec.Volumes {
+			if v.Name == "service-ca" {
+				found = true
+				Expect(v.ConfigMap).NotTo(BeNil())
+				Expect(v.ConfigMap.Name).To(Equal(uiServiceCABundleName(uiCRName)))
+			}
+		}
+		Expect(found).To(BeTrue(), "pod spec must have a service-ca volume")
+
+		Expect(spec.Containers).NotTo(BeEmpty())
+		var mounted bool
+		for _, vm := range spec.Containers[0].VolumeMounts {
+			if vm.Name == "service-ca" {
+				mounted = true
+				Expect(vm.MountPath).To(Equal("/etc/pki/service-ca"))
+			}
+		}
+		Expect(mounted).To(BeTrue(), "openshiftpulse container must mount the service-ca volume")
+	})
+
 	It("reconcileUI creates the oauth-secrets Secret with client-secret and cookie-secret keys", func() {
 		err := uiReconciler.reconcileUIOAuthSecrets(ctx, cr)
 		Expect(err).NotTo(HaveOccurred())

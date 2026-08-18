@@ -101,6 +101,7 @@ func (r *UIReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.Ope
 		{"ClusterRoleBinding", r.reconcileUIClusterRoleBinding},
 		{"AuthDelegatorBinding", r.reconcileUIAuthDelegatorBinding},
 		{"OAuthSecrets", r.reconcileUIOAuthSecrets},
+		{"ServiceCABundle", r.reconcileUIServiceCABundle},
 		{"Service", r.reconcileUIService},
 	} {
 		if err := s.fn(ctx, pulse); err != nil {
@@ -179,6 +180,10 @@ func uiOAuthSecretsName(crName string) string {
 
 func uiNginxConfigMapName(crName string) string {
 	return crName + "-nginx"
+}
+
+func uiServiceCABundleName(crName string) string {
+	return crName + "-service-ca"
 }
 
 func uiTLSSecretName(crName string) string {
@@ -502,6 +507,27 @@ func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulse
 	return r.Create(ctx, desired)
 }
 
+// d2. ConfigMap — empty, annotated so the service-ca operator populates it
+// with the cluster's service-serving-certificate CA bundle. Needed to trust
+// thanos-querier's serving certificate (signed by that CA, not by the
+// kube-apiserver CA the SA token's ca.crt verifies) for the /api/prometheus/
+// nginx proxy location. Same mechanism this operator already uses in
+// reverse for the UI's own TLS cert (service.beta.openshift.io/serving-cert-secret-name).
+func (r *UIReconciler) reconcileUIServiceCABundle(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := uiServiceCABundleName(pulse.Name)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		if cm.Annotations == nil {
+			cm.Annotations = map[string]string{}
+		}
+		cm.Annotations["service.beta.openshift.io/inject-cabundle"] = "true"
+		return controllerutil.SetControllerReference(pulse, cm, r.Scheme)
+	})
+	return err
+}
+
 // e. ConfigMap — nginx.conf for the openshiftpulse SPA container.
 // reconcileUINginxConfigMap creates/updates the nginx ConfigMap and returns a
 // short hash of the config content so callers can embed it as a Deployment
@@ -566,6 +592,23 @@ http {
       proxy_set_header Connection $connection_upgrade;
       proxy_http_version 1.1;
       proxy_read_timeout 3600s;
+    }
+
+    # Thanos-querier proxy — UI's CPU/memory/alert charts query PromQL
+    # directly against the cluster's own Prometheus/Thanos stack. Forwards
+    # the same OAuth access token as the Kubernetes API proxy above; reading
+    # this endpoint requires the logged-in user to hold (or be bound to) the
+    # cluster-monitoring-view ClusterRole, same as the OpenShift console's
+    # own monitoring dashboards. proxy_ssl_trusted_certificate points at the
+    # service-ca bundle (not the SA token's ca.crt, which only verifies the
+    # kube-apiserver's own certificate, not service-ca-operator-issued ones
+    # like thanos-querier's) — see reconcileUIServiceCABundle.
+    location /api/prometheus/ {
+      proxy_pass https://thanos-querier.openshift-monitoring.svc:9091/;
+      proxy_ssl_verify on;
+      proxy_ssl_trusted_certificate /etc/pki/service-ca/service-ca.crt;
+      proxy_set_header Authorization "Bearer $http_x_forwarded_access_token";
+      proxy_read_timeout 60s;
     }
 
     # Agent WebSocket — appends the shared token as a query param.
@@ -695,6 +738,13 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 								MountPath: "/etc/nginx/nginx.conf",
 								SubPath:   "nginx.conf",
 							},
+							{
+								// service-ca bundle for the /api/prometheus/ proxy
+								// to trust thanos-querier's serving certificate.
+								Name:      "service-ca",
+								MountPath: "/etc/pki/service-ca",
+								ReadOnly:  true,
+							},
 						},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
@@ -803,6 +853,14 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 						VolumeSource: corev1.VolumeSource{
 							ConfigMap: &corev1.ConfigMapVolumeSource{
 								LocalObjectReference: corev1.LocalObjectReference{Name: nginxCMName},
+							},
+						},
+					},
+					{
+						Name: "service-ca",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: uiServiceCABundleName(pulse.Name)},
 							},
 						},
 					},

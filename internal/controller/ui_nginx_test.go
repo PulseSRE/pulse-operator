@@ -82,6 +82,26 @@ var _ = Describe("UIReconciler nginx config", func() {
 		Expect(conf).To(ContainSubstring("proxy_pass https://kubernetes.default.svc/"))
 	})
 
+	// Regression: the UI's CPU/memory/alert charts call /api/prometheus/ (see
+	// its React app), but nginx.conf never had a matching location block —
+	// every one of those requests silently fell through to the SPA
+	// catch-all and got back index.html (HTTP 200, so no error surfaced
+	// anywhere), which the frontend then failed to parse as PromQL JSON.
+	// Charts showed dashes / "metric unavailable" with no visible cause.
+	It("proxies /api/prometheus/ to the cluster's thanos-querier, before it reaches the SPA catch-all", func() {
+		conf := reconcileNginxAndRead(ctx, ui, cr)
+		Expect(conf).To(ContainSubstring("location /api/prometheus/"))
+		Expect(conf).To(ContainSubstring("proxy_pass https://thanos-querier.openshift-monitoring.svc:9091/"))
+		Expect(conf).To(ContainSubstring(`proxy_set_header Authorization "Bearer $http_x_forwarded_access_token"`))
+
+		promIdx := strings.Index(conf, "location /api/prometheus/")
+		catchAllIdx := strings.Index(conf, "location / {")
+		Expect(promIdx).To(BeNumerically(">", 0))
+		Expect(catchAllIdx).To(BeNumerically(">", 0))
+		Expect(promIdx).To(BeNumerically("<", catchAllIdx),
+			"/api/prometheus/ must appear before the catch-all / in the config")
+	})
+
 	It("embeds the WS token when the ws-token secret exists", func() {
 		// Create the ws-token secret that AgentReconciler would normally create.
 		secret := &corev1.Secret{
