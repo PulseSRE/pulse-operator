@@ -105,6 +105,21 @@ oc get catalogsource pulse-operator-catalog -n openshift-marketplace -w
 # STATE should reach READY within ~30 seconds
 ```
 
+> **Private quay.io namespaces:** if `quay.io/amobrem/pulse-operator-catalog`
+> (or wherever you publish it) is a private repository, the cluster's nodes
+> cannot pull it directly and the catalog pod fails with `ImagePullBackOff`.
+> Worse, even once the catalog image itself is reachable, its content still
+> embeds a reference to the **bundle** image (`quay.io/.../pulse-operator-bundle:*`)
+> as `bundlePath` — if *that* is also private, `oc get csv` shows
+> `Succeeded` misleadingly quickly while the underlying Subscription hangs
+> forever on `BundleUnpacking: UnpackingInProgress` with no error logged,
+> because OLM can't pull the bundle image it's unpacking either. The
+> reliable fix on a cluster without registry credentials for your quay.io
+> namespace: mirror **both** images into the cluster's own internal
+> registry (via its public route) and re-render the catalog to reference the
+> internal path instead of quay.io for `bundlePath` — see
+> [Build the catalog image](#build-the-catalog-image) for the exact steps.
+
 ### 2. Create the target namespace
 
 ```bash
@@ -129,13 +144,21 @@ oc create secret generic anthropic-api-key \
 
 ### 4. Create OperatorGroup and Subscription
 
+The operator's own controller runs in `pulse-operator-system` (matching the
+manifest-install path below) — separate from `openshiftpulse`, which holds
+the CR and everything it manages. Since the CSV supports only the
+`AllNamespaces` install mode, the operator watches `OpenShiftPulse` CRs
+cluster-wide regardless of which namespace its own controller runs in.
+
 ```bash
+oc new-project pulse-operator-system
+
 cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
   name: pulse-operator-group
-  namespace: openshiftpulse
+  namespace: pulse-operator-system
 spec:
   targetNamespaces: []
 ---
@@ -143,7 +166,7 @@ apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
   name: pulse-operator
-  namespace: openshiftpulse
+  namespace: pulse-operator-system
 spec:
   channel: alpha
   name: pulse-operator
@@ -155,7 +178,7 @@ EOF
 
 Watch the CSV reach `Succeeded`:
 ```bash
-oc get csv -n openshiftpulse -w
+oc get csv -n pulse-operator-system -w
 ```
 
 Then skip to [Create your first Pulse instance](#create-your-first-pulse-instance).
@@ -342,9 +365,12 @@ oc patch openshiftpulse pulse -n openshiftpulse --type=merge \
 # Delete CR — operator finalizer cleans up ClusterRoles and OAuthClient
 oc delete openshiftpulse pulse -n openshiftpulse
 
-# Remove operator (OLM install)
-oc delete subscription pulse-operator -n openshiftpulse
-oc delete csv pulse-operator.v0.1.0 -n openshiftpulse
+# Remove operator (OLM install) — use scripts/olm-uninstall.py instead of just
+# these two deletes if you skipped the CR deletion above; see that script's
+# docstring for why (this order is safe specifically because the CR is
+# already gone by this point).
+oc delete subscription pulse-operator -n pulse-operator-system
+oc delete csv -n pulse-operator-system -l operators.coreos.com/pulse-operator.pulse-operator-system=
 oc delete catalogsource pulse-operator-catalog -n openshift-marketplace
 
 # Or for manifest install
@@ -447,14 +473,19 @@ automated by CI (see [Releasing a new version](#releasing-a-new-version) below) 
 rebuild and push it manually after bundle changes:
 
 ```bash
-# 1. Render the bundle into FBC YAML. Must land inside ./catalog — Dockerfile.catalog's
-#    ADD instruction only has access to paths inside the build context (this repo root),
-#    not arbitrary host paths like /tmp.
-mkdir -p catalog
-podman run --rm -v $(pwd)/bundle:/bundle:z \
-  quay.io/operator-framework/opm:latest render /bundle -o yaml > /tmp/catalog.yaml
+# 1. Push the bundle image first (see the release process below) — the next
+#    step needs to render FROM it, not from the local bundle/ directory.
+#    Rendering from a bare local directory (`opm render /bundle`) produces an
+#    olm.bundle entry with an EMPTY `image:`/bundlePath field, since there's
+#    no registry reference for a directory that was never pushed anywhere —
+#    OLM then can't ever unpack it. Always render from the pushed image.
+BUNDLE_IMG=quay.io/amobrem/pulse-operator-bundle:v0.2.0
 
-# 2. Prepend package + channel declarations
+mkdir -p catalog
+podman run --rm quay.io/operator-framework/opm:latest \
+  render "$BUNDLE_IMG" -o yaml > /tmp/catalog.yaml
+
+# 2. Prepend package + channel declarations (update the version to match).
 cat - /tmp/catalog.yaml > catalog/full-catalog.yaml <<'HEADER'
 ---
 defaultChannel: alpha
@@ -462,7 +493,8 @@ name: pulse-operator
 schema: olm.package
 ---
 entries:
-- name: pulse-operator.v0.1.0
+- name: pulse-operator.v0.2.0
+  replaces: pulse-operator.v0.1.0
 name: alpha
 package: pulse-operator
 schema: olm.channel
@@ -478,6 +510,27 @@ podman push quay.io/amobrem/pulse-operator-catalog:latest
 
 rm -rf catalog  # generated — not committed (see .gitignore)
 ```
+
+> **No registry credentials for your quay.io namespace on the cluster?**
+> Mirror both images into the cluster's own internal registry via its public
+> route instead of relying on quay.io being reachable/public:
+> ```bash
+> REGISTRY=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}')
+> TOKEN=$(oc whoami -t)
+> podman login -u kubeadmin -p "$TOKEN" "$REGISTRY" --tls-verify=false
+>
+> for image in bundle catalog; do
+>   podman tag "quay.io/amobrem/pulse-operator-$image:v0.2.0" \
+>     "$REGISTRY/pulse-operator-catalog/$image:v0.2.0"
+>   podman push --tls-verify=false "$REGISTRY/pulse-operator-catalog/$image:v0.2.0"
+> done
+> ```
+> Then render step 1 from `$REGISTRY/pulse-operator-catalog/bundle:v0.2.0`
+> instead (so `bundlePath` in the rendered YAML points somewhere the cluster
+> can actually pull from), and use the internal `catalog` tag —
+> `image-registry.openshift-image-registry.svc:5000/pulse-operator-catalog/catalog:v0.2.0`
+> — as the CatalogSource's `spec.image` in [step 1 of Install via OLM](#1-add-the-catalogsource).
+> This mirroring only needs cluster-admin `oc` access, not registry credentials.
 
 ### Validate the bundle
 
