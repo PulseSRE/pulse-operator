@@ -44,6 +44,12 @@ func (r *OpenShiftPulseReconciler) syncPhaseAndConditions(
 	agentImage = resolvedImage(pulse)
 	uiImage = resolvedUIImage(pulse)
 
+	// Snapshot before the UpgradeStartedAt-clearing logic below runs, so the
+	// allReady branch can still compute how long the upgrade that just
+	// completed actually took (see LastUpgradeDurationSeconds below) even
+	// though the live field gets cleared to nil in the same pass.
+	previousUpgradeStartedAt := pulse.Status.UpgradeStartedAt
+
 	agentUpgrading = !agentReady && pulse.Status.LastHealthyAgentImage != "" &&
 		agentImage != pulse.Status.LastHealthyAgentImage
 	uiUpgrading = !uiReady && pulse.Status.LastHealthyUIImage != "" &&
@@ -74,8 +80,23 @@ func (r *OpenShiftPulseReconciler) syncPhaseAndConditions(
 	switch {
 	case allReady:
 		pulse.Status.Phase = "Running"
+		// An upgrade that was in progress a moment ago just became healthy
+		// — record how long the (unavoidable, for the agent's Recreate
+		// strategy — see item 4's investigation) outage window actually
+		// was. previousUpgradeStartedAt (not pulse.Status.UpgradeStartedAt,
+		// already cleared above) is what makes this available here.
+		upgradeJustCompleted := prevPhase == "Upgrading" && previousUpgradeStartedAt != nil
+		if upgradeJustCompleted {
+			pulse.Status.LastUpgradeDurationSeconds = int64(time.Since(previousUpgradeStartedAt.Time).Round(time.Second).Seconds())
+		}
 		if prevPhase != "Running" {
-			recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "Running", "All components are healthy")
+			if upgradeJustCompleted {
+				recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "Running",
+					"All components are healthy — upgrade completed in %s",
+					time.Duration(pulse.Status.LastUpgradeDurationSeconds)*time.Second)
+			} else {
+				recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "Running", "All components are healthy")
+			}
 		}
 	case upgrading:
 		pulse.Status.Phase = "Upgrading"

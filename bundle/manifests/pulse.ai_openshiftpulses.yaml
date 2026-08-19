@@ -81,6 +81,16 @@ spec:
                           Defaults to the full SRE set when empty.
                         type: string
                     type: object
+                  minOperatorVersion:
+                    description: |-
+                      MinOperatorVersion is an optional, admin-set semver constraint: the
+                      minimum pulse-operator version required to safely run this agent
+                      image. Nothing populates this automatically — it is opt-in and, left
+                      unset (the default), never blocks a deployment. See compat.go's doc
+                      comment for the real-vs-fabricated-signal investigation behind why
+                      this field exists in this shape rather than checking some other
+                      signal automatically.
+                    type: string
                   resources:
                     description: ResourceRequirements describes the compute resource
                       requirements.
@@ -367,6 +377,20 @@ spec:
                 description: LastHealthyUIImage is the UI-container equivalent of
                   LastHealthyAgentImage.
                 type: string
+              lastUpgradeDurationSeconds:
+                description: |-
+                  LastUpgradeDurationSeconds records how long the most recently
+                  completed agent/UI image upgrade (Phase=Upgrading, tracked via
+                  UpgradeStartedAt above) took to become healthy again. Set once, when
+                  the upgrade completes; left at its previous value between upgrades
+                  (0 before the first one). The agent Deployment uses the Recreate
+                  strategy (see agent_reconciler.go's buildDeploymentSpec and the PR
+                  that added this field for why that was deliberately not changed to a
+                  rolling strategy) — every agent image change is a real, full
+                  stop-then-start outage window that cannot be eliminated, so this
+                  field exists to make its size visible and measured instead.
+                format: int64
+                type: integer
               observedGeneration:
                 format: int64
                 type: integer

@@ -967,7 +967,18 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 		}
 		return nil
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Self-heal: a pod stuck Pending too long, or definitively failing with
+	// ImagePullBackOff/CrashLoopBackOff, gets deleted so the ReplicaSet
+	// controller creates a fresh replacement — see deployment_selfheal.go's
+	// doc comment.
+	if err := deleteStalePodsForDeployment(ctx, r.Client, r.Recorder, pulse, name, "ui", "stale_pod_delete"); err != nil {
+		log.FromContext(ctx).Error(err, "failed to delete stale UI pod(s)", "deployment", name)
+		// Non-fatal — next reconcile will retry.
+	}
+	return nil
 }
 
 // g. Service — ClusterIP on 8443; OCP serving-cert annotation generates the TLS secret.

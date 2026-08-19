@@ -85,6 +85,15 @@ type AgentConfig struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 	// +optional
 	MCP MCPConfig `json:"mcp,omitempty"`
+	// MinOperatorVersion is an optional, admin-set semver constraint: the
+	// minimum pulse-operator version required to safely run this agent
+	// image. Nothing populates this automatically — it is opt-in and, left
+	// unset (the default), never blocks a deployment. See compat.go's doc
+	// comment for the real-vs-fabricated-signal investigation behind why
+	// this field exists in this shape rather than checking some other
+	// signal automatically.
+	// +optional
+	MinOperatorVersion string `json:"minOperatorVersion,omitempty"`
 }
 
 type MCPConfig struct {
@@ -173,6 +182,28 @@ type OpenShiftPulseStatus struct {
 	// auto-rollback completed). Nil when no upgrade is in progress.
 	// +optional
 	UpgradeStartedAt *metav1.Time `json:"upgradeStartedAt,omitempty"`
+
+	// LastUpgradeDurationSeconds records how long the most recently
+	// completed agent/UI image upgrade (Phase=Upgrading, tracked via
+	// UpgradeStartedAt above) took to become healthy again. Set once, when
+	// the upgrade completes; left at its previous value between upgrades
+	// (0 before the first one). The agent Deployment uses the Recreate
+	// strategy (see agent_reconciler.go's buildDeploymentSpec and the PR
+	// that added this field for why that was deliberately not changed to a
+	// rolling strategy) — every agent image change is a real, full
+	// stop-then-start outage window that cannot be eliminated, so this
+	// field exists to make its size visible and measured instead.
+	// +optional
+	LastUpgradeDurationSeconds int64 `json:"lastUpgradeDurationSeconds,omitempty"`
+
+	// AgentObservedMemoryBytes and AgentRequestedMemoryBytes are
+	// intentionally NOT status fields — see metrics.go's
+	// pulse_operator_observed_memory_bytes / pulse_operator_requested_memory_bytes
+	// gauges instead. A Prometheus gauge suits this data better than a
+	// status field: it is inherently a point-in-time sample (not
+	// reconciled/desired state), and CI's rbac-and-crd-sync job re-verifies
+	// the CRD/deepcopy on every change to this file, which a
+	// frequently-changing numeric field would make noisy for no benefit.
 }
 
 // +kubebuilder:object:root=true
