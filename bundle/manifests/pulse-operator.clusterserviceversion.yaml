@@ -34,8 +34,8 @@ metadata:
             }
           },
           "status": {
-            "phase": "Ready",
-            "agentVersion": "quay.io/amobrem/pulse-agent:latest",
+            "phase": "Running",
+            "agentVersion": "v2.9.0",
             "agentHealthy": true,
             "databaseReady": true,
             "uiAvailable": true,
@@ -44,8 +44,8 @@ metadata:
               {
                 "type": "AgentReady",
                 "status": "True",
-                "reason": "AgentHealthy",
-                "message": "Agent deployment is available and passing health checks",
+                "reason": "Ready",
+                "message": "agent is healthy",
                 "lastTransitionTime": "2026-01-01T00:00:00Z"
               }
             ]
