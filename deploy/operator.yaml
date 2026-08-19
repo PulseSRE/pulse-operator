@@ -129,8 +129,18 @@ spec:
       containers:
       - name: manager
         image: quay.io/amobrem/pulse-operator:latest
-        args:
-        - --leader-elect=true
+        # No --leader-elect: this Deployment runs a single replica (see
+        # spec.replicas above), so leader election has no failover target to
+        # protect against — it provides zero HA benefit here. What it does
+        # provide is a new failure mode: the manager treats losing its lease
+        # (e.g. a single lease-renewal API call exceeding its deadline during
+        # a transient apiserver latency spike) as fatal and exits, which
+        # kubelet then has to restart from scratch. Observed 9 such crashes
+        # in 17h on this cluster with no underlying reconcile bug — the
+        # restarts were leader-election's own failure response, not evidence
+        # of anything actually wrong. cmd/main.go's own --leader-elect flag
+        # already defaults to false for exactly this reason; this arg was
+        # overriding that default to true for no benefit.
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

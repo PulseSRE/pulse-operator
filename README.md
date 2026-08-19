@@ -492,7 +492,7 @@ Requires `QUAY_USERNAME` and `QUAY_TOKEN` as GitHub repository secrets.
 
 ```
 pulse-operator-system/
-└── pulse-operator-manager   (Deployment — 1 replica, leader-elected)
+└── pulse-operator-manager   (Deployment — 1 replica, no leader election)
     └── OpenShiftPulseReconciler
         ├── pulse.ai/cleanup finalizer  ← removes cluster-scoped resources on CR delete
         │
