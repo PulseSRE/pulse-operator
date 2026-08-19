@@ -48,12 +48,12 @@ import (
 
 // OperatorVersion is this operator build's own version, compared against an
 // admin-set spec.agent.minOperatorVersion (see this file's doc comment
-// above). This mirrors the git tag of the last release (v0.3.0, live on
-// cluster at the time this gate was added) — the separate release/version-
-// bump step that tags future releases is responsible for keeping this
+// above). This mirrors the git tag of the last release (v0.4.0, live on
+// cluster at the time this constant was last synced) — the separate release/
+// version-bump step that tags future releases is responsible for keeping this
 // constant in sync; it is deliberately not touched by anything else in
 // this change.
-const OperatorVersion = "0.3.0"
+const OperatorVersion = "0.4.0"
 
 // agentVersionCompatible reports whether this operator build satisfies
 // cr.Spec.Agent.MinOperatorVersion, and an explanatory message when it does
