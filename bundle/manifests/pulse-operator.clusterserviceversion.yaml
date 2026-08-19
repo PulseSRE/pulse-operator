@@ -32,10 +32,27 @@ metadata:
             "monitoring": {
               "enabled": true
             }
+          },
+          "status": {
+            "phase": "Ready",
+            "agentVersion": "quay.io/amobrem/pulse-agent:latest",
+            "agentHealthy": true,
+            "databaseReady": true,
+            "uiAvailable": true,
+            "routeHost": "pulse-openshiftpulse.apps.example.com",
+            "conditions": [
+              {
+                "type": "AgentReady",
+                "status": "True",
+                "reason": "AgentHealthy",
+                "message": "Agent deployment is available and passing health checks",
+                "lastTransitionTime": "2026-01-01T00:00:00Z"
+              }
+            ]
           }
         }
       ]
-    capabilities: Basic Install
+    capabilities: Seamless Upgrades
     containerImage: quay.io/amobrem/pulse-operator:v0.1.0
     repository: https://github.com/PulseSRE/pulse-operator
     support: Red Hat CoE
@@ -49,6 +66,61 @@ spec:
         displayName: OpenShift Pulse
         kind: OpenShiftPulse
         name: openshiftpulses.pulse.ai
+        specDescriptors:
+          - description: >-
+              Container image for the Pulse Agent. Falls back to a mutable
+              :latest tag when unset — pin a digest for production.
+            displayName: Agent Image
+            path: agent.image
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:text
+          - description: >-
+              How much autonomy the agent has: 0=observe, 1=suggest,
+              2=confirm (default), 3=batch, 4=autonomous.
+            displayName: Agent Trust Level
+            path: agent.trustLevel
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:number
+        statusDescriptors:
+          - description: Current lifecycle phase of the Pulse deployment.
+            displayName: Phase
+            path: phase
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes.phase
+          - description: >-
+              Per-component reconciliation conditions (AgentReady,
+              DatabaseReady, UIReady, Progressing).
+            displayName: Conditions
+            path: conditions
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes.conditions
+          - description: >-
+              Agent container image last observed running while AgentReady
+              was True.
+            displayName: Agent Version
+            path: agentVersion
+            x-descriptors:
+              - urn:alm:descriptor:text
+          - description: Whether the agent's health probe is currently passing.
+            displayName: Agent Healthy
+            path: agentHealthy
+            x-descriptors:
+              - urn:alm:descriptor:text
+          - description: Whether the PostgreSQL database is ready to serve the agent.
+            displayName: Database Ready
+            path: databaseReady
+            x-descriptors:
+              - urn:alm:descriptor:text
+          - description: Whether the UI Deployment has at least one available replica.
+            displayName: UI Available
+            path: uiAvailable
+            x-descriptors:
+              - urn:alm:descriptor:text
+          - description: Hostname of the Route serving the Pulse UI.
+            displayName: Route Host
+            path: routeHost
+            x-descriptors:
+              - urn:alm:descriptor:text
         version: v1alpha1
   description: |
     ## OpenShift Pulse Operator

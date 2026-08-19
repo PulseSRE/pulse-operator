@@ -19,3 +19,10 @@ stages:
         labels:
           suite: olm
           test: olm-bundle-validation
+      - entrypoint:
+          - scorecard-test
+          - olm-status-descriptors
+        image: quay.io/operator-framework/scorecard-test:latest
+        labels:
+          suite: olm
+          test: olm-status-descriptors

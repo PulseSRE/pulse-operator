@@ -95,6 +95,70 @@ jobs:
         # shipped for a while because nothing ever ran this validator in CI.
         run: make bundle-validate
 
+  scorecard:
+    # `bundle-validate` above only checks bundle *structure* — it never
+    # executes the scorecard test suites defined in
+    # bundle/tests/scorecard/config.yaml, so those suites have never
+    # actually run. This job runs them for real with `operator-sdk
+    # scorecard`, which needs a live Kubernetes API server to schedule its
+    # test Pods against (a plain ubuntu-latest runner has none), so it
+    # stands up a throwaway kind cluster first.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install operator-sdk
+        run: |
+          OSDK_VERSION=v1.42.3
+          curl -sSLo /usr/local/bin/operator-sdk \
+            "https://github.com/operator-framework/operator-sdk/releases/download/${OSDK_VERSION}/operator-sdk_linux_amd64"
+          chmod +x /usr/local/bin/operator-sdk
+      - name: Install kind and kubectl
+        # Curl'd, pinned release binaries — not kind-action@vN or a
+        # setup-kubectl marketplace action — for the same reason the
+        # golangci-lint step above avoids a floating action: a marketplace
+        # action's "latest" can pick up a newer default node image between
+        # runs with no signal. kindest/node is digest-pinned to the
+        # v1.31.12 build kind v0.30.0 shipped, matching the Kubernetes
+        # version the `test` job above already pins via
+        # `setup-envtest use 1.31`. `sudo` is required here (unlike the
+        # operator-sdk install above): ubuntu-latest ships its own kind and
+        # kubectl at these exact paths, root-owned but world-writable, so a
+        # plain `curl -o` overwrites the content fine but a non-root
+        # `chmod` on that root-owned file fails with "Operation not
+        # permitted" — hit exactly that the first time this job ran.
+        run: |
+          KIND_VERSION=v0.30.0
+          KUBECTL_VERSION=v1.31.12
+          sudo curl -sSLo /usr/local/bin/kind \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          sudo chmod +x /usr/local/bin/kind
+          sudo curl -sSLo /usr/local/bin/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          sudo chmod +x /usr/local/bin/kubectl
+      - name: Create kind cluster
+        run: |
+          kind create cluster --name pulse-scorecard \
+            --image kindest/node:v1.31.12@sha256:0f5cc49c5e73c0c2bb6e2df56e7df189240d83cf94edfa30946482eb08ec57d2 \
+            --wait 120s
+      - name: Apply the CRD
+        # Not strictly required by the suites configured today — scorecard's
+        # basic-check-spec and olm-status-descriptors both read their CR
+        # data from the CSV's alm-examples annotation bundled on disk, not
+        # from the live cluster (see operator-sdk's
+        # internal/scorecard/tests/{basic,olm}.go: GetCRs() always reads
+        # bundle.CSV.GetAnnotations()["alm-examples"]). Applied anyway so
+        # the test cluster resembles a real install, and so any
+        # live-cluster-dependent scorecard test added later doesn't need
+        # another CI change to have the CRD available.
+        run: kubectl apply -f config/crd/bases/pulse.ai_openshiftpulses.yaml
+      - name: Run operator-sdk scorecard
+        run: |
+          operator-sdk scorecard ./bundle \
+            --config bundle/tests/scorecard/config.yaml \
+            --namespace default \
+            --wait-time 180s \
+            --output text
+
   security:
     runs-on: ubuntu-latest
     steps:
