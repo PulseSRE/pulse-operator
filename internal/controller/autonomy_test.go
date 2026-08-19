@@ -146,6 +146,51 @@ var _ = Describe("syncPhaseAndConditions", func() {
 		Expect(cr.Status.UpgradeStartedAt).To(BeNil())
 	})
 
+	// Item 4 of the autonomy roadmap: the agent Deployment's Recreate
+	// strategy was deliberately kept (see agent_reconciler.go's
+	// buildDeploymentSpec doc comment for the investigation) rather than
+	// switched to RollingUpdate, so LastUpgradeDurationSeconds exists to
+	// make that unavoidable outage window's size visible instead.
+	It("records LastUpgradeDurationSeconds once an in-progress upgrade completes", func() {
+		cr.Status.UIAvailable = true
+		root.syncPhaseAndConditions(cr, true, true)
+		Expect(cr.Status.Phase).To(Equal("Running"))
+		Expect(cr.Status.LastUpgradeDurationSeconds).To(BeZero(), "no upgrade has happened yet")
+
+		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v2"
+		started := metav1.NewTime(time.Now().Add(-90 * time.Second))
+		root.syncPhaseAndConditions(cr, false, true)
+		cr.Status.UpgradeStartedAt = &started // simulate the upgrade having been in flight for a known duration
+		Expect(cr.Status.Phase).To(Equal("Upgrading"))
+
+		root.syncPhaseAndConditions(cr, true, true)
+		Expect(cr.Status.Phase).To(Equal("Running"))
+		Expect(cr.Status.LastUpgradeDurationSeconds).To(BeNumerically(">=", 90),
+			"must reflect the time the upgrade actually spent in Upgrading, not zero")
+		Expect(cr.Status.UpgradeStartedAt).To(BeNil(), "still cleared as before")
+	})
+
+	It("does not touch LastUpgradeDurationSeconds when reaching Running was not the completion of an upgrade", func() {
+		cr.Status.UIAvailable = true
+		root.syncPhaseAndConditions(cr, true, true) // first install -> Running directly, never Upgrading
+		Expect(cr.Status.Phase).To(Equal("Running"))
+		Expect(cr.Status.LastUpgradeDurationSeconds).To(BeZero())
+	})
+
+	It("mentions the upgrade duration in the Running event only when an upgrade just completed", func() {
+		cr.Status.UIAvailable = true
+		root.syncPhaseAndConditions(cr, true, true)
+		firstInstallEvent := drainEvent(root.Recorder.(*record.FakeRecorder))
+		Expect(firstInstallEvent).NotTo(ContainSubstring("upgrade completed"), "a first install is not an upgrade")
+
+		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v2"
+		root.syncPhaseAndConditions(cr, false, true)
+		Expect(drainEvent(root.Recorder.(*record.FakeRecorder))).To(ContainSubstring("Upgrading"))
+
+		root.syncPhaseAndConditions(cr, true, true)
+		Expect(drainEvent(root.Recorder.(*record.FakeRecorder))).To(ContainSubstring("upgrade completed in"))
+	})
+
 	It("emits Running/Upgrading/Degraded events only on phase transitions, not every reconcile", func() {
 		cr.Status.UIAvailable = true
 		root.syncPhaseAndConditions(cr, true, true)

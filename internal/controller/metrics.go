@@ -45,8 +45,39 @@ var (
 		},
 		[]string{"step"},
 	)
+
+	// observedMemoryBytes is the most recently observed real memory usage
+	// (max across replicas — see resource_metrics.go's doc comment) for a
+	// component, read from the real metrics.k8s.io API. Item 3 of the
+	// autonomy roadmap: advisory-only auto-tuning input, never fabricated —
+	// simply absent (no sample set) whenever metrics.k8s.io isn't
+	// reachable (e.g. no metrics-server installed), exactly like
+	// ClusterInfo's ACM/oauth-proxy detection in cluster_detect.go treats
+	// an optional cluster capability that may not exist.
+	observedMemoryBytes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pulse_operator_observed_memory_bytes",
+			Help: "Most recently observed real memory usage (max across replicas) for a component, read from metrics.k8s.io. Absent when metrics.k8s.io is unavailable — never fabricated or estimated.",
+		},
+		[]string{"namespace", "name", "component"},
+	)
+
+	// requestedMemoryBytes is the effective resources.requests.memory
+	// currently applied to a component's container (agentResources/
+	// uiResources' resolved value — spec override or built-in default),
+	// for side-by-side comparison with observedMemoryBytes on a dashboard.
+	// Needs no cluster API call, so — unlike observedMemoryBytes — this is
+	// set on every reconcile.
+	requestedMemoryBytes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pulse_operator_requested_memory_bytes",
+			Help: "The effective resources.requests.memory currently applied to a component's container.",
+		},
+		[]string{"namespace", "name", "component"},
+	)
 )
 
 func init() {
-	metrics.Registry.MustRegister(selfHealActionsTotal, componentReady, reconcileErrorsTotal)
+	metrics.Registry.MustRegister(selfHealActionsTotal, componentReady, reconcileErrorsTotal,
+		observedMemoryBytes, requestedMemoryBytes)
 }

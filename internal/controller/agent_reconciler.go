@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -587,6 +588,30 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 	}
 
 	return appsv1.DeploymentSpec{
+		// Recreate, not RollingUpdate — deliberate, investigated as part of
+		// item 4 of the autonomy roadmap, not just an unexamined default.
+		// Every agent image change is a full stop-then-start outage window
+		// (see status.LastUpgradeDurationSeconds, which exists to make that
+		// window's size visible/measured rather than eliminate it), but two
+		// concrete, real pieces of evidence from github.com/PulseSRE/pulse-agent
+		// argue against switching:
+		//   1. That repo's own Helm chart (chart/values.yaml) runs the
+		//      agent with Recreate too, with this exact comment: "Required
+		//      because the memory PVC is ReadWriteOnce (RWO) and cannot be
+		//      mounted by two pods simultaneously." This operator's own
+		//      memory PVC (reconcileMemoryPVC below) is the same
+		//      ReadWriteOnce access mode, mounted at the same /memory path
+		//      — the identical constraint applies directly. A RollingUpdate
+		//      overlap would leave the surging pod's volume attach stuck
+		//      Pending (FailedAttachVolume), which is arguably a worse
+		//      failure mode than today's brief, bounded Recreate outage.
+		//   2. The agent also runs its own forward-only, no-rollback DB
+		//      migrations automatically on startup (see that repo's
+		//      DATABASE.md) — even absent the PVC issue, two concurrent
+		//      agent versions sharing one Postgres instance could apply or
+		//      depend on migrations out of step with each other.
+		// Both are real, checkable findings, not a guess — so this keeps
+		// the conservative choice.
 		Strategy: appsv1.DeploymentStrategy{
 			Type: appsv1.RecreateDeploymentStrategyType,
 		},
@@ -690,6 +715,17 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 	name := agentResourceName(cr.Name)
 	wantSelector := map[string]string{"app": name}
 
+	// Pre-upgrade compatibility gate (item 2) — see compat.go's doc comment.
+	// Inert (compatible=true) unless the admin has opted in via
+	// spec.agent.minOperatorVersion.
+	compatible, incompatMessage := agentVersionCompatible(cr)
+	if cr.Spec.Agent.MinOperatorVersion != "" {
+		setAgentVersionCompatibleCondition(cr, compatible, incompatMessage)
+	}
+	if !compatible {
+		recordEvent(r.Recorder, cr, corev1.EventTypeWarning, "IncompatibleVersion", "%s", incompatMessage)
+	}
+
 	existing := &appsv1.Deployment{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, existing)
 	if getErr != nil && !errors.IsNotFound(getErr) {
@@ -720,14 +756,43 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 		updated := existing.DeepCopy()
 		spec := r.buildDeploymentSpec(cr, info)
 		spec.Selector = existing.Spec.Selector // selector is immutable, preserve it
+		if !compatible && len(existing.Spec.Template.Spec.Containers) > 0 && len(spec.Template.Spec.Containers) > 0 {
+			// Gate: keep serving whatever image is already running rather
+			// than applying an image change the admin has declared
+			// incompatible with this operator build (see compat.go). Every
+			// other mutable field (resources, env, probes, ...) is still
+			// applied normally — only the image itself is pinned.
+			spec.Template.Spec.Containers[0].Image = existing.Spec.Template.Spec.Containers[0].Image
+		}
 		updated.Spec = spec
 		if err := controllerutil.SetControllerReference(cr, updated, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.Update(ctx, updated)
+		if err := r.Update(ctx, updated); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Self-heal: a pod stuck Pending too long, or definitively failing
+		// with ImagePullBackOff/CrashLoopBackOff, gets deleted so the
+		// ReplicaSet controller creates a fresh replacement — see
+		// deployment_selfheal.go's doc comment for why this matters
+		// especially for this Deployment's Recreate strategy.
+		if err := deleteStalePodsForDeployment(ctx, r.Client, r.Recorder, cr, name, "agent", "stale_pod_delete"); err != nil {
+			log.FromContext(ctx).Error(err, "failed to delete stale agent pod(s)", "deployment", name)
+			// Non-fatal — next reconcile will retry.
+		}
+		return ctrl.Result{}, nil
 	}
 
-	// Deployment does not exist — create it fresh.
+	// Deployment does not exist — create it fresh. There is no previously-
+	// running image to fall back to here, so an incompatible
+	// spec.agent.minOperatorVersion blocks creation entirely rather than
+	// pinning to some other image — the condition/event above already
+	// explain why, and the next reconcile (30s later, or sooner on any
+	// spec/status watch event) retries once the constraint is resolved.
+	if !compatible {
+		return ctrl.Result{RequeueAfter: agentRequeueDelay}, nil
+	}
+
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cr.Namespace},
 		Spec:       r.buildDeploymentSpec(cr, info),

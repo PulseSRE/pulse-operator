@@ -202,6 +202,13 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
+	// Item 3: advisory-only observed-vs-requested memory metrics (see
+	// resource_metrics.go). Never fatal, never blocks anything below —
+	// gracefully skips publishing an observed sample when metrics.k8s.io
+	// isn't reachable.
+	reconcileObservedMemoryMetrics(ctx, r.Client, pulse, agentResourceName(pulse.Name), "agent", agentRequestedMemoryBytes(pulse))
+	reconcileObservedMemoryMetrics(ctx, r.Client, pulse, uiResourceName(pulse.Name), "ui", uiRequestedMemoryBytes(pulse))
+
 	_, _, agentUpgrading, uiUpgrading := r.syncPhaseAndConditions(pulse, agentReady, pgReady)
 
 	// Auto-rollback: an agent/UI image change stuck Upgrading past
