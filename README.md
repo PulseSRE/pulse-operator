@@ -320,18 +320,49 @@ spec:
 
 ```yaml
 status:
-  phase: Running               # Pending | Installing | Running | Degraded
-  agentHealthy: true           # agent Deployment has ≥1 ready replica
-  databaseReady: true          # PostgreSQL StatefulSet has ≥1 ready replica
-  uiAvailable: true            # Route hostname assigned by OCP router
+  phase: Running                       # Installing | Running | Upgrading | Degraded
+  agentHealthy: true                   # agent Deployment has ≥1 ready replica
+  databaseReady: true                  # PostgreSQL StatefulSet has ≥1 ready replica
+  uiAvailable: true                    # Route hostname assigned by OCP router
   routeHost: pulse-openshiftpulse.apps.cluster.example.com
   observedGeneration: 3
+  lastHealthyAgentImage: quay.io/amobrem/pulse-agent:v2.9.0     # rollback target — see "Automatic rollback" below
+  lastHealthyUIImage: quay.io/amobrem/openshiftpulse:e6169a4
   conditions:
-  - type: Ready
+  - type: Ready              # aggregate — kept for backward compatibility
     status: "True"
-    reason: AllComponentsReady
-    observedGeneration: 3
+    reason: AllComponentsHealthy
+  - type: AgentReady
+    status: "True"
+    reason: Ready
+  - type: DatabaseReady
+    status: "True"
+    reason: Ready
+  - type: UIReady
+    status: "True"
+    reason: Ready
+  - type: Progressing        # True while Installing/Upgrading; False (Stable/Degraded) otherwise
+    status: "False"
+    reason: Stable
 ```
+
+`Phase: Upgrading` is distinct from `Degraded`: it means `spec.agent.image`/`spec.ui.image` was
+changed and the new image isn't ready *yet*, not that something broke. The operator only reports
+`Degraded` for a component that was previously healthy and is no longer — not for an upgrade in
+progress. See **Automatic rollback** below for what happens if an upgrade never becomes healthy.
+
+### Self-heal Events and metrics
+
+The operator emits `Normal SelfHealed` Events (`oc get events` / `oc describe openshiftpulse`)
+whenever it takes one of its own corrective actions: deleting a PostgreSQL pod stuck `Pending` for
+over 2 minutes, recreating a selector-mismatched StatefulSet/Deployment (e.g. adopting a
+previously Helm-managed instance), correcting Route drift, or regenerating a malformed
+`cookie-secret`. It also exposes three Prometheus metrics on the manager's `:8082/metrics`
+endpoint:
+
+- `pulse_operator_self_heal_actions_total{component,action}` — counts of the actions above.
+- `pulse_operator_component_ready{namespace,name,component}` — 1/0 mirror of the AgentReady/DatabaseReady/UIReady conditions.
+- `pulse_operator_reconcile_errors_total{step}` — reconcile failures by step (e.g. `postgres`, `agent`, `ui`, `status_update`).
 
 ---
 
@@ -360,6 +391,18 @@ Update the image tag in the CR — the operator rolls out the new image immediat
 oc patch openshiftpulse pulse -n openshiftpulse --type=merge \
   -p '{"spec":{"agent":{"image":"quay.io/amobrem/pulse-agent:v2.0.0"}}}'
 ```
+
+`status.phase` reports `Upgrading` while the new image is rolling out (see **CR Status** above).
+
+#### Automatic rollback
+
+If the new agent/UI image doesn't become healthy within 5 minutes of `Phase` turning `Upgrading`,
+the operator automatically reverts `spec.agent.image`/`spec.ui.image` back to
+`status.lastHealthy{Agent,UI}Image` — the last image that was actually observed ready — and emits
+a `Warning AutoRolledBack` Event explaining what happened. This only covers the agent/UI images
+managed directly by this CR; it does **not** cover an operator upgrade via OLM (rolling back the
+operator's own running binary needs a separate pre-upgrade gate outside this process, which isn't
+implemented yet).
 
 ---
 
