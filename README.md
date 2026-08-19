@@ -105,18 +105,22 @@ oc get catalogsource pulse-operator-catalog -n openshift-marketplace -w
 # STATE should reach READY within ~30 seconds
 ```
 
-> **Private quay.io namespaces:** if `quay.io/amobrem/pulse-operator-catalog`
-> (or wherever you publish it) is a private repository, the cluster's nodes
+> **Private quay.io namespaces:** `quay.io/amobrem/pulse-operator-catalog`
+> and `pulse-operator-bundle` are public, so this doesn't apply to using this
+> repo as-is — but if you fork this and publish to a *private* namespace
+> instead, read on. A private catalog repository means the cluster's nodes
 > cannot pull it directly and the catalog pod fails with `ImagePullBackOff`.
 > Worse, even once the catalog image itself is reachable, its content still
 > embeds a reference to the **bundle** image (`quay.io/.../pulse-operator-bundle:*`)
 > as `bundlePath` — if *that* is also private, `oc get csv` shows
 > `Succeeded` misleadingly quickly while the underlying Subscription hangs
 > forever on `BundleUnpacking: UnpackingInProgress` with no error logged,
-> because OLM can't pull the bundle image it's unpacking either. The
-> reliable fix on a cluster without registry credentials for your quay.io
-> namespace: mirror **both** images into the cluster's own internal
-> registry (via its public route) and re-render the catalog to reference the
+> because OLM can't pull the bundle image it's unpacking either. Simplest
+> fix: make both repositories public, matching the operator/agent/UI images
+> (Repository Settings → Visibility → Make Public in the quay.io UI). If
+> that's not an option, the reliable fallback is to mirror **both** images
+> into the cluster's own internal registry (via its public route) and
+> re-render the catalog to reference the
 > internal path instead of quay.io for `bundlePath` — see
 > [Build the catalog image](#build-the-catalog-image) for the exact steps.
 
