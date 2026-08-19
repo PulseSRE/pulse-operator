@@ -63,6 +63,21 @@ jobs:
             echo "::error::api/v1alpha1/zz_generated.deepcopy.go or config/crd/bases/ is out of date. Run 'make generate manifests' (and 'make bundle' if config/crd/bases changed) and commit the result.";
             exit 1;
           }
+      - name: manager Deployment must not re-enable leader election
+        # deploy/operator.yaml and the bundle CSV both run a single replica
+        # (spec.replicas: 1) with no failover target, so leader election has
+        # no HA benefit — it only adds a failure mode: losing the lease (e.g.
+        # one lease-renewal call exceeding its deadline during a transient
+        # apiserver latency spike) is fatal, and controller-runtime exits the
+        # whole process. That caused 9 crashes in 17h on a live cluster with
+        # no underlying reconcile bug behind any of them. cmd/main.go's own
+        # --leader-elect flag already defaults to false for exactly this
+        # reason; this guards against a manifest re-overriding that default.
+        run: |
+          if grep -q -- '--leader-elect=true' deploy/operator.yaml bundle/manifests/pulse-operator.clusterserviceversion.yaml; then
+            echo "::error::--leader-elect=true found in a shipped manifest — this Deployment runs a single replica with no failover target, so leader election only adds a fatal-on-transient-latency failure mode with no HA benefit. See the commit that removed it for the full incident.";
+            exit 1;
+          fi
 
   bundle-validate:
     runs-on: ubuntu-latest
@@ -202,3 +217,56 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
           ignore-unfixed: true
+
+  catalog-image-smoke-test:
+    # Catches wrong-architecture base image digests in Dockerfile.catalog —
+    # e.g. a pinned quay.io/operator-framework/opm@sha256:... digest that
+    # resolves to arm64 instead of amd64. That class of bug builds and tags
+    # successfully on any arm64 dev machine (native exec, no error) and only
+    # fails once actually deployed to a real (amd64) cluster, as
+    # "exec container process `/bin/opm`: Exec format error". This runner is
+    # amd64-native, so it reproduces that failure directly, either at build
+    # time (the cache-populate RUN step) or here at run time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render the local bundle into a throwaway FBC catalog
+        # A real install needs the rendered bundle's own image/bundlePath
+        # field to point at a pushed, pullable image (see README's OLM
+        # install section) — irrelevant here, since this job never resolves
+        # a Subscription. It only needs *some* valid FBC catalog directory
+        # so Dockerfile.catalog's cache-populate RUN step has something to
+        # index and opm serve has something to load.
+        run: |
+          mkdir -p catalog
+          docker run --rm -v "$(pwd)/bundle:/bundle:z" \
+            quay.io/operator-framework/opm:latest render /bundle -o yaml > /tmp/rendered.yaml
+          cat - /tmp/rendered.yaml > catalog/full-catalog.yaml <<'HEADER'
+          ---
+          defaultChannel: alpha
+          name: pulse-operator
+          schema: olm.package
+          ---
+          entries:
+          - name: pulse-operator.v0.1.0
+          name: alpha
+          package: pulse-operator
+          schema: olm.channel
+          HEADER
+      - name: Build catalog image
+        run: docker build --platform linux/amd64 -f Dockerfile.catalog -t pulse-operator-catalog:ci .
+      - name: Run it and verify opm actually starts serving
+        run: |
+          docker run -d --name catalog-ci -p 50051:50051 pulse-operator-catalog:ci
+          sleep 5
+          docker logs catalog-ci
+          status=$(docker inspect -f '{{.State.Status}}' catalog-ci)
+          echo "container status: $status"
+          if [ "$status" != "running" ]; then
+            echo "::error::catalog container is not running (status: $status) — check the logs above for 'Exec format error'"
+            exit 1
+          fi
+          if ! docker logs catalog-ci 2>&1 | grep -q "serving registry"; then
+            echo "::error::catalog image never logged 'serving registry' — opm did not start successfully"
+            exit 1
+          fi
