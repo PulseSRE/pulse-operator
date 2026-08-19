@@ -356,6 +356,27 @@ oc delete namespace openshiftpulse
 
 > **Data retention:** PostgreSQL PVCs are retained by the StatefulSet `volumeClaimTemplate` lifecycle and survive operator deletion. Re-create the CR to reattach them.
 
+### Uninstalling *other* OLM operators cleanly
+
+The steps above work for pulse-operator specifically because deleting its CR
+first (via the `pulse.ai/cleanup` finalizer) tears down everything it owns
+before the operator itself goes away. Manually running just
+`oc delete subscription` + `oc delete csv` for some *other* operator skips
+that step entirely — it removes the controller but leaves any custom
+resources (and everything those CRs caused to be created) running forever,
+orphaned. OLM also never deletes CRDs on uninstall, by design.
+
+[`scripts/olm-uninstall.py`](scripts/olm-uninstall.py) does this properly for
+any OLM-installed operator: it reads the CSV's own
+`spec.customresourcedefinitions.owned[]` to find every CR instance the
+operator manages, deletes those first, then removes the Subscription, CSV,
+and any stale InstallPlans.
+
+```bash
+scripts/olm-uninstall.py authorino            # dry run — shows what would be deleted
+scripts/olm-uninstall.py authorino --yes      # actually uninstall
+```
+
 ---
 
 ## Development
