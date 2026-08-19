@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -49,6 +50,11 @@ const (
 type AgentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Recorder emits Events for self-heal actions this reconciler takes on
+	// its own (e.g. the selector-mismatch Deployment recreate in
+	// reconcileDeployment). Optional — see recordEvent's doc comment for why
+	// a nil Recorder is safe.
+	Recorder record.EventRecorder
 }
 
 // Reconcile runs all agent sub-resource reconcile steps in order.
@@ -704,6 +710,9 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 			if delErr := r.Delete(ctx, existing); delErr != nil && !errors.IsNotFound(delErr) {
 				return ctrl.Result{}, fmt.Errorf("delete mismatched deployment: %w", delErr)
 			}
+			recordEvent(r.Recorder, cr, corev1.EventTypeNormal, "SelfHealed",
+				"Agent Deployment %q had a selector that no longer matched (e.g. previously Helm-managed) — deleted it so it can be recreated cleanly", name)
+			selfHealActionsTotal.WithLabelValues("agent", "selector_mismatch_recreate").Inc()
 			return ctrl.Result{RequeueAfter: agentRequeueDelay}, nil
 		}
 

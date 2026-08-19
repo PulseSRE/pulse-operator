@@ -355,6 +355,18 @@ spec:
                 type: array
               databaseReady:
                 type: boolean
+              lastHealthyAgentImage:
+                description: |-
+                  LastHealthyAgentImage is the most recent agent container image observed
+                  running while the AgentReady condition was True. Used to distinguish an
+                  in-progress image upgrade (Phase=Upgrading) from an unplanned failure
+                  (Phase=Degraded), and as the rollback target if an upgrade does not
+                  become healthy within the operator's bounded upgrade window.
+                type: string
+              lastHealthyUIImage:
+                description: LastHealthyUIImage is the UI-container equivalent of
+                  LastHealthyAgentImage.
+                type: string
               observedGeneration:
                 format: int64
                 type: integer
@@ -364,6 +376,14 @@ spec:
                 type: string
               uiAvailable:
                 type: boolean
+              upgradeStartedAt:
+                description: |-
+                  UpgradeStartedAt records when the operator first observed the desired
+                  agent or UI image differ from the last known-healthy image. Cleared
+                  once the component is healthy again (the new image succeeded, or an
+                  auto-rollback completed). Nil when no upgrade is in progress.
+                format: date-time
+                type: string
             type: object
         type: object
     served: true

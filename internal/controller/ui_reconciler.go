@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -46,6 +47,11 @@ func oauthClientName(crName, crNamespace string) string {
 type UIReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Recorder emits Events for self-heal actions this reconciler takes on
+	// its own (Route drift correction in reconcileUIRoute, cookie-secret
+	// regeneration in reconcileUIOAuthSecrets). Optional — see recordEvent's
+	// doc comment for why a nil Recorder is safe.
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=pulse.ai,resources=openshiftpulses,verbs=get;list;watch
@@ -481,7 +487,13 @@ func (r *UIReconciler) reconcileUIOAuthSecrets(ctx context.Context, pulse *pulse
 			existing.Data = map[string][]byte{}
 		}
 		existing.Data["cookie-secret"] = []byte(newCookie)
-		return r.Update(ctx, existing)
+		if err := r.Update(ctx, existing); err != nil {
+			return err
+		}
+		recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "SelfHealed",
+			"Secret %q had a malformed cookie-secret (wrong length or non-printable bytes) — regenerated it; client-secret was left untouched", name)
+		selfHealActionsTotal.WithLabelValues("ui", "cookie_secret_regenerate").Inc()
+		return nil
 	}
 	if !apierrors.IsNotFound(err) {
 		return err
@@ -1105,6 +1117,9 @@ func (r *UIReconciler) reconcileUIRoute(ctx context.Context, pulse *pulsev1alpha
 		if updateErr := r.Update(ctx, existing); updateErr != nil {
 			return "", ctrl.Result{}, fmt.Errorf("correct route drift: %w", updateErr)
 		}
+		recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "SelfHealed",
+			"Route %q had spec.to/spec.port.targetPort/spec.tls drift from something external — corrected it", name)
+		selfHealActionsTotal.WithLabelValues("ui", "route_drift_correct").Inc()
 	}
 
 	// Check spec.host — OCP populates this after the route is admitted by the router.
