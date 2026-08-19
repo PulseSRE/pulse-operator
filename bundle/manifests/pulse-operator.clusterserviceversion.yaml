@@ -121,6 +121,14 @@ spec:
             path: routeHost
             x-descriptors:
               - urn:alm:descriptor:text
+          - description: >-
+              How long, in seconds, the most recently completed agent/UI
+              image upgrade took to become healthy again. Set once an
+              upgrade completes; absent/zero if none has happened yet.
+            displayName: Last Upgrade Duration Seconds
+            path: lastUpgradeDurationSeconds
+            x-descriptors:
+              - urn:alm:descriptor:text
         version: v1alpha1
   description: |
     ## OpenShift Pulse Operator
