@@ -16,14 +16,27 @@
 # a mutable :latest tag can change under you between builds with no signal.
 # Dependabot (.github/dependabot.yml, docker ecosystem) opens a PR whenever
 # this digest moves, so this doesn't go stale.
-FROM quay.io/operator-framework/opm@sha256:4a82ebc6069905b87f3f6cf91b782cb267b0400a065ed8b0866cab8aa7f95d67 AS builder
+#
+# MUST be the linux/amd64 digest specifically, not a per-arch digest picked up
+# from a `podman pull`/`podman inspect` on an Apple Silicon (arm64) machine —
+# `quay.io/operator-framework/opm@sha256:4a82ebc6...` (this repo's previous
+# pin) resolves directly to the arm64 manifest, with no multi-arch list to
+# select from, so --platform can't correct it. podman happily builds and even
+# *tags* the result as amd64 regardless, since only the final image's own
+# metadata gets checked — but every RUN instruction actually executes the
+# arm64 binary, and the opm binary COPIEd into the final stage is arm64 too.
+# That's silent on any arm64 dev machine (native exec, no error) and only
+# fails once deployed: "exec container process `/bin/opm`: Exec format error"
+# on any real (amd64) cluster node. Get the correct per-arch digest with:
+#   podman manifest inspect quay.io/operator-framework/opm:latest
+FROM quay.io/operator-framework/opm@sha256:c6dc739b9f630ae8efb9cb0e6f4306a55ca738dffc4fa6ef376b313d90928dfa AS builder
 
 # Copy the FBC root (built by README.md's render step into ./catalog) into the
 # image at /configs and pre-populate the serve cache.
 ADD catalog /configs
 RUN ["/bin/opm", "serve", "/configs", "--cache-dir=/tmp/cache", "--cache-only"]
 
-FROM quay.io/operator-framework/opm@sha256:4a82ebc6069905b87f3f6cf91b782cb267b0400a065ed8b0866cab8aa7f95d67
+FROM quay.io/operator-framework/opm@sha256:c6dc739b9f630ae8efb9cb0e6f4306a55ca738dffc4fa6ef376b313d90928dfa
 ENTRYPOINT ["/bin/opm"]
 CMD ["serve", "/configs", "--cache-dir=/tmp/cache"]
 
