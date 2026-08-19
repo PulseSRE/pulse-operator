@@ -68,6 +68,14 @@ Without this annotation, `{name}-pg-auth` and the pg-data PVC are left behind af
 
 ## Prerequisites
 
+> **OpenShift only — this will not install on vanilla Kubernetes.** The operator
+> creates `Route` objects for ingress, `OAuthClient` objects for single sign-on, and
+> reads `config.openshift.io/v1 Ingress` to discover the cluster's application
+> domain. There is no Ingress fallback and no capability detection, so on a cluster
+> without those APIs the reconcile fails rather than degrading to something usable.
+> Supporting plain Kubernetes would mean an Ingress path and a different auth story;
+> that work has not been done.
+
 - OpenShift 4.12+ (uses Route, OAuthClient, ImageStream APIs)
 - `oc` CLI with `cluster-admin`
 - Prometheus Operator (for `ServiceMonitor` / `PrometheusRule` — ships with OpenShift Monitoring)
@@ -76,6 +84,11 @@ Without this annotation, `{name}-pg-auth` and the pg-data PVC are left behind af
 ---
 
 ## Install via OLM
+
+**This README is the canonical install guide for all of Pulse.** The
+[pulse-agent](https://github.com/PulseSRE/pulse-agent) and
+[pulse-ui](https://github.com/PulseSRE/pulse-ui) repos link here rather than
+restating the steps, so this is the only copy that has to stay correct.
 
 This is the recommended path. It installs the operator through OLM so it appears in the OpenShift Installed Operators view and receives automatic upgrades.
 
