@@ -178,9 +178,7 @@ spec:
                   control-plane: controller-manager
               spec:
                 containers:
-                  - args:
-                      - --leader-elect
-                    command:
+                  - command:
                       - /manager
                     image: quay.io/amobrem/pulse-operator:v0.1.0
                     name: manager
