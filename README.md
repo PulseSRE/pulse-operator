@@ -285,6 +285,7 @@ spec:
     resources: {}                 # corev1.ResourceRequirements
     mcp:
       enabled: false       # deploys MCP server sidecar for tool extension
+    minOperatorVersion: ""  # optional semver floor for this operator build; unset (default) = inert — see "Agent-version compatibility gate" below
 
   # ── UI ──────────────────────────────────────────────────────────────────────
   ui:
@@ -328,6 +329,7 @@ status:
   observedGeneration: 3
   lastHealthyAgentImage: quay.io/amobrem/pulse-agent:v2.9.0     # rollback target — see "Automatic rollback" below
   lastHealthyUIImage: quay.io/amobrem/openshiftpulse:e6169a4
+  lastUpgradeDurationSeconds: 0   # how long the most recently completed agent/UI upgrade took to become healthy; 0/absent if none has happened yet — see "Agent / UI image upgrades" below
   conditions:
   - type: Ready              # aggregate — kept for backward compatibility
     status: "True"
@@ -344,6 +346,9 @@ status:
   - type: Progressing        # True while Installing/Upgrading; False (Stable/Degraded) otherwise
     status: "False"
     reason: Stable
+  # - type: AgentVersionCompatible   # only present once spec.agent.minOperatorVersion is set — see "Agent-version compatibility gate" below
+  #   status: "True"
+  #   reason: Compatible
 ```
 
 `Phase: Upgrading` is distinct from `Degraded`: it means `spec.agent.image`/`spec.ui.image` was
@@ -355,14 +360,40 @@ progress. See **Automatic rollback** below for what happens if an upgrade never 
 
 The operator emits `Normal SelfHealed` Events (`oc get events` / `oc describe openshiftpulse`)
 whenever it takes one of its own corrective actions: deleting a PostgreSQL pod stuck `Pending` for
-over 2 minutes, recreating a selector-mismatched StatefulSet/Deployment (e.g. adopting a
-previously Helm-managed instance), correcting Route drift, or regenerating a malformed
-`cookie-secret`. It also exposes three Prometheus metrics on the manager's `:8082/metrics`
-endpoint:
+over 2 minutes, deleting an **agent or UI Deployment pod** stuck `Pending` too long or definitively
+failing with `ImagePullBackOff`/`CrashLoopBackOff` (no grace period needed for those two — the
+kubelet only ever reports them after a real failed pull or start-then-exit attempt, so there's no
+"might just be mid-startup" ambiguity to wait out), recreating a selector-mismatched
+StatefulSet/Deployment (e.g. adopting a previously Helm-managed instance), correcting Route drift,
+or regenerating a malformed `cookie-secret`. The agent/UI case matters most for the agent
+specifically, whose Deployment uses the `Recreate` strategy (see **Agent / UI image upgrades**
+below): `Recreate` tears the old pod down before the new one starts, so a bad rollout has no old
+pod left to fall back to without this — previously it stayed stuck until a human noticed and ran
+`oc delete pod` by hand.
+
+It also exposes five Prometheus metrics on the manager's `:8082/metrics` endpoint:
 
 - `pulse_operator_self_heal_actions_total{component,action}` — counts of the actions above.
 - `pulse_operator_component_ready{namespace,name,component}` — 1/0 mirror of the AgentReady/DatabaseReady/UIReady conditions.
 - `pulse_operator_reconcile_errors_total{step}` — reconcile failures by step (e.g. `postgres`, `agent`, `ui`, `status_update`).
+- `pulse_operator_observed_memory_bytes{namespace,name,component}` — real memory usage observed via `metrics.k8s.io` (max across replicas), for comparing against the request below. Advisory only — the operator never patches `resources.requests` from this. Absent (not zero) when `metrics.k8s.io` has no sample yet, e.g. no metrics-server, or the pod isn't `Running`; sampled at most once every 5 minutes per component to keep load off the metrics API.
+- `pulse_operator_requested_memory_bytes{namespace,name,component}` — the effective `resources.requests.memory` currently applied to that component's container (spec override or built-in default).
+
+### Agent-version compatibility gate
+
+`spec.agent.minOperatorVersion` (see **CR Spec** above) is an optional, admin-set semver floor —
+left unset, the default for every existing CR, this gate is completely inert. When set, the
+operator compares it against its own running version on every agent reconcile. If this operator
+build doesn't satisfy the constraint, it records an `AgentVersionCompatible` condition
+(`status: "False"`, `reason: IncompatibleVersion`) on the CR, emits a `Warning IncompatibleVersion`
+Event, and pins the agent Deployment to whichever image is already running rather than applying
+the requested `spec.agent.image` change — or, if there's no Deployment yet to pin, refuses to
+create one and requeues instead of erroring. A malformed version string on either side fails
+*open* (treated as compatible) rather than blocking a real deployment on a typo the CRD doesn't
+itself validate. This is checked against **this specific operator build's own version**, not the
+agent's — it exists to catch an operator upgrade running ahead of (or behind) an agent image that
+expects a newer API/DB schema, the axis the agent's own `/version` UI↔agent protocol check
+(documented in `pulse-agent`) doesn't cover.
 
 ---
 
@@ -393,6 +424,21 @@ oc patch openshiftpulse pulse -n openshiftpulse --type=merge \
 ```
 
 `status.phase` reports `Upgrading` while the new image is rolling out (see **CR Status** above).
+Once the new image becomes healthy again, `status.lastUpgradeDurationSeconds` records how long
+that outage window actually took, and holds its previous value between upgrades (`0` before the
+first one ever completes).
+
+The agent Deployment uses the `Recreate` strategy, not `RollingUpdate` — a deliberate choice, not
+an unexamined default. Its memory-cache PVC is `ReadWriteOnce`, and `pulse-agent`'s own Helm chart
+runs `Recreate` for the identical reason (`chart/values.yaml`: *"Required because the memory PVC
+is ReadWriteOnce (RWO) and cannot be mounted by two pods simultaneously"*) — a `RollingUpdate`
+overlap here would leave the surging pod's volume attach stuck `Pending`
+(`FailedAttachVolume`), arguably a worse failure mode than today's brief, bounded stop-then-start
+outage. The agent also runs forward-only, no-rollback DB migrations automatically on startup, so
+two concurrent agent versions sharing one Postgres instance is a second, independent reason to
+avoid the overlap. `lastUpgradeDurationSeconds` exists to make that outage window's size visible
+and measured, not to eliminate it — see the self-heal coverage above for what happens if the new
+pod gets stuck instead of just taking a while.
 
 #### Automatic rollback
 
