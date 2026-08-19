@@ -120,16 +120,21 @@ jobs:
         # runs with no signal. kindest/node is digest-pinned to the
         # v1.31.12 build kind v0.30.0 shipped, matching the Kubernetes
         # version the `test` job above already pins via
-        # `setup-envtest use 1.31`.
+        # `setup-envtest use 1.31`. `sudo` is required here (unlike the
+        # operator-sdk install above): ubuntu-latest ships its own kind and
+        # kubectl at these exact paths, root-owned but world-writable, so a
+        # plain `curl -o` overwrites the content fine but a non-root
+        # `chmod` on that root-owned file fails with "Operation not
+        # permitted" — hit exactly that the first time this job ran.
         run: |
           KIND_VERSION=v0.30.0
           KUBECTL_VERSION=v1.31.12
-          curl -sSLo /usr/local/bin/kind \
+          sudo curl -sSLo /usr/local/bin/kind \
             "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
-          chmod +x /usr/local/bin/kind
-          curl -sSLo /usr/local/bin/kubectl \
+          sudo chmod +x /usr/local/bin/kind
+          sudo curl -sSLo /usr/local/bin/kubectl \
             "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          chmod +x /usr/local/bin/kubectl
+          sudo chmod +x /usr/local/bin/kubectl
       - name: Create kind cluster
         run: |
           kind create cluster --name pulse-scorecard \
