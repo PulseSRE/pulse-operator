@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -43,6 +44,11 @@ type PostgreSQLReconciler struct {
 	// Scheme is required to set a real OwnerReference on every PostgreSQL
 	// sub-resource so Kubernetes garbage-collects them when the CR is deleted.
 	Scheme *runtime.Scheme
+	// Recorder emits Events for self-heal actions this reconciler takes on
+	// its own (e.g. deletePendingPGPodIfStale) so they're visible via `oc
+	// describe`/`oc get events` instead of happening silently. Optional —
+	// see recordEvent's doc comment for why a nil Recorder is safe.
+	Recorder record.EventRecorder
 }
 
 // reconcilePostgres ensures the Secret, StatefulSet, ClusterIP Service, and headless
@@ -279,6 +285,9 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 				if delErr := r.Delete(ctx, sts, client.PropagationPolicy(metav1.DeletePropagationBackground)); delErr != nil && !errors.IsNotFound(delErr) {
 					return ctrl.Result{}, fmt.Errorf("delete mismatched statefulset: %w", delErr)
 				}
+				recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "SelfHealed",
+					"PostgreSQL StatefulSet %q had a selector that no longer matched (e.g. previously Helm-managed) — deleted it so it can be recreated cleanly", stsName)
+				selfHealActionsTotal.WithLabelValues("database", "selector_mismatch_recreate").Inc()
 				return ctrl.Result{RequeueAfter: pgRequeueDelay}, nil
 			}
 		}
@@ -543,5 +552,11 @@ func (r *PostgreSQLReconciler) deletePendingPGPodIfStale(
 	if !isPGPodStale(pod, time.Now()) {
 		return nil
 	}
-	return r.Delete(ctx, pod)
+	if err := r.Delete(ctx, pod); err != nil {
+		return err
+	}
+	recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "SelfHealed",
+		"PostgreSQL pod %q was stuck Pending for over %s — deleted it so the StatefulSet controller can create a fresh one with the current spec", podName, pgPendingPodStaleThreshold)
+	selfHealActionsTotal.WithLabelValues("database", "stale_pending_pod_delete").Inc()
+	return nil
 }

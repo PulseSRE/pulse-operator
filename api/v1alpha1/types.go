@@ -156,6 +156,23 @@ type OpenShiftPulseStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastHealthyAgentImage is the most recent agent container image observed
+	// running while the AgentReady condition was True. Used to distinguish an
+	// in-progress image upgrade (Phase=Upgrading) from an unplanned failure
+	// (Phase=Degraded), and as the rollback target if an upgrade does not
+	// become healthy within the operator's bounded upgrade window.
+	// +optional
+	LastHealthyAgentImage string `json:"lastHealthyAgentImage,omitempty"`
+	// LastHealthyUIImage is the UI-container equivalent of LastHealthyAgentImage.
+	// +optional
+	LastHealthyUIImage string `json:"lastHealthyUIImage,omitempty"`
+	// UpgradeStartedAt records when the operator first observed the desired
+	// agent or UI image differ from the last known-healthy image. Cleared
+	// once the component is healthy again (the new image succeeded, or an
+	// auto-rollback completed). Nil when no upgrade is in progress.
+	// +optional
+	UpgradeStartedAt *metav1.Time `json:"upgradeStartedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true

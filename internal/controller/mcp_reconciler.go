@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -55,6 +56,10 @@ func mcpClusterRoleName(crName, crNamespace string) string {
 type MCPReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Recorder is unused today (no self-heal site exists in this reconciler
+	// yet) but kept consistent with the other three sub-reconcilers so a
+	// future self-heal addition here doesn't need a separate wiring change.
+	Recorder record.EventRecorder
 }
 
 // reconcileMCP creates/updates MCP server resources when spec.agent.mcp.enabled is true.

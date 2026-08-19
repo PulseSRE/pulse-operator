@@ -87,8 +87,9 @@ func main() {
 		// Migrating is a deliberate follow-up, not a lint-pass change.
 		Recorder: mgr.GetEventRecorderFor("pulse-operator"), //nolint:staticcheck // SA1019: see comment above
 		UIReconciler: &controller.UIReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor("pulse-operator"), //nolint:staticcheck // SA1019: see comment above
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OpenShiftPulse")

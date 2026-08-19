@@ -11,7 +11,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -66,7 +65,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// deletion by default (see PostgreSQLReconciler.reconcilePGSecret's
 			// doc comment) — only remove them here if the CR explicitly opted
 			// into a full teardown via annotationDeleteData.
-			pg := &PostgreSQLReconciler{Client: r.Client, Scheme: r.Scheme}
+			pg := &PostgreSQLReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
 			if err := pg.deletePGDataOnRequest(ctx, pulse); err != nil {
 				r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "DeleteFailed",
 					"PostgreSQL data/credentials could not be deleted: %v", err)
@@ -102,6 +101,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		logger.Error(err, "postgres reconcile failed")
 		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "ReconcileFailed", "PostgreSQL reconcile failed: %v", err)
+		reconcileErrorsTotal.WithLabelValues("postgres").Inc()
 		return ctrl.Result{}, fmt.Errorf("reconcilePostgres: %w", err)
 	}
 	if pgResult.RequeueAfter > 0 {
@@ -117,6 +117,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if agentResult, err := r.reconcileAgent(ctx, pulse, dbURL); err != nil {
 		logger.Error(err, "agent reconcile failed")
 		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "ReconcileFailed", "Agent reconcile failed: %v", err)
+		reconcileErrorsTotal.WithLabelValues("agent").Inc()
 		return ctrl.Result{}, fmt.Errorf("reconcileAgent: %w", err)
 	} else if agentResult.RequeueAfter > 0 {
 		logger.Info("Agent reconcile requeued", "name", pulse.Name)
@@ -127,12 +128,14 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// 2a. NetworkPolicies — protect UI and PostgreSQL pods.
 	if err := r.reconcileNetworkPolicies(ctx, pulse); err != nil {
 		logger.Error(err, "network policy reconcile failed")
+		reconcileErrorsTotal.WithLabelValues("network_policies").Inc()
 		return ctrl.Result{}, fmt.Errorf("reconcileNetworkPolicies: %w", err)
 	}
 
 	// 2b. PodDisruptionBudget — protect UI when replicas > 1.
 	if err := r.reconcileUIPodsDisruptionBudget(ctx, pulse); err != nil {
 		logger.Error(err, "PDB reconcile failed")
+		reconcileErrorsTotal.WithLabelValues("pdb").Inc()
 		return ctrl.Result{}, fmt.Errorf("reconcileUIPodsDisruptionBudget: %w", err)
 	}
 
@@ -148,6 +151,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		mr := &MonitoringReconciler{Client: r.Client, Scheme: r.Scheme}
 		if err := mr.reconcileMonitoring(ctx, pulse); err != nil {
 			logger.Error(err, "monitoring reconcile failed")
+			reconcileErrorsTotal.WithLabelValues("monitoring").Inc()
 			return ctrl.Result{}, fmt.Errorf("reconcileMonitoring: %w", err)
 		}
 	}
@@ -156,9 +160,10 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// UI/Route step — the agent depends on the MCP Service being reachable, and
 	// neither should ever be blocked on the Route (an unrelated resource).
 	if pulse.Spec.Agent.MCP.Enabled {
-		mcpr := &MCPReconciler{Client: r.Client, Scheme: r.Scheme}
+		mcpr := &MCPReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
 		if err := mcpr.reconcileMCP(ctx, pulse, info); err != nil {
 			logger.Error(err, "MCP reconcile failed")
+			reconcileErrorsTotal.WithLabelValues("mcp").Inc()
 			return ctrl.Result{}, fmt.Errorf("reconcileMCP: %w", err)
 		}
 	}
@@ -167,6 +172,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	uiResult, err := r.UIReconciler.reconcileUI(ctx, pulse)
 	if err != nil {
 		logger.Error(err, "UI reconcile failed")
+		reconcileErrorsTotal.WithLabelValues("ui").Inc()
 		return ctrl.Result{}, fmt.Errorf("reconcileUI: %w", err)
 	}
 	// reconcileUI sets pulse.Status.RouteHost and pulse.Status.UIAvailable directly.
@@ -196,40 +202,25 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	prevPhase := pulse.Status.Phase
-	if agentReady && pgReady && pulse.Status.UIAvailable {
-		if prevPhase != "Running" {
-			r.Recorder.Event(pulse, corev1.EventTypeNormal, "Running", "All components are healthy")
-		}
-		pulse.Status.Phase = "Running"
-	} else if prevPhase == "Running" {
-		// Was healthy, now something is down — Degraded rather than Installing.
-		r.Recorder.Eventf(pulse, corev1.EventTypeWarning, "Degraded",
-			"Component health changed: agentHealthy=%v databaseReady=%v uiAvailable=%v",
-			agentReady, pgReady, pulse.Status.UIAvailable)
-		pulse.Status.Phase = "Degraded"
-	} else {
-		pulse.Status.Phase = "Installing"
+	_, _, agentUpgrading, uiUpgrading := r.syncPhaseAndConditions(pulse, agentReady, pgReady)
+
+	// Auto-rollback: an agent/UI image change stuck Upgrading past
+	// upgradeHealthTimeout gets reverted here. The spec patch itself
+	// triggers a fresh reconcile (this reconciler watches OpenShiftPulse
+	// directly), so return immediately rather than also writing status in
+	// this same pass — the next pass recomputes everything from the
+	// reverted spec.
+	if rolledBack, err := r.reconcileAutoRollback(ctx, pulse, agentUpgrading, uiUpgrading); err != nil {
+		reconcileErrorsTotal.WithLabelValues("auto_rollback").Inc()
+		return ctrl.Result{}, fmt.Errorf("reconcileAutoRollback: %w", err)
+	} else if rolledBack {
+		return ctrl.Result{}, nil
 	}
 
-	condition := metav1.Condition{
-		Type:               "Ready",
-		ObservedGeneration: pulse.Generation,
-	}
-	if pulse.Status.Phase == "Running" {
-		condition.Status = metav1.ConditionTrue
-		condition.Reason = "AllComponentsHealthy"
-		condition.Message = "Agent, database, and UI are healthy"
-	} else {
-		condition.Status = metav1.ConditionFalse
-		condition.Reason = "Installing"
-		condition.Message = fmt.Sprintf("agentHealthy=%v databaseReady=%v uiAvailable=%v",
-			agentReady, pgReady, pulse.Status.UIAvailable)
-	}
-	apimeta.SetStatusCondition(&pulse.Status.Conditions, condition)
 	pulse.Status.ObservedGeneration = pulse.Generation
 
 	if err := r.Status().Update(ctx, pulse); err != nil {
+		reconcileErrorsTotal.WithLabelValues("status_update").Inc()
 		return ctrl.Result{}, fmt.Errorf("status update: %w", err)
 	}
 
@@ -332,7 +323,7 @@ func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Cont
 // needs a short requeue rather than a failure — see
 // PostgreSQLReconciler.reconcilePGStatefulSet.
 func (r *OpenShiftPulseReconciler) reconcilePostgres(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, ctrl.Result, error) {
-	pg := &PostgreSQLReconciler{Client: r.Client, Scheme: r.Scheme}
+	pg := &PostgreSQLReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
 	return pg.reconcilePostgres(ctx, pulse)
 }
 
@@ -344,7 +335,7 @@ func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pu
 	logger := log.FromContext(ctx)
 	_ = dbURL // consumed via K8s Secret by the agent Deployment today; reserved for future direct injection
 
-	ar := &AgentReconciler{Client: r.Client, Scheme: r.Scheme}
+	ar := &AgentReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
 
 	type step struct {
 		name string
