@@ -397,5 +397,35 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 			Expect(ok).To(BeTrue())
 			Expect(val).To(Equal("3"))
 		})
+
+		It("injects PULSE_AGENT_ADMIN_USERS from spec.agent.adminUsers", func() {
+			cr := &pulsev1alpha1.OpenShiftPulse{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+				Spec: pulsev1alpha1.OpenShiftPulseSpec{
+					Agent: pulsev1alpha1.AgentConfig{AdminUsers: "kube:admin,sre@example.com"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+			deploy := reconcileAgent(ctx, crName, namespace)
+
+			val, ok := envVar(deploy, "PULSE_AGENT_ADMIN_USERS")
+			Expect(ok).To(BeTrue())
+			Expect(val).To(Equal("kube:admin,sre@example.com"))
+		})
+
+		It("leaves PULSE_AGENT_ADMIN_USERS unset when no admins are configured", func() {
+			// Unset and empty mean the same thing to the agent, but setting it
+			// empty would make `oc set env --list` report an admin list that
+			// does not exist.
+			cr := &pulsev1alpha1.OpenShiftPulse{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+				Spec:       pulsev1alpha1.OpenShiftPulseSpec{Agent: pulsev1alpha1.AgentConfig{}},
+			}
+			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+			deploy := reconcileAgent(ctx, crName, namespace)
+
+			_, ok := envVar(deploy, "PULSE_AGENT_ADMIN_USERS")
+			Expect(ok).To(BeFalse())
+		})
 	})
 })
