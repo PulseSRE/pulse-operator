@@ -77,6 +77,19 @@ type AgentConfig struct {
 	// +kubebuilder:validation:Maximum=4
 	// +optional
 	TrustLevel int32 `json:"trustLevel,omitempty"`
+	// AdminUsers restricts the endpoints that change how the agent itself
+	// behaves — editing skills, resetting the shared inbox, approving a fix
+	// that will act on the cluster — to a comma-separated list of usernames,
+	// as reported by the OAuth proxy (for the OpenShift kubeadmin account
+	// that is "kube:admin", not the display name).
+	//
+	// Left empty, every authenticated user may do all three. That is the
+	// agent's long-standing default, kept so an upgrade cannot lock an
+	// existing deployment out of its own skill editor — but it is the wrong
+	// posture for a cluster with more than one operator, and the agent logs a
+	// warning on every such call to say so.
+	// +optional
+	AdminUsers string `json:"adminUsers,omitempty"`
 	// +optional
 	AllowWriteOperations bool `json:"allowWriteOperations,omitempty"`
 	// +optional

@@ -516,6 +516,16 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		},
 	}
 
+	// Only set when configured. An empty value and an unset variable mean the
+	// same thing to the agent, but setting it empty would make `oc set env
+	// --list` report an admin list that does not exist.
+	if cr.Spec.Agent.AdminUsers != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PULSE_AGENT_ADMIN_USERS",
+			Value: cr.Spec.Agent.AdminUsers,
+		})
+	}
+
 	// Inject AI backend credentials.
 	if cr.Spec.VertexAI != nil && cr.Spec.VertexAI.ProjectID != "" {
 		region := cr.Spec.VertexAI.Region
