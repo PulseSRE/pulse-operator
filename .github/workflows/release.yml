@@ -8,6 +8,7 @@ on:
 env:
   OPERATOR_IMG: quay.io/amobrem/pulse-operator
   BUNDLE_IMG: quay.io/amobrem/pulse-operator-bundle
+  CATALOG_IMG: quay.io/amobrem/pulse-operator-catalog
 
 jobs:
   build-push:
@@ -54,3 +55,58 @@ jobs:
           tags: |
             ${{ env.BUNDLE_IMG }}:${{ github.ref_name }}
             ${{ env.BUNDLE_IMG }}:latest
+
+      # The catalog is what OLM actually reads. Until now it was a manual
+      # podman+opm step (Dockerfile.catalog's header and README's "Build the
+      # catalog image" both say so), which meant a tagged release published an
+      # operator image and a bundle image that no cluster could ever be offered:
+      # the CatalogSource kept serving the previous catalog. Every upgrade
+      # needed someone to remember a procedure documented in a different file.
+      #
+      # CI already holds the Quay credentials these pushes need, so the only
+      # thing that made this manual was opm not being present — and opm ships
+      # as a container image.
+      - name: Render the catalog from the pushed bundle
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Render FROM the pushed image, never from the local bundle/ dir:
+          # rendering a bare directory yields an olm.bundle with an empty
+          # image field, and OLM can then never unpack it.
+          mkdir -p catalog
+          docker run --rm quay.io/operator-framework/opm:latest \
+            render "${BUNDLE_IMG}:${RELEASE_TAG}" -o yaml > /tmp/rendered.yaml
+          test -s /tmp/rendered.yaml
+          # The channel entry carries the upgrade edge. `replaces` comes from
+          # the same git-tag lookup the CSV bump uses, so the two cannot
+          # disagree about what this release upgrades from.
+          REPLACES="$(python3 scripts/bump-bundle-version.py "$RELEASE_TAG" --print-replaces)"
+          {
+            echo "---"
+            echo "defaultChannel: alpha"
+            echo "name: pulse-operator"
+            echo "schema: olm.package"
+            echo "---"
+            echo "entries:"
+            echo "- name: pulse-operator.${RELEASE_TAG}"
+            if [ -n "$REPLACES" ]; then
+              echo "  replaces: pulse-operator.v${REPLACES}"
+            fi
+            echo "name: alpha"
+            echo "package: pulse-operator"
+            echo "schema: olm.channel"
+            cat /tmp/rendered.yaml
+          } > catalog/full-catalog.yaml
+      - name: Build and push catalog image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.catalog
+          push: true
+          # linux/amd64 explicitly: cluster nodes are x86, and a runner-native
+          # arm64 build would produce a catalog pod that will not start.
+          platforms: linux/amd64
+          tags: |
+            ${{ env.CATALOG_IMG }}:${{ github.ref_name }}
+            ${{ env.CATALOG_IMG }}:latest
