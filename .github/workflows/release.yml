@@ -75,12 +75,23 @@ jobs:
           # rendering a bare directory yields an olm.bundle with an empty
           # image field, and OLM can then never unpack it.
           mkdir -p catalog
+          # Take the opm digest from Dockerfile.catalog rather than naming it
+          # here. Dependabot's docker ecosystem watches Dockerfiles, not a
+          # `docker run` inside a workflow, so a second copy of the digest
+          # would never be bumped and would drift away from the file beside
+          # it — silently, since both would still work. Reading it means the
+          # Dockerfile stays the single source of truth and Dependabot's bump
+          # applies to both. It also inherits that pin's linux/amd64 choice,
+          # which that file explains at length.
+          #
           # opm renders through containers/image, which refuses to pull without
           # a signature policy and finds none inside the opm image — it searches
           # /.config, /etc and /usr/share/containers and the first release to
           # reach this step died on exactly that. Supply the permissive policy;
           # the only image being pulled is the bundle this same job just built
           # and pushed a step earlier.
+          OPM_IMAGE="$(grep -oE 'quay\.io/operator-framework/opm@sha256:[0-9a-f]{64}' Dockerfile.catalog | head -1)"
+          test -n "$OPM_IMAGE"  # a rename or unpinning there must fail here, not silently use :latest
           printf '{"default":[{"type":"insecureAcceptAnything"}]}' > /tmp/policy.json
           # And the registry credentials: `docker login` wrote them to the
           # runner's config, but the opm container has its own filesystem and
@@ -90,7 +101,7 @@ jobs:
             -v /tmp/policy.json:/etc/containers/policy.json:ro \
             -v "${HOME}/.docker/config.json:/tmp/auth.json:ro" \
             -e REGISTRY_AUTH_FILE=/tmp/auth.json \
-            quay.io/operator-framework/opm:latest \
+            "$OPM_IMAGE" \
             render "${BUNDLE_IMG}:${RELEASE_TAG}" -o yaml > /tmp/rendered.yaml
           test -s /tmp/rendered.yaml
           # The channel entry carries the upgrade edge. `replaces` comes from
