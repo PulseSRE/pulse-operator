@@ -75,7 +75,22 @@ jobs:
           # rendering a bare directory yields an olm.bundle with an empty
           # image field, and OLM can then never unpack it.
           mkdir -p catalog
-          docker run --rm quay.io/operator-framework/opm:latest \
+          # opm renders through containers/image, which refuses to pull without
+          # a signature policy and finds none inside the opm image — it searches
+          # /.config, /etc and /usr/share/containers and the first release to
+          # reach this step died on exactly that. Supply the permissive policy;
+          # the only image being pulled is the bundle this same job just built
+          # and pushed a step earlier.
+          printf '{"default":[{"type":"insecureAcceptAnything"}]}' > /tmp/policy.json
+          # And the registry credentials: `docker login` wrote them to the
+          # runner's config, but the opm container has its own filesystem and
+          # cannot see them. Without this a private bundle repo is a 401 here
+          # even though every other step in this job can push to it.
+          docker run --rm \
+            -v /tmp/policy.json:/etc/containers/policy.json:ro \
+            -v "${HOME}/.docker/config.json:/tmp/auth.json:ro" \
+            -e REGISTRY_AUTH_FILE=/tmp/auth.json \
+            quay.io/operator-framework/opm:latest \
             render "${BUNDLE_IMG}:${RELEASE_TAG}" -o yaml > /tmp/rendered.yaml
           test -s /tmp/rendered.yaml
           # The channel entry carries the upgrade edge. `replaces` comes from
