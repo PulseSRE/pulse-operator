@@ -110,6 +110,13 @@ def main() -> None:
         "Omitted, it is derived from the repo's git tags. Pass an empty string to force "
         "no replaces at all (the very first release).",
     )
+    parser.add_argument(
+        "--print-replaces",
+        action="store_true",
+        help="print the derived previous version and exit, changing nothing. Used by "
+        "release.yml to build the catalog's channel entry from the same tag lookup "
+        "the CSV uses, so the two cannot disagree about what this release upgrades from.",
+    )
     args = parser.parse_args()
 
     version = semver(args.version, "version")
@@ -122,6 +129,10 @@ def main() -> None:
 
     if previous == version:
         raise SystemExit(f"--replaces {args.replaces!r} is the version being released — refusing to self-replace")
+
+    if args.print_replaces:
+        print(previous)
+        return
 
     text = CSV_PATH.read_text()
 
