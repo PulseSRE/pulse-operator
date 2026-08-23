@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -76,6 +77,23 @@ var _ = Describe("Controller behavior — AUDIT regression tests", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
 
 			for _, rule := range clusterRole.Rules {
+				// TokenReview is exempt, and only TokenReview.
+				//
+				// It is a "create" in the REST sense only: you POST a bearer
+				// token and the API server answers who it belongs to. Nothing
+				// is persisted and no access is granted, so it cannot mutate
+				// the cluster — which is the property this test defends.
+				//
+				// The agent needs it because the oauth-proxy runs without
+				// --pass-user-headers, so X-Forwarded-User never arrives and a
+				// TokenReview is the only way to learn who is calling. Without
+				// it every admin-gated endpoint answers 403 for everyone.
+				if slices.Contains(rule.APIGroups, "authentication.k8s.io") {
+					Expect(rule.Resources).To(ConsistOf("tokenreviews"),
+						"the authentication exemption covers TokenReview and nothing else")
+					Expect(rule.Verbs).To(ConsistOf("create"))
+					continue
+				}
 				for _, verb := range rule.Verbs {
 					Expect(verb).NotTo(BeElementOf("delete", "patch", "update", "create"),
 						"write verbs must not appear in default ClusterRole")

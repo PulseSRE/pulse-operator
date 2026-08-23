@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -251,6 +252,49 @@ var _ = Describe("AgentReconciler", func() {
 
 	// Regression: two OpenShiftPulse CRs sharing a name in different
 	// namespaces must not collide on one shared cluster-scoped
+	// Identity resolution. The oauth-proxy runs with --pass-access-token but
+	// not --pass-user-headers, so X-Forwarded-User never arrives and the agent
+	// must resolve the bearer token through TokenReview. Without permission to
+	// create one it falls back to a token-derived pseudonym, "user-<hash>",
+	// which can never appear in PULSE_AGENT_ADMIN_USERS — so every admin-gated
+	// endpoint answers 403 regardless of who is signed in. Measured on the
+	// reference cluster: approving a fix as kubeadmin was rejected as
+	// "non-admin user 'user-5451b787f74974ba'".
+	It("lets the agent authenticate the caller, so admin endpoints can recognise a real user", func() {
+		Expect(reconciler.reconcileClusterRole(ctx, cr)).To(Succeed())
+
+		role := &rbacv1.ClusterRole{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, role)).To(Succeed())
+
+		var found bool
+		for _, rule := range role.Rules {
+			if slices.Contains(rule.APIGroups, "authentication.k8s.io") &&
+				slices.Contains(rule.Resources, "tokenreviews") &&
+				slices.Contains(rule.Verbs, "create") {
+				found = true
+			}
+		}
+		Expect(found).To(BeTrue(), "agent ClusterRole must allow creating tokenreviews")
+	})
+
+	It("does not hand the agent any authorisation power along with authentication", func() {
+		// TokenReview answers "who is this"; SubjectAccessReview answers "may
+		// they". The agent needs the first and must not quietly acquire the
+		// second, nor any write verb on identity resources.
+		Expect(reconciler.reconcileClusterRole(ctx, cr)).To(Succeed())
+
+		role := &rbacv1.ClusterRole{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, role)).To(Succeed())
+
+		for _, rule := range role.Rules {
+			if slices.Contains(rule.APIGroups, "authentication.k8s.io") {
+				Expect(rule.Resources).To(ConsistOf("tokenreviews"))
+				Expect(rule.Verbs).To(ConsistOf("create"))
+			}
+			Expect(rule.APIGroups).NotTo(ContainElement("authorization.k8s.io"))
+		}
+	})
+
 	// ClusterRole/ClusterRoleBinding — the CSV declares AllNamespaces as the
 	// only supported install mode, so this is an expected shape, not an edge case.
 	It("namespace-qualifies the agent ClusterRole/Binding so two CRs with the same name in different namespaces don't collide", func() {

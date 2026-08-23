@@ -257,6 +257,30 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 			Annotations: clusterScopedAnnotations(cr),
 		},
 		Rules: []rbacv1.PolicyRule{
+			// Resolve the caller's identity.
+			//
+			// The oauth-proxy in front of the UI runs with --pass-access-token
+			// but not --pass-user-headers, so X-Forwarded-User never arrives and
+			// the agent resolves the bearer token via TokenReview instead.
+			// Without this rule that call fails and the agent falls back to a
+			// token-derived pseudonym, "user-<hash>".
+			//
+			// That pseudonym can never match PULSE_AGENT_ADMIN_USERS, so every
+			// admin-gated endpoint answered 403 no matter who was signed in.
+			// Measured on the reference cluster: approving a proposed fix as
+			// kubeadmin logged "Rejected skill mutation by non-admin user
+			// 'user-5451b787f74974ba'" — the trust-level-2 approval flow, which
+			// is the entire point of proposing fixes rather than applying them,
+			// was unreachable for everyone.
+			//
+			// This is the same grant as the system:auth-delegator ClusterRole,
+			// spelled out here so the agent's permissions stay readable in one
+			// place. It authenticates tokens; it grants no access to anything.
+			{
+				APIGroups: []string{"authentication.k8s.io"},
+				Resources: []string{"tokenreviews"},
+				Verbs:     []string{"create"},
+			},
 			{
 				APIGroups: []string{""},
 				Resources: []string{
