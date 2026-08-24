@@ -396,6 +396,13 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 			val, ok := envVar(deploy, "PULSE_AGENT_TRUST_LEVEL")
 			Expect(ok).To(BeTrue())
 			Expect(val).To(Equal("3"))
+
+			// The name the agent's settings actually bind. Only the legacy name
+			// was injected before, so spec.agent.trustLevel never reached the
+			// agent — it gated at its built-in default of 2 regardless of the CR.
+			val, ok = envVar(deploy, "PULSE_AGENT_MAX_TRUST_LEVEL")
+			Expect(ok).To(BeTrue())
+			Expect(val).To(Equal("3"))
 		})
 
 		It("injects PULSE_AGENT_ADMIN_USERS from spec.agent.adminUsers", func() {

@@ -535,7 +535,16 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 			},
 		},
 		{
+			// Legacy name, kept so an older agent image keeps seeing what it
+			// always saw. No agent release ever read it — which meant
+			// spec.agent.trustLevel silently did nothing on every deployment.
 			Name:  "PULSE_AGENT_TRUST_LEVEL",
+			Value: strconv.Itoa(int(cr.Spec.Agent.TrustLevel)),
+		},
+		{
+			// The name the agent's settings actually bind (agents >= 2.23 also
+			// accept the legacy name as an alias; this one wins when both are set).
+			Name:  "PULSE_AGENT_MAX_TRUST_LEVEL",
 			Value: strconv.Itoa(int(cr.Spec.Agent.TrustLevel)),
 		},
 	}
