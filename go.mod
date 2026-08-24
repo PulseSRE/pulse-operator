@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.6
 
 require (
-	github.com/Masterminds/semver/v3 v3.4.0
+	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.42.1
 	github.com/openshift/api v0.0.0-20260813212709-d4bb0b443cb8
