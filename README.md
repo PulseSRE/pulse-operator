@@ -90,7 +90,7 @@ no skew rather than guessing.
 ### Why the operator's version differs
 
 The operator versions independently of the Pulse application it deploys. As of
-this release the operator is **v0.5.0** while the agent and UI ship **v2.26.1**
+this release the operator is **v0.5.1** while the agent and UI ship **v2.27.0**
 — that gap is deliberate, not drift:
 
 - The operator's version tracks *its own* API and reconcile behaviour. The CRD

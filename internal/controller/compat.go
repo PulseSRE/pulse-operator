@@ -53,7 +53,7 @@ import (
 // version-bump step that tags future releases is responsible for keeping this
 // constant in sync; it is deliberately not touched by anything else in
 // this change.
-const OperatorVersion = "0.5.0"
+const OperatorVersion = "0.5.1"
 
 // agentVersionCompatible reports whether this operator build satisfies
 // cr.Spec.Agent.MinOperatorVersion, and an explanatory message when it does
