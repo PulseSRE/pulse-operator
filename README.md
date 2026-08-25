@@ -68,8 +68,29 @@ Without this annotation, `{name}-pg-auth` and the pg-data PVC are left behind af
 
 ## Versioning
 
+### Agent/UI version skew
+
+The agent and UI ship as a pair under one version number, so the operator
+compares the two tags pinned in the CR and reports the verdict as an
+`AgentUIVersionsMatch` status condition:
+
+```bash
+oc get openshiftpulse pulse -n openshiftpulse \
+  -o jsonpath='{.status.conditions[?(@.type=="AgentUIVersionsMatch")]}{"\n"}'
+```
+
+This compares the two pinned tags against each other, not against the newest
+published release — that needs no network call in the reconcile path, stays
+deterministic, and does not nag clusters that have deliberately stayed on an
+older version. It reports and never blocks: an upgrade patches the two images
+moments apart, and blocking on the resulting transient mismatch would wedge the
+very rollout that clears it. Digest pins, `latest`, and unset images all report
+no skew rather than guessing.
+
+### Why the operator's version differs
+
 The operator versions independently of the Pulse application it deploys. As of
-this release the operator is **v0.5.0** while the agent and UI ship **v2.26.0**
+this release the operator is **v0.5.0** while the agent and UI ship **v2.26.1**
 — that gap is deliberate, not drift:
 
 - The operator's version tracks *its own* API and reconcile behaviour. The CRD

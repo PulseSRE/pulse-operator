@@ -769,6 +769,15 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 		recordEvent(r.Recorder, cr, corev1.EventTypeWarning, "IncompatibleVersion", "%s", incompatMessage)
 	}
 
+	// Agent/UI image skew (see skew.go). Reports only — a rollout patches the
+	// two images moments apart, so a transient mismatch is normal and blocking
+	// would wedge the upgrade that resolves it.
+	skewed, skewMessage := agentUIVersionSkew(cr)
+	setVersionSkewCondition(cr, skewed, skewMessage)
+	if skewed {
+		recordEvent(r.Recorder, cr, corev1.EventTypeWarning, "AgentUIVersionSkew", "%s", skewMessage)
+	}
+
 	existing := &appsv1.Deployment{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cr.Namespace}, existing)
 	if getErr != nil && !errors.IsNotFound(getErr) {
