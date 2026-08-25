@@ -66,6 +66,27 @@ Without this annotation, `{name}-pg-auth` and the pg-data PVC are left behind af
 
 ---
 
+## Versioning
+
+The operator versions independently of the Pulse application it deploys. As of
+this release the operator is **v0.5.0** while the agent and UI ship **v2.26.0**
+— that gap is deliberate, not drift:
+
+- The operator's version tracks *its own* API and reconcile behaviour. The CRD
+  is still `v1alpha1`, and a 0.x version says so honestly.
+- OLM upgrade graphs are monotonic. Folding the operator into the application's
+  2.x stream would be irreversible, and would force an operator release, bundle
+  rebuild, catalog render and a cluster-wide OLM upgrade for every application
+  patch — including releases that change nothing in the operator.
+- The application version is already carried explicitly, per instance, in
+  `spec.agent.image` on the OpenShiftPulse CR. That is the field to look at to
+  answer "which Pulse am I running", and it is deliberately decoupled from the
+  operator that reconciles it.
+
+`OperatorVersion` in `internal/controller/compat.go` is the operator build's own
+version and must be bumped with each release; `version_guard_test.go` fails the
+build if it falls behind the latest git tag.
+
 ## Prerequisites
 
 > **OpenShift only — this will not install on vanilla Kubernetes.** The operator
