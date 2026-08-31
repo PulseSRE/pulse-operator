@@ -7,7 +7,7 @@ toolchain go1.26.6
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/onsi/ginkgo/v2 v2.32.1
-	github.com/onsi/gomega v1.42.1
+	github.com/onsi/gomega v1.43.0
 	github.com/openshift/api v0.0.0-20260813212709-d4bb0b443cb8
 	github.com/prometheus/client_golang v1.23.2
 	k8s.io/api v0.36.3
