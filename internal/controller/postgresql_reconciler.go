@@ -62,6 +62,9 @@ func (r *PostgreSQLReconciler) reconcilePostgres(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
 ) (string, ctrl.Result, error) {
+	if err := r.reconcilePGStartScripts(ctx, pulse); err != nil {
+		return "", ctrl.Result{}, fmt.Errorf("pg start scripts: %w", err)
+	}
 	logger := log.FromContext(ctx)
 
 	secretName := pulse.Name + "-pg-auth"
@@ -226,6 +229,31 @@ func (r *PostgreSQLReconciler) reconcilePGSecret(
 // returning it as an error used to surface as a Warning ReconcileFailed
 // event with exponential backoff, making a healthy self-heal look like a
 // broken operator.
+// reconcilePGStartScripts maintains the {name}-pg-start ConfigMap. The
+// postgresql image runs every *.sh in /opt/app-root/src/postgresql-start/ on
+// each container start; the one script here grants CREATEDB to the app user so
+// Temporal's auto-setup can create its temporal/temporal_visibility databases
+// (verified missing on dev05: "pq: permission denied to create database").
+//
+// The mount lands only when the StatefulSet pod template is (re)built — it is
+// create-only, guarded below — so existing installs enabling Temporal need the
+// documented one-time grant; fresh installs work out of the box.
+func (r *PostgreSQLReconciler) reconcilePGStartScripts(ctx context.Context, pulse *v1alpha1.OpenShiftPulse) error {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: pulse.Name + "-pg-start", Namespace: pulse.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		if setErr := controllerutil.SetControllerReference(pulse, cm, r.Scheme); setErr != nil {
+			return setErr
+		}
+		cm.Data = map[string]string{
+			"grant-createdb.sh": "#!/bin/sh\n" +
+				"# Local peer auth as postgres; idempotent on every start.\n" +
+				"psql -U postgres -c \"ALTER USER \\\"$POSTGRESQL_USER\\\" CREATEDB;\" || true\n",
+		}
+		return nil
+	})
+	return err
+}
+
 func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	ctx context.Context,
 	pulse *v1alpha1.OpenShiftPulse,
@@ -358,6 +386,9 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 					// Do not set RunAsUser — hardcoding 26 (postgres uid) is rejected by
 					// restricted-v2 SCC which enforces namespace-allocated UID ranges.
 					SecurityContext: defaultPodSecCtx(nil),
+					Volumes: []corev1.Volume{
+						{Name: "pg-start", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: pulse.Name + "-pg-start"}}}},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:  "postgresql",
@@ -382,6 +413,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "pg-data", MountPath: "/var/lib/pgsql/data"},
+								{Name: "pg-start", MountPath: "/opt/app-root/src/postgresql-start"},
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler:        pgProbeHandler,

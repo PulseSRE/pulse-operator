@@ -99,6 +99,24 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}}
 		deploy.Spec.Template.Labels = map[string]string{"app": name}
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil)
+		// auto-setup renders its config into /etc/temporal/config at startup.
+		// In the image that directory is owned by UID 1000; OpenShift runs the
+		// pod as an arbitrary UID, so the write fails (verified on dev05:
+		// "unable to create open /etc/temporal/config/docker.yaml: permission
+		// denied"). An init container copies the shipped templates into an
+		// emptyDir, which any UID can write, and the server reads from there.
+		deploy.Spec.Template.Spec.Volumes = []corev1.Volume{
+			{Name: "temporal-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		}
+		deploy.Spec.Template.Spec.InitContainers = []corev1.Container{
+			{
+				Name:            "config-template",
+				Image:           image,
+				Command:         []string{"sh", "-c", "cp -a /etc/temporal/config/. /config-work/"},
+				SecurityContext: defaultContainerSecCtx(),
+				VolumeMounts:    []corev1.VolumeMount{{Name: "temporal-config", MountPath: "/config-work"}},
+			},
+		}
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{
 			{
 				Name:  "temporal",
@@ -133,7 +151,8 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
 					}},
 				},
-				Ports: []corev1.ContainerPort{{Name: "frontend", ContainerPort: temporalFrontendPort}},
+				VolumeMounts: []corev1.VolumeMount{{Name: "temporal-config", MountPath: "/etc/temporal/config"}},
+				Ports:        []corev1.ContainerPort{{Name: "frontend", ContainerPort: temporalFrontendPort}},
 				// Schema setup against a cold PostgreSQL can take a while on
 				// first boot; a TCP check on the frontend is the honest signal
 				// that the server actually came up.

@@ -72,7 +72,16 @@ var _ = Describe("TemporalReconciler", func() {
 			deploy := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-temporal", Namespace: namespace}, deploy)).To(Succeed())
 
+			// OpenShift runs pods as an arbitrary UID; the image's config dir is
+			// UID-1000-owned. The init container copies templates into an
+			// emptyDir the server then reads — without this the pod crash-loops
+			// on "permission denied" (observed on dev05).
+			Expect(deploy.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			Expect(deploy.Spec.Template.Spec.InitContainers[0].Command[2]).To(ContainSubstring("cp -a /etc/temporal/config/."))
+			Expect(deploy.Spec.Template.Spec.Volumes[0].Name).To(Equal("temporal-config"))
+
 			c := deploy.Spec.Template.Spec.Containers[0]
+			Expect(c.VolumeMounts[0].MountPath).To(Equal("/etc/temporal/config"))
 			Expect(c.Image).To(Equal(defaultTemporalImage))
 
 			env := map[string]corev1.EnvVar{}

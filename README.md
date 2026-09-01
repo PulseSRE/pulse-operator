@@ -382,6 +382,16 @@ agent, which enables its durable plan-run endpoints (agent docs/TEMPORAL.md).
 This is the dev-grade single-container topology; a production topology
 (separated services, dedicated visibility store) is a deliberate later step.
 
+**Enabling on an existing install:** the CREATEDB grant that lets Temporal
+create its databases ships as a postgresql-start script, but the PostgreSQL
+pod template is create-only — fresh installs get it automatically, existing
+installs need the one-time grant:
+
+```bash
+oc exec -n <ns> <name>-openshift-sre-agent-postgresql-0 -- \
+  sh -c 'psql -U postgres -c "ALTER USER \"$POSTGRESQL_USER\" CREATEDB;"'
+```
+
 ## CR Status
 
 ```yaml

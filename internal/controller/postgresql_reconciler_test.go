@@ -442,3 +442,25 @@ var _ = Describe("PostgreSQLReconciler", func() {
 		})
 	})
 })
+
+var _ = Describe("PostgreSQL start scripts", func() {
+	It("maintains the grant-createdb ConfigMap the pod template mounts", func() {
+		const crName = "pg-start-pulse"
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: "default"},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		pg := &PostgreSQLReconciler{Client: k8sClient, Scheme: testScheme}
+		Expect(pg.reconcilePGStartScripts(testCtx, cr)).To(Succeed())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: crName + "-pg-start", Namespace: "default"}, cm)).To(Succeed())
+		script := cm.Data["grant-createdb.sh"]
+		// The exact failure this prevents: Temporal auto-setup dying with
+		// "pq: permission denied to create database".
+		Expect(script).To(ContainSubstring(`ALTER USER \"$POSTGRESQL_USER\" CREATEDB`))
+		Expect(script).To(ContainSubstring("|| true"), "must stay idempotent and non-fatal on every start")
+	})
+})
