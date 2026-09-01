@@ -10,6 +10,12 @@ actually contains, taken from its commits.
 - The Temporal config init container copies with `cp -r` rather than `cp -a`. An arbitrary UID cannot chown the copies, so `-a` fails to preserve ownership on every file; busybox only warns, but GNU coreutils exits non-zero — which would hard-fail the init container under a `spec.temporal.image` override built on a coreutils base
 - The envtest for that Deployment now asserts the two halves are wired *to each other* — the server container mounts the same volume the init container populates, over the path it reads — instead of checking each half in isolation, which is how a disconnected pair passed CI
 
+## v0.8.1 (2026-09-01)
+
+### Fixed
+- `OperatorVersion` in compat.go said `0.7.0` inside the v0.8.0 image — the tag shipped before the constant was bumped, the second time this exact drift has happened (v0.4.0 was the first). The in-repo guard test can only compare against tags that already exist, so by construction it fires one release too late
+- The release workflow now refuses to build any image when the constant does not match the tag. The guard test still catches drift on main between releases; the workflow gate catches it at the moment that matters
+
 ## v0.8.0 (2026-09-01)
 
 ### `spec.temporal.ui` — the workflow audit trail, visible

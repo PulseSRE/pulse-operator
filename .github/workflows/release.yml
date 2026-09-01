@@ -24,6 +24,24 @@ jobs:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_TOKEN }}
+      - name: OperatorVersion constant must match the tag
+        # This has now drifted twice (v0.4.0 and v0.8.0): the tag ships an
+        # image whose compat.go constant still names the previous release,
+        # because the in-repo guard test can only compare against tags that
+        # already exist — it fires one release too late by construction. The
+        # release is the moment the constant and the tag must agree, so check
+        # it here, before any image is built or pushed.
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          want="${RELEASE_TAG#v}"
+          have="$(grep -oE 'const OperatorVersion = "[0-9.]+"' internal/controller/compat.go | grep -oE '[0-9.]+')"
+          if [ "$have" != "$want" ]; then
+            echo "::error::compat.go says OperatorVersion=$have but the tag is $RELEASE_TAG. Bump the constant, commit, and re-tag."
+            exit 1
+          fi
+          echo "OperatorVersion $have matches $RELEASE_TAG"
       - name: Build and push operator image
         uses: docker/build-push-action@v7
         with:
