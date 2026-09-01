@@ -5,6 +5,26 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## v0.8.0 (2026-09-01)
+
+### `spec.temporal.ui` — the workflow audit trail, visible
+- `ui: true` under `spec.temporal` deploys the Temporal Web UI (`{name}-temporal-ui`, pinned image) pointed at the CR's own server. Every run's full history — each activity attempt, retry with its backoff, durable timer, approval signal — becomes inspectable without a CLI. Off by default: it is an extra surface, and the agent does not need it to run workflows
+- A Service but deliberately **no Route**, with a test asserting none is created. The Temporal UI ships with no authentication and offers a terminate button to anyone who can load it; on a cluster with public Routes that would be an unauthed kill switch for every in-flight fix. `oc port-forward svc/{name}-temporal-ui 8080:8080`, or front it with an oauth-proxy first
+
+### Fixed
+- `durableAutoFix` moved to its generated (alphabetical) position in the CRD — hand-placed after the resources block, `make generate manifests` produced a diff and the CRD-sync CI job went red. The generator's output is the spec, not a starting point
+
+## v0.7.0 (2026-09-01)
+
+### `spec.agent.durableAutoFix` — route auto-fix through the durable workflow
+- Sets `PULSE_AGENT_DURABLE_AUTOFIX` on the agent Deployment, routing the monitor's autonomous fixes through the agent's Temporal incident workflow (agent v2.29.0). Off by default; requires `spec.temporal.enabled`, and the agent falls back to inline execution when the server is unreachable
+- Also resolves the v0.6.0 known-issue note: the "mounts no volumes" symptom was version skew between the deployed operator and a live prototype, not a reconciler bug
+
+## v0.6.1 (2026-09-01)
+
+### `spec.temporal` boots on OpenShift
+- Codifies the two first-boot fixes discovered live on dev05 (see v0.6.0's known issue): the config-template init container with its emptyDir mount is now set by the reconciler as one atomic container-list write, and the `CREATEDB` grant ships as a `postgresql-start` script for fresh installs
+
 ## v0.6.0 (2026-09-01)
 
 ### `spec.temporal` — an operator-managed Temporal for durable plan runs
