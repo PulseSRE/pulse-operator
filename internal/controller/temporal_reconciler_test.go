@@ -76,13 +76,33 @@ var _ = Describe("TemporalReconciler", func() {
 			// UID-1000-owned. The init container copies templates into an
 			// emptyDir the server then reads — without this the pod crash-loops
 			// on "permission denied" (observed on dev05).
-			Expect(deploy.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-			Expect(deploy.Spec.Template.Spec.InitContainers[0].Command[2]).To(ContainSubstring("cp -a /etc/temporal/config/."))
-			Expect(deploy.Spec.Template.Spec.Volumes[0].Name).To(Equal("temporal-config"))
-
-			c := deploy.Spec.Template.Spec.Containers[0]
-			Expect(c.VolumeMounts[0].MountPath).To(Equal("/etc/temporal/config"))
+			podSpec := deploy.Spec.Template.Spec
+			c := podSpec.Containers[0]
 			Expect(c.Image).To(Equal(defaultTemporalImage))
+
+			Expect(podSpec.InitContainers).To(HaveLen(1))
+			initC := podSpec.InitContainers[0]
+			Expect(initC.Command[2]).To(ContainSubstring("cp -r " + temporalConfigDir + "/."))
+			// Not -a: preserving ownership fails for an arbitrary UID, and GNU
+			// coreutils turns that into a non-zero exit.
+			Expect(initC.Command[2]).NotTo(ContainSubstring("cp -a"))
+
+			// The halves have to be wired to each other, not merely both
+			// present: v0.6.0 shipped an init container populating a volume the
+			// server never mounted, and every assertion about the two in
+			// isolation still passed while the pod crash-looped. Resolve the
+			// volume the init container writes, then require the server to
+			// mount that same volume over the path it reads.
+			initTarget := mountPathFor(initC, temporalConfigVolume)
+			Expect(initTarget).NotTo(BeEmpty(), "init container must populate the config volume")
+			Expect(podSpec.Volumes).To(ContainElement(SatisfyAll(
+				HaveField("Name", temporalConfigVolume),
+				HaveField("VolumeSource.EmptyDir", Not(BeNil())),
+			)), "the shared config volume must be an emptyDir any UID can write")
+			Expect(mountPathFor(c, temporalConfigVolume)).To(Equal(temporalConfigDir),
+				"the server must mount the very volume the init container populates, over the "+
+					"config dir it reads — otherwise the templates go to %s and the server still "+
+					"reads the unwritable image path", initTarget)
 
 			env := map[string]corev1.EnvVar{}
 			for _, e := range c.Env {
@@ -115,3 +135,14 @@ var _ = Describe("TemporalReconciler", func() {
 		})
 	})
 })
+
+// mountPathFor returns where container mounts the named volume, or "" if it
+// does not mount it at all — the disconnected case this suite exists to catch.
+func mountPathFor(container corev1.Container, volume string) string {
+	for _, m := range container.VolumeMounts {
+		if m.Name == volume {
+			return m.MountPath
+		}
+	}
+	return ""
+}

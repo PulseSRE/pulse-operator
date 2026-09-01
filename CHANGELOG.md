@@ -5,6 +5,11 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## Unreleased
+
+- The Temporal config init container copies with `cp -r` rather than `cp -a`. An arbitrary UID cannot chown the copies, so `-a` fails to preserve ownership on every file; busybox only warns, but GNU coreutils exits non-zero — which would hard-fail the init container under a `spec.temporal.image` override built on a coreutils base
+- The envtest for that Deployment now asserts the two halves are wired *to each other* — the server container mounts the same volume the init container populates, over the path it reads — instead of checking each half in isolation, which is how a disconnected pair passed CI
+
 ## v0.6.0 (2026-09-01)
 
 ### `spec.temporal` — an operator-managed Temporal for durable plan runs
@@ -16,14 +21,9 @@ actually contains, taken from its commits.
 ### Two first-boot failures, found on a live cluster
 - The auto-setup image renders config into `/etc/temporal/config`, owned by UID 1000 in the image, while OpenShift assigns an arbitrary UID — the pod crash-looped on "permission denied". A `config-template` init container copies the shipped templates into an `emptyDir` any UID can write
 - The app PostgreSQL user has no `CREATEDB`, so schema setup died with `pq: permission denied to create database`. Fixed with a `postgresql-start` script
-
-> **Known issue (open):** the permission fix is incomplete on dev05 as of
-> 2026-09-01. The init container writes the templates into the `temporal-config`
-> emptyDir, but the **server container mounts no volumes at all**, so it still
-> reads and writes the image's `/etc/temporal/config` and crash-loops with the
-> original `unable to create open /etc/temporal/config/docker.yaml: permission
-> denied`. The emptyDir needs mounting at `/etc/temporal/config` in the main
-> container.
+- Both were prototyped live on the Deployment before being codified, and both are now covered rather than left as tribal knowledge
+- Verified end to end on dev05 on 2026-09-01: `pulse-temporal` reaches `1/1 Running`, auto-setup creates `temporal` and `temporal_visibility`, and the frontend, matching and worker services start
+- The `CREATEDB` grant rides the PostgreSQL pod template, which is create-only. **Enabling Temporal on an install that already has a PostgreSQL pod needs the one-time grant from the README** — without it the server clears the config-permission error and then crash-loops on `permission denied to create database` instead, which reads like the same bug and is not
 
 ## v0.5.1 (2026-08-25)
 
