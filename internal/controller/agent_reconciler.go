@@ -617,6 +617,13 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		})
 	}
 
+	if cr.Spec.Agent.DurableAutoFix != nil && *cr.Spec.Agent.DurableAutoFix {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PULSE_AGENT_DURABLE_AUTOFIX",
+			Value: "true",
+		})
+	}
+
 	if info != nil && info.ACMAvailable {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PULSE_AGENT_ACM_THANOS_ENABLED",

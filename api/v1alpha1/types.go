@@ -94,6 +94,12 @@ type AgentConfig struct {
 	// +kubebuilder:validation:Maximum=4
 	// +optional
 	TrustLevel int32 `json:"trustLevel,omitempty"`
+	// DurableAutoFix routes auto-fix execution through the durable incident
+	// workflow instead of running it inline, so the sequence a pod restart
+	// currently loses — apply, verify, settle, recheck — survives. Requires
+	// spec.temporal.enabled; without it the agent falls back to inline.
+	// +optional
+	DurableAutoFix *bool `json:"durableAutoFix,omitempty"`
 	// AdminUsers restricts the endpoints that change how the agent itself
 	// behaves — editing skills, resetting the shared inbox, approving a fix
 	// that will act on the cluster — to a comma-separated list of usernames,
