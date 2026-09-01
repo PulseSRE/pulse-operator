@@ -48,6 +48,15 @@ const temporalUIPort = 8080
 
 const temporalFrontendPort = 7233
 
+// The config directory auto-setup renders into, and the emptyDir that shadows
+// it. Named constants because the init container and the server container have
+// to agree: the init container populates the volume, the server mounts it at
+// the path it actually reads. Shipping one half without the other crash-loops.
+const (
+	temporalConfigDir    = "/etc/temporal/config"
+	temporalConfigVolume = "temporal-config"
+)
+
 type TemporalReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -197,15 +206,21 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 		// denied"). An init container copies the shipped templates into an
 		// emptyDir, which any UID can write, and the server reads from there.
 		deploy.Spec.Template.Spec.Volumes = []corev1.Volume{
-			{Name: "temporal-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: temporalConfigVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		}
 		deploy.Spec.Template.Spec.InitContainers = []corev1.Container{
 			{
-				Name:            "config-template",
-				Image:           image,
-				Command:         []string{"sh", "-c", "cp -a /etc/temporal/config/. /config-work/"},
+				Name:  "config-template",
+				Image: image,
+				// -r, not -a: an arbitrary UID cannot chown the copies, so
+				// preserving ownership fails on every file. busybox only warns
+				// and still exits 0, but GNU coreutils exits 1 — which would
+				// hard-fail this init container under a spec.temporal.image
+				// override built on a coreutils base. Nothing here needs the
+				// source ownership; the server only reads these files.
+				Command:         []string{"sh", "-c", "cp -r " + temporalConfigDir + "/. /config-work/"},
 				SecurityContext: defaultContainerSecCtx(),
-				VolumeMounts:    []corev1.VolumeMount{{Name: "temporal-config", MountPath: "/config-work"}},
+				VolumeMounts:    []corev1.VolumeMount{{Name: temporalConfigVolume, MountPath: "/config-work"}},
 			},
 		}
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{
@@ -242,7 +257,10 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
 					}},
 				},
-				VolumeMounts: []corev1.VolumeMount{{Name: "temporal-config", MountPath: "/etc/temporal/config"}},
+				// The other half of the init container above: without this
+				// mount the templates land in the emptyDir and the server still
+				// reads — and fails to write — the image path.
+				VolumeMounts: []corev1.VolumeMount{{Name: temporalConfigVolume, MountPath: temporalConfigDir}},
 				Ports:        []corev1.ContainerPort{{Name: "frontend", ContainerPort: temporalFrontendPort}},
 				// Schema setup against a cold PostgreSQL can take a while on
 				// first boot; a TCP check on the frontend is the honest signal

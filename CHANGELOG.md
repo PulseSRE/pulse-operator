@@ -5,6 +5,12 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## Unreleased
+
+- The Temporal config init container copies with `cp -r` rather than `cp -a`. An arbitrary UID cannot chown the copies, so `-a` fails to preserve ownership on every file; busybox only warns, but GNU coreutils exits non-zero — which would hard-fail the init container under a `spec.temporal.image` override built on a coreutils base
+- The envtest for that Deployment now asserts the two halves are wired *to each other* — the server container mounts the same volume the init container populates, over the path it reads — instead of checking each half in isolation, which is how a disconnected pair passed CI
+- The same by-name assertion applied to the Temporal UI Deployment (v0.8.3), which was pinned by index and length: a volume renamed on one side alone leaves the mount pointing at nothing and the pod unschedulable, and "one volume, one mount, right path" is satisfied by two halves that never refer to each other
+
 ## v0.8.3 (2026-09-01)
 
 ### Fixed
@@ -53,6 +59,9 @@ actually contains, taken from its commits.
 ### Two first-boot failures, found on a live cluster
 - The auto-setup image renders config into `/etc/temporal/config`, owned by UID 1000 in the image, while OpenShift assigns an arbitrary UID — the pod crash-looped on "permission denied". A `config-template` init container copies the shipped templates into an `emptyDir` any UID can write
 - The app PostgreSQL user has no `CREATEDB`, so schema setup died with `pq: permission denied to create database`. Fixed with a `postgresql-start` script
+- Both were prototyped live on the Deployment before being codified, and both are now covered rather than left as tribal knowledge
+- Verified end to end on dev05 on 2026-09-01: `pulse-temporal` reaches `1/1 Running`, auto-setup creates `temporal` and `temporal_visibility`, and the frontend, matching and worker services start
+- The `CREATEDB` grant rides the PostgreSQL pod template, which is create-only. **Enabling Temporal on an install that already has a PostgreSQL pod needs the one-time grant from the README** — without it the server clears the config-permission error and then crash-loops on `permission denied to create database` instead, which reads like the same bug and is not
 
 > **Known issue (resolved in v0.6.1):** the symptom above was observed on dev05
 > while the *live prototype* Deployment patch coexisted with the deployed
