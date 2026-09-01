@@ -9,6 +9,12 @@ actually contains, taken from its commits.
 
 - The Temporal config init container copies with `cp -r` rather than `cp -a`. An arbitrary UID cannot chown the copies, so `-a` fails to preserve ownership on every file; busybox only warns, but GNU coreutils exits non-zero — which would hard-fail the init container under a `spec.temporal.image` override built on a coreutils base
 - The envtest for that Deployment now asserts the two halves are wired *to each other* — the server container mounts the same volume the init container populates, over the path it reads — instead of checking each half in isolation, which is how a disconnected pair passed CI
+- The same by-name assertion applied to the Temporal UI Deployment (v0.8.3), which was pinned by index and length: a volume renamed on one side alone leaves the mount pointing at nothing and the pod unschedulable, and "one volume, one mount, right path" is satisfied by two halves that never refer to each other
+
+## v0.8.3 (2026-09-01)
+
+### Fixed
+- The Temporal UI pod crash-looped on OpenShift with `unable to create open ./config/docker.yaml: permission denied` — the image renders its config into a directory owned by its own UID while OpenShift assigns an arbitrary one, the same first-boot failure the server had in v0.6.0. The directory ships empty (the server's holds templates), so a writable emptyDir at `/home/ui-server/config` is the whole fix; no init container needed. Found by enabling `ui: true` on dev05, which is where all three of this family's boot failures have been found
 
 ## v0.8.2 (2026-09-01)
 

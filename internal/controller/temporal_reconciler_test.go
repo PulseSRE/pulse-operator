@@ -196,6 +196,22 @@ var _ = Describe("TemporalReconciler UI", func() {
 		}
 		Expect(addr).To(Equal("tui-on-pulse-temporal:7233"), "UI must point at this CR's own server")
 
+		// OpenShift runs the pod as an arbitrary UID and the image renders its
+		// config into a directory owned by its own; without a writable mount
+		// the pod crash-loops on "permission denied" (seen live on dev05).
+		//
+		// Asserted by name rather than by index and length, for the same
+		// reason the server Deployment is: a rename on one side alone leaves
+		// the mount pointing at a volume that does not exist, and the pod
+		// never schedules. "One volume, one mount, right path" cannot see
+		// that — it is satisfied by two halves that do not refer to each other.
+		Expect(deploy.Spec.Template.Spec.Volumes).To(ContainElement(SatisfyAll(
+			HaveField("Name", "ui-config"),
+			HaveField("VolumeSource.EmptyDir", Not(BeNil())),
+		)), "the UI config volume must be an emptyDir any UID can write")
+		Expect(mountPathFor(c, "ui-config")).To(Equal("/home/ui-server/config"),
+			"the UI must mount that volume over the config dir the image writes")
+
 		svc := &corev1.Service{}
 		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: "tui-on-pulse-temporal-ui", Namespace: namespace}, svc)).To(Succeed())
 	})
