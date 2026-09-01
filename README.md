@@ -372,6 +372,16 @@ spec:
 
 ---
 
+### Durable plan execution (spec.temporal)
+
+`spec.temporal.enabled: true` provisions a Temporal server (`{name}-temporal`,
+`temporalio/auto-setup` pinned) backed by the operator's own PostgreSQL — the
+`temporal` and `temporal_visibility` databases are created in the same
+instance on first start — and injects `PULSE_AGENT_TEMPORAL_HOST` into the
+agent, which enables its durable plan-run endpoints (agent docs/TEMPORAL.md).
+This is the dev-grade single-container topology; a production topology
+(separated services, dedicated visibility store) is a deliberate later step.
+
 ## CR Status
 
 ```yaml

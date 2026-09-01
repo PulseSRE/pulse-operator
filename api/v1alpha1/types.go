@@ -44,6 +44,23 @@ type OpenShiftPulseSpec struct {
 	// +optional
 	// +kubebuilder:default={}
 	Monitoring MonitoringConfig `json:"monitoring,omitempty"`
+	// Temporal provisions a self-hosted Temporal server for durable plan
+	// execution and points the agent at it (PULSE_AGENT_TEMPORAL_HOST). It
+	// reuses the operator's PostgreSQL: temporal + temporal_visibility
+	// databases are created in the same instance by the auto-setup image.
+	// +optional
+	// +kubebuilder:default={}
+	Temporal TemporalConfig `json:"temporal,omitempty"`
+}
+
+type TemporalConfig struct {
+	// Enabled is *bool for the same omitempty reason MonitoringConfig
+	// documents: a plain bool could never be explicitly false.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+	// Image overrides the Temporal auto-setup image.
+	// +optional
+	Image string `json:"image,omitempty"`
 }
 
 type VertexAIConfig struct {

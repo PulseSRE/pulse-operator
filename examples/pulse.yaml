@@ -23,3 +23,8 @@ spec:
     storageSize: 5Gi
   monitoring:
     enabled: true
+  # Durable plan execution (optional). Provisions a Temporal server backed by
+  # the operator's PostgreSQL and points the agent at it; plan runs then
+  # survive agent restarts and approval phases genuinely wait for a human.
+  # temporal:
+  #   enabled: true

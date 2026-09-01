@@ -208,6 +208,23 @@ spec:
                       nil the same way (see monitoringEnabled in the controller package).
                     type: boolean
                 type: object
+              temporal:
+                default: {}
+                description: |-
+                  Temporal provisions a self-hosted Temporal server for durable plan
+                  execution and points the agent at it (PULSE_AGENT_TEMPORAL_HOST). It
+                  reuses the operator's PostgreSQL: temporal + temporal_visibility
+                  databases are created in the same instance by the auto-setup image.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled is *bool for the same omitempty reason MonitoringConfig
+                      documents: a plain bool could never be explicitly false.
+                    type: boolean
+                  image:
+                    description: Image overrides the Temporal auto-setup image.
+                    type: string
+                type: object
               ui:
                 default: {}
                 description: |-

@@ -168,6 +168,18 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
+	// 2f. Optional: Temporal server for durable plan execution. Before the
+	// agent step consumes TemporalHostFor — the Service should exist by the
+	// time the agent env points at it, even though DNS would tolerate the gap.
+	if pulse.Spec.Temporal.Enabled != nil && *pulse.Spec.Temporal.Enabled {
+		tr := &TemporalReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
+		if err := tr.reconcileTemporal(ctx, pulse); err != nil {
+			logger.Error(err, "Temporal reconcile failed")
+			reconcileErrorsTotal.WithLabelValues("temporal").Inc()
+			return ctrl.Result{}, fmt.Errorf("reconcileTemporal: %w", err)
+		}
+	}
+
 	// 3. Reconcile UI sub-resources (Route, OAuthClient, Deployment, Service, etc.).
 	uiResult, err := r.UIReconciler.reconcileUI(ctx, pulse)
 	if err != nil {

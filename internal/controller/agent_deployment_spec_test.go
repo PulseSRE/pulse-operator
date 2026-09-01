@@ -436,3 +436,40 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 		})
 	})
 })
+
+// ── Temporal host injection ─────────────────────────────────────────────────
+
+var _ = Describe("Agent Temporal wiring", func() {
+	const namespace = "default"
+
+	It("injects PULSE_AGENT_TEMPORAL_HOST only when temporal is enabled", func() {
+		enabled := true
+		const crName = "spec-temporal-pulse"
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Temporal: pulsev1alpha1.TemporalConfig{Enabled: &enabled},
+			},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		deploy := reconcileAgent(testCtx, crName, namespace)
+		val, ok := envVar(deploy, "PULSE_AGENT_TEMPORAL_HOST")
+		Expect(ok).To(BeTrue(), "agent must be pointed at the Temporal service when enabled")
+		Expect(val).To(Equal(crName + "-temporal:7233"))
+	})
+
+	It("omits the variable when temporal is disabled, keeping the agent's durable path inert", func() {
+		const crName = "spec-no-temporal-pulse"
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		deploy := reconcileAgent(testCtx, crName, namespace)
+		_, ok := envVar(deploy, "PULSE_AGENT_TEMPORAL_HOST")
+		Expect(ok).To(BeFalse(), "no host env when temporal is disabled")
+	})
+})

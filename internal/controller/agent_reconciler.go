@@ -610,6 +610,13 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		})
 	}
 
+	if temporalEnabled(cr) {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PULSE_AGENT_TEMPORAL_HOST",
+			Value: TemporalHostFor(cr.Name),
+		})
+	}
+
 	if info != nil && info.ACMAvailable {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PULSE_AGENT_ACM_THANOS_ENABLED",
