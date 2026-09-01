@@ -5,6 +5,12 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## v0.8.2 (2026-09-01)
+
+### The catalog now carries the whole upgrade graph
+- The rendered catalog held a single entry — this release, with one `replaces` edge to the previous tag. That works only if every cluster installs every release: dev05 sat on v0.7.0, was offered a v0.8.1-only catalog whose one edge said "replaces v0.8.0", and OLM correctly reported `AtLatestKnown` at v0.7.0 forever. An upgrade graph with one edge is a graph for exactly one cluster state
+- The release workflow now renders every released bundle that exists in the registry, oldest first, and chains `replaces` between consecutive rendered entries (`--print-chain` on the bump script). Bundles predating bundle publishing are skipped with a notice; failing to render the release's own bundle fails the job
+
 ## v0.8.1 (2026-09-01)
 
 ### Fixed

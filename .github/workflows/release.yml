@@ -84,48 +84,50 @@ jobs:
       # CI already holds the Quay credentials these pushes need, so the only
       # thing that made this manual was opm not being present — and opm ships
       # as a container image.
-      - name: Render the catalog from the pushed bundle
+      - name: Render the catalog from every released bundle
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Render FROM the pushed image, never from the local bundle/ dir:
-          # rendering a bare directory yields an olm.bundle with an empty
-          # image field, and OLM can then never unpack it.
-          mkdir -p catalog
-          # Take the opm digest from Dockerfile.catalog rather than naming it
-          # here. Dependabot's docker ecosystem watches Dockerfiles, not a
-          # `docker run` inside a workflow, so a second copy of the digest
-          # would never be bumped and would drift away from the file beside
-          # it — silently, since both would still work. Reading it means the
-          # Dockerfile stays the single source of truth and Dependabot's bump
-          # applies to both. It also inherits that pin's linux/amd64 choice,
-          # which that file explains at length.
+          # The catalog must carry the FULL upgrade graph, not just this
+          # release. It used to hold a single entry whose `replaces` named the
+          # previous tag — which works only when every cluster installs every
+          # release. The first skipped release proved otherwise: a cluster on
+          # v0.7.0 was offered a v0.8.1-only catalog whose one edge said
+          # "replaces v0.8.0", and OLM correctly sat at AtLatestKnown forever.
+          # An upgrade graph with one edge is a graph for exactly one cluster
+          # state.
           #
-          # opm renders through containers/image, which refuses to pull without
-          # a signature policy and finds none inside the opm image — it searches
-          # /.config, /etc and /usr/share/containers and the first release to
-          # reach this step died on exactly that. Supply the permissive policy;
-          # the only image being pulled is the bundle this same job just built
-          # and pushed a step earlier.
+          # Render every released bundle that exists in the registry, oldest
+          # first, and chain replaces between consecutive *rendered* entries.
+          # Bundles that predate bundle publishing are skipped with a notice;
+          # the chain simply starts at the oldest one that exists.
+          mkdir -p catalog
           OPM_IMAGE="$(grep -oE 'quay\.io/operator-framework/opm@sha256:[0-9a-f]{64}' Dockerfile.catalog | head -1)"
           test -n "$OPM_IMAGE"  # a rename or unpinning there must fail here, not silently use :latest
           printf '{"default":[{"type":"insecureAcceptAnything"}]}' > /tmp/policy.json
-          # And the registry credentials: `docker login` wrote them to the
-          # runner's config, but the opm container has its own filesystem and
-          # cannot see them. Without this a private bundle repo is a 401 here
-          # even though every other step in this job can push to it.
-          docker run --rm \
-            -v /tmp/policy.json:/etc/containers/policy.json:ro \
-            -v "${HOME}/.docker/config.json:/tmp/auth.json:ro" \
-            -e REGISTRY_AUTH_FILE=/tmp/auth.json \
-            "$OPM_IMAGE" \
-            render "${BUNDLE_IMG}:${RELEASE_TAG}" -o yaml > /tmp/rendered.yaml
-          test -s /tmp/rendered.yaml
-          # The channel entry carries the upgrade edge. `replaces` comes from
-          # the same git-tag lookup the CSV bump uses, so the two cannot
-          # disagree about what this release upgrades from.
-          REPLACES="$(python3 scripts/bump-bundle-version.py "$RELEASE_TAG" --print-replaces)"
+
+          : > /tmp/rendered.yaml
+          rendered=()
+          while read -r ver; do
+            if docker run --rm \
+              -v /tmp/policy.json:/etc/containers/policy.json:ro \
+              -v "${HOME}/.docker/config.json:/tmp/auth.json:ro" \
+              -e REGISTRY_AUTH_FILE=/tmp/auth.json \
+              "$OPM_IMAGE" \
+              render "${BUNDLE_IMG}:v${ver}" -o yaml >> /tmp/rendered.yaml 2>/tmp/render-err.log; then
+              rendered+=("$ver")
+              echo "rendered bundle v${ver}"
+            else
+              echo "::notice::no bundle image for v${ver} — the upgrade chain starts after it. $(tail -1 /tmp/render-err.log || true)"
+            fi
+          done < <(python3 scripts/bump-bundle-version.py "$RELEASE_TAG" --print-chain)
+
+          # This release's own bundle was pushed one step ago; failing to
+          # render it means the catalog would not offer the release at all.
+          printf '%s\n' "${rendered[@]}" | grep -qx "${RELEASE_TAG#v}" || {
+            echo "::error::the ${RELEASE_TAG} bundle itself failed to render"; exit 1; }
+
           {
             echo "---"
             echo "defaultChannel: alpha"
@@ -133,10 +135,14 @@ jobs:
             echo "schema: olm.package"
             echo "---"
             echo "entries:"
-            echo "- name: pulse-operator.${RELEASE_TAG}"
-            if [ -n "$REPLACES" ]; then
-              echo "  replaces: pulse-operator.v${REPLACES}"
-            fi
+            prev=""
+            for ver in "${rendered[@]}"; do
+              echo "- name: pulse-operator.v${ver}"
+              if [ -n "$prev" ]; then
+                echo "  replaces: pulse-operator.v${prev}"
+              fi
+              prev="$ver"
+            done
             echo "name: alpha"
             echo "package: pulse-operator"
             echo "schema: olm.channel"
