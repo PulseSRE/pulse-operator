@@ -5,6 +5,19 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## v0.6.0 (2026-09-01)
+
+### `spec.temporal` — an operator-managed Temporal for durable plan runs
+- The agent gained a Temporal-backed plan execution path (its `docs/TEMPORAL.md`): runs survive pod restarts and `approval_required` phases genuinely wait for a human. That path is inert without a server, and a hand-deployed server is exactly the unmanaged state this operator exists to remove
+- `spec.temporal.enabled` provisions `temporalio/auto-setup` (pinned — an unpinned server image would run schema migrations on a reschedule at a moment nobody chose) against the operator's own PostgreSQL: same service, credentials from the same `{name}-pg-auth` secret, `temporal` and `temporal_visibility` databases created on first start
+- The agent Deployment receives `PULSE_AGENT_TEMPORAL_HOST={name}-temporal:7233` only when enabled, so the default stays fully inert
+- Dev-grade topology by design: one replica, one container, TCP probes with a generous first-boot window for cold schema setup
+
+### Two first-boot failures, found on a live cluster
+- The auto-setup image renders config into `/etc/temporal/config`, owned by UID 1000 in the image, while OpenShift assigns an arbitrary UID — the pod crash-looped on "permission denied". An init container now copies the shipped templates into an `emptyDir` any UID can write, and the server reads from there
+- The app PostgreSQL user has no `CREATEDB`, so schema setup died with `pq: permission denied to create database`. Fixed with a `postgresql-start` script
+- Both were prototyped live on the Deployment before being codified, and both are now covered rather than left as tribal knowledge
+
 ## v0.5.1 (2026-08-25)
 
 ### Two healthy Deployments reporting different versions to users
