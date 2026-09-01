@@ -377,11 +377,13 @@ spec:
 ```yaml
 status:
   phase: Running                       # Installing | Running | Upgrading | Degraded
+  agentVersion: v2.27.0                # tag portion of the running spec.agent.image
   agentHealthy: true                   # agent Deployment has ≥1 ready replica
   databaseReady: true                  # PostgreSQL StatefulSet has ≥1 ready replica
   uiAvailable: true                    # Route hostname assigned by OCP router
   routeHost: pulse-openshiftpulse.apps.cluster.example.com
   observedGeneration: 3
+  upgradeStartedAt: null               # set while an image differs from the last known-healthy one; cleared when healthy again or after auto-rollback
   lastHealthyAgentImage: quay.io/amobrem/pulse-agent:v2.9.0     # rollback target — see "Automatic rollback" below
   lastHealthyUIImage: quay.io/amobrem/openshiftpulse:e6169a4
   lastUpgradeDurationSeconds: 0   # how long the most recently completed agent/UI upgrade took to become healthy; 0/absent if none has happened yet — see "Agent / UI image upgrades" below
@@ -401,6 +403,9 @@ status:
   - type: Progressing        # True while Installing/Upgrading; False (Stable/Degraded) otherwise
     status: "False"
     reason: Stable
+  - type: AgentUIVersionsMatch  # agent and UI image tags agree — see "Agent / UI image skew" below
+    status: "True"
+    reason: VersionsMatch
   # - type: AgentVersionCompatible   # only present once spec.agent.minOperatorVersion is set — see "Agent-version compatibility gate" below
   #   status: "True"
   #   reason: Compatible
