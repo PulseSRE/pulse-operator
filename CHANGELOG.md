@@ -5,6 +5,12 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## v0.8.1 (2026-09-01)
+
+### Fixed
+- `OperatorVersion` in compat.go said `0.7.0` inside the v0.8.0 image — the tag shipped before the constant was bumped, the second time this exact drift has happened (v0.4.0 was the first). The in-repo guard test can only compare against tags that already exist, so by construction it fires one release too late
+- The release workflow now refuses to build any image when the constant does not match the tag. The guard test still catches drift on main between releases; the workflow gate catches it at the moment that matters
+
 ## v0.8.0 (2026-09-01)
 
 ### `spec.temporal.ui` — the workflow audit trail, visible
