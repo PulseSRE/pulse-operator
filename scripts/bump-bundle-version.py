@@ -111,6 +111,15 @@ def main() -> None:
         "no replaces at all (the very first release).",
     )
     parser.add_argument(
+        "--print-chain",
+        action="store_true",
+        help=(
+            "print every released version from the oldest bundle that exists "
+            "up to and including VERSION, one per line, oldest first — the "
+            "full upgrade graph the catalog must carry"
+        ),
+    )
+    parser.add_argument(
         "--print-replaces",
         action="store_true",
         help="print the derived previous version and exit, changing nothing. Used by "
@@ -129,6 +138,15 @@ def main() -> None:
 
     if previous == version:
         raise SystemExit(f"--replaces {args.replaces!r} is the version being released — refusing to self-replace")
+
+    if args.print_chain:
+        target = version_key(version)
+        chain = sorted(
+            {v for v in released_versions() if version_key(v) <= target} | {version},
+            key=version_key,
+        )
+        print("\n".join(chain))
+        return
 
     if args.print_replaces:
         print(previous)
