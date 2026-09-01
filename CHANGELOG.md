@@ -5,6 +5,11 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## v0.8.3 (2026-09-01)
+
+### Fixed
+- The Temporal UI pod crash-looped on OpenShift with `unable to create open ./config/docker.yaml: permission denied` — the image renders its config into a directory owned by its own UID while OpenShift assigns an arbitrary one, the same first-boot failure the server had in v0.6.0. The directory ships empty (the server's holds templates), so a writable emptyDir at `/home/ui-server/config` is the whole fix; no init container needed. Found by enabling `ui: true` on dev05, which is where all three of this family's boot failures have been found
+
 ## v0.8.2 (2026-09-01)
 
 ### The catalog now carries the whole upgrade graph

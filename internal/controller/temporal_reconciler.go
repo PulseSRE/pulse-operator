@@ -111,11 +111,24 @@ func (r *TemporalReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alph
 		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}}
 		deploy.Spec.Template.Labels = map[string]string{"app": name}
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil)
+		// The image renders config/docker.yaml into its workdir at startup,
+		// and that directory is owned by the image's own UID while OpenShift
+		// runs the pod as an arbitrary one — the same first-boot failure the
+		// server had, seen live as CrashLoopBackOff on "permission denied".
+		// The directory ships empty (unlike the server's, which holds
+		// templates), so an emptyDir any UID can write is the whole fix; no
+		// init container needed.
+		deploy.Spec.Template.Spec.Volumes = []corev1.Volume{
+			{Name: "ui-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		}
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{
 			{
 				Name:            "ui",
 				Image:           image,
 				SecurityContext: writableContainerSecCtx(),
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "ui-config", MountPath: "/home/ui-server/config"},
+				},
 				Env: []corev1.EnvVar{
 					{Name: "TEMPORAL_ADDRESS", Value: TemporalHostFor(pulse.Name)},
 					// The UI is served behind the cluster's own auth; it binds

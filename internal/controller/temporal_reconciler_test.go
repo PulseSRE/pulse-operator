@@ -165,6 +165,13 @@ var _ = Describe("TemporalReconciler UI", func() {
 		}
 		Expect(addr).To(Equal("tui-on-pulse-temporal:7233"), "UI must point at this CR's own server")
 
+		// OpenShift runs the pod as an arbitrary UID and the image renders its
+		// config into a directory owned by its own; without a writable mount
+		// the pod crash-loops on "permission denied" (seen live on dev05).
+		Expect(c.VolumeMounts).To(HaveLen(1))
+		Expect(c.VolumeMounts[0].MountPath).To(Equal("/home/ui-server/config"))
+		Expect(deploy.Spec.Template.Spec.Volumes).To(HaveLen(1))
+
 		svc := &corev1.Service{}
 		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: "tui-on-pulse-temporal-ui", Namespace: namespace}, svc)).To(Succeed())
 	})
