@@ -68,6 +68,13 @@ spec:
                     type: boolean
                   allowWriteOperations:
                     type: boolean
+                  durableAutoFix:
+                    description: |-
+                      DurableAutoFix routes auto-fix execution through the durable incident
+                      workflow instead of running it inline, so the sequence a pod restart
+                      currently loses — apply, verify, settle, recheck — survives. Requires
+                      spec.temporal.enabled; without it the agent falls back to inline.
+                    type: boolean
                   image:
                     description: |-
                       Image is the container image for the Pulse Agent.
@@ -223,6 +230,16 @@ spec:
                     type: boolean
                   image:
                     description: Image overrides the Temporal auto-setup image.
+                    type: string
+                  ui:
+                    description: |-
+                      UI deploys the Temporal Web UI alongside the server, so workflow
+                      histories — every activity, retry, timer and signal — are inspectable
+                      without a CLI. Off by default: it is an extra surface, and the agent
+                      does not need it to run workflows.
+                    type: boolean
+                  uiImage:
+                    description: UIImage overrides the Temporal UI image.
                     type: string
                 type: object
               ui:

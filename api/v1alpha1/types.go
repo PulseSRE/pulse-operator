@@ -61,6 +61,15 @@ type TemporalConfig struct {
 	// Image overrides the Temporal auto-setup image.
 	// +optional
 	Image string `json:"image,omitempty"`
+	// UI deploys the Temporal Web UI alongside the server, so workflow
+	// histories — every activity, retry, timer and signal — are inspectable
+	// without a CLI. Off by default: it is an extra surface, and the agent
+	// does not need it to run workflows.
+	// +optional
+	UI *bool `json:"ui,omitempty"`
+	// UIImage overrides the Temporal UI image.
+	// +optional
+	UIImage string `json:"uiImage,omitempty"`
 }
 
 type VertexAIConfig struct {
@@ -94,6 +103,12 @@ type AgentConfig struct {
 	// +kubebuilder:validation:Maximum=4
 	// +optional
 	TrustLevel int32 `json:"trustLevel,omitempty"`
+	// DurableAutoFix routes auto-fix execution through the durable incident
+	// workflow instead of running it inline, so the sequence a pod restart
+	// currently loses — apply, verify, settle, recheck — survives. Requires
+	// spec.temporal.enabled; without it the agent falls back to inline.
+	// +optional
+	DurableAutoFix *bool `json:"durableAutoFix,omitempty"`
 	// AdminUsers restricts the endpoints that change how the agent itself
 	// behaves — editing skills, resetting the shared inbox, approving a fix
 	// that will act on the cluster — to a comma-separated list of usernames,

@@ -41,6 +41,11 @@ import (
 // reschedule, at a moment nobody chose.
 const defaultTemporalImage = "temporalio/auto-setup:1.25.2"
 
+// Pinned for the same reason as the server image.
+const defaultTemporalUIImage = "temporalio/ui:2.31.2"
+
+const temporalUIPort = 8080
+
 const temporalFrontendPort = 7233
 
 // The config directory auto-setup renders into, and the emptyDir that shadows
@@ -81,7 +86,80 @@ func (r *TemporalReconciler) reconcileTemporal(ctx context.Context, pulse *pulse
 	if err := r.reconcileService(ctx, pulse); err != nil {
 		return fmt.Errorf("temporal service: %w", err)
 	}
+	if pulse.Spec.Temporal.UI != nil && *pulse.Spec.Temporal.UI {
+		if err := r.reconcileUI(ctx, pulse); err != nil {
+			return fmt.Errorf("temporal ui: %w", err)
+		}
+	}
 	return nil
+}
+
+// reconcileUI deploys the Temporal Web UI. Workflow history is the audit trail
+// this whole migration produces — being able to look at it without a CLI is
+// most of its value to anyone who is not already holding a terminal.
+//
+// Service only, deliberately no Route. The Temporal UI ships with no
+// authentication: it will happily terminate any workflow for anyone who can
+// load it. On a cluster whose Routes are public that would mean an unauthed
+// kill switch for every running fix. Reach it with `oc port-forward`, or put
+// it behind an oauth-proxy first if it needs to be permanent.
+func (r *TemporalReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := temporalResourceName(pulse.Name) + "-ui"
+	image := pulse.Spec.Temporal.UIImage
+	if image == "" {
+		image = defaultTemporalUIImage
+	}
+
+	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+		if setErr := controllerutil.SetControllerReference(pulse, deploy, r.Scheme); setErr != nil {
+			return setErr
+		}
+		one := int32(1)
+		deploy.Spec.Replicas = &one
+		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}}
+		deploy.Spec.Template.Labels = map[string]string{"app": name}
+		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil)
+		deploy.Spec.Template.Spec.Containers = []corev1.Container{
+			{
+				Name:            "ui",
+				Image:           image,
+				SecurityContext: writableContainerSecCtx(),
+				Env: []corev1.EnvVar{
+					{Name: "TEMPORAL_ADDRESS", Value: TemporalHostFor(pulse.Name)},
+					// The UI is served behind the cluster's own auth; it binds
+					// all interfaces so the Service can reach it.
+					{Name: "TEMPORAL_UI_PORT", Value: fmt.Sprintf("%d", temporalUIPort)},
+					{Name: "TEMPORAL_CORS_ORIGINS", Value: "http://localhost:3000"},
+				},
+				Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: temporalUIPort}},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(temporalUIPort)},
+					},
+					InitialDelaySeconds: 5,
+					PeriodSeconds:       10,
+					FailureThreshold:    12,
+				},
+			},
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		if setErr := controllerutil.SetControllerReference(pulse, svc, r.Scheme); setErr != nil {
+			return setErr
+		}
+		svc.Spec.Selector = map[string]string{"app": name}
+		svc.Spec.Ports = []corev1.ServicePort{
+			{Name: "http", Port: temporalUIPort, TargetPort: intstr.FromInt32(temporalUIPort)},
+		}
+		return nil
+	})
+	return err
 }
 
 func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {

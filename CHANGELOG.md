@@ -25,6 +25,15 @@ actually contains, taken from its commits.
 - Verified end to end on dev05 on 2026-09-01: `pulse-temporal` reaches `1/1 Running`, auto-setup creates `temporal` and `temporal_visibility`, and the frontend, matching and worker services start
 - The `CREATEDB` grant rides the PostgreSQL pod template, which is create-only. **Enabling Temporal on an install that already has a PostgreSQL pod needs the one-time grant from the README** — without it the server clears the config-permission error and then crash-loops on `permission denied to create database` instead, which reads like the same bug and is not
 
+> **Known issue (resolved in v0.6.1):** the symptom above was observed on dev05
+> while the *live prototype* Deployment patch coexisted with the deployed
+> v0.6.0 operator: the operator's reconcile owns the container list and kept
+> rewriting it, wiping the prototype's main-container mount while leaving the
+> init container and volume — hence "mounts no volumes at all" on the cluster.
+> The codified reconciler (10ca82a, shipped in v0.6.1) sets all three pieces:
+> the volume, the init container, and the server mount at
+> `/etc/temporal/config`, so the deployed operator produces the complete spec.
+
 ## v0.5.1 (2026-08-25)
 
 ### Two healthy Deployments reporting different versions to users

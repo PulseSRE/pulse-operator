@@ -473,3 +473,38 @@ var _ = Describe("Agent Temporal wiring", func() {
 		Expect(ok).To(BeFalse(), "no host env when temporal is disabled")
 	})
 })
+
+var _ = Describe("Agent durable auto-fix wiring", func() {
+	const namespace = "default"
+
+	It("injects PULSE_AGENT_DURABLE_AUTOFIX when enabled", func() {
+		enabled := true
+		const crName = "spec-durable-pulse"
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Agent: pulsev1alpha1.AgentConfig{DurableAutoFix: &enabled},
+			},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		deploy := reconcileAgent(testCtx, crName, namespace)
+		val, ok := envVar(deploy, "PULSE_AGENT_DURABLE_AUTOFIX")
+		Expect(ok).To(BeTrue())
+		Expect(val).To(Equal("true"))
+	})
+
+	It("omits it by default, keeping auto-fix inline", func() {
+		const crName = "spec-inline-pulse"
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		deploy := reconcileAgent(testCtx, crName, namespace)
+		_, ok := envVar(deploy, "PULSE_AGENT_DURABLE_AUTOFIX")
+		Expect(ok).To(BeFalse(), "durable auto-fix must be opt-in")
+	})
+})
