@@ -14,9 +14,16 @@ actually contains, taken from its commits.
 - Dev-grade topology by design: one replica, one container, TCP probes with a generous first-boot window for cold schema setup
 
 ### Two first-boot failures, found on a live cluster
-- The auto-setup image renders config into `/etc/temporal/config`, owned by UID 1000 in the image, while OpenShift assigns an arbitrary UID — the pod crash-looped on "permission denied". An init container now copies the shipped templates into an `emptyDir` any UID can write, and the server reads from there
+- The auto-setup image renders config into `/etc/temporal/config`, owned by UID 1000 in the image, while OpenShift assigns an arbitrary UID — the pod crash-looped on "permission denied". A `config-template` init container copies the shipped templates into an `emptyDir` any UID can write
 - The app PostgreSQL user has no `CREATEDB`, so schema setup died with `pq: permission denied to create database`. Fixed with a `postgresql-start` script
-- Both were prototyped live on the Deployment before being codified, and both are now covered rather than left as tribal knowledge
+
+> **Known issue (open):** the permission fix is incomplete on dev05 as of
+> 2026-09-01. The init container writes the templates into the `temporal-config`
+> emptyDir, but the **server container mounts no volumes at all**, so it still
+> reads and writes the image's `/etc/temporal/config` and crash-loops with the
+> original `unable to create open /etc/temporal/config/docker.yaml: permission
+> denied`. The emptyDir needs mounting at `/etc/temporal/config` in the main
+> container.
 
 ## v0.5.1 (2026-08-25)
 
