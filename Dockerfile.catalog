@@ -29,14 +29,14 @@
 # fails once deployed: "exec container process `/bin/opm`: Exec format error"
 # on any real (amd64) cluster node. Get the correct per-arch digest with:
 #   podman manifest inspect quay.io/operator-framework/opm:latest
-FROM quay.io/operator-framework/opm@sha256:c6dc739b9f630ae8efb9cb0e6f4306a55ca738dffc4fa6ef376b313d90928dfa AS builder
+FROM quay.io/operator-framework/opm@sha256:e5a6220603fb4504d58c6e3e488386b817e3695c906a62ee0370b5faedc3799a AS builder
 
 # Copy the FBC root (built by README.md's render step into ./catalog) into the
 # image at /configs and pre-populate the serve cache.
 ADD catalog /configs
 RUN ["/bin/opm", "serve", "/configs", "--cache-dir=/tmp/cache", "--cache-only"]
 
-FROM quay.io/operator-framework/opm@sha256:c6dc739b9f630ae8efb9cb0e6f4306a55ca738dffc4fa6ef376b313d90928dfa
+FROM quay.io/operator-framework/opm@sha256:e5a6220603fb4504d58c6e3e488386b817e3695c906a62ee0370b5faedc3799a
 ENTRYPOINT ["/bin/opm"]
 CMD ["serve", "/configs", "--cache-dir=/tmp/cache"]
 
