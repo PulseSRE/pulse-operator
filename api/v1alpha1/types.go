@@ -61,6 +61,15 @@ type TemporalConfig struct {
 	// Image overrides the Temporal auto-setup image.
 	// +optional
 	Image string `json:"image,omitempty"`
+	// UI deploys the Temporal Web UI alongside the server, so workflow
+	// histories — every activity, retry, timer and signal — are inspectable
+	// without a CLI. Off by default: it is an extra surface, and the agent
+	// does not need it to run workflows.
+	// +optional
+	UI *bool `json:"ui,omitempty"`
+	// UIImage overrides the Temporal UI image.
+	// +optional
+	UIImage string `json:"uiImage,omitempty"`
 }
 
 type VertexAIConfig struct {

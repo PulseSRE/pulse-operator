@@ -231,6 +231,16 @@ spec:
                   image:
                     description: Image overrides the Temporal auto-setup image.
                     type: string
+                  ui:
+                    description: |-
+                      UI deploys the Temporal Web UI alongside the server, so workflow
+                      histories — every activity, retry, timer and signal — are inspectable
+                      without a CLI. Off by default: it is an extra surface, and the agent
+                      does not need it to run workflows.
+                    type: boolean
+                  uiImage:
+                    description: UIImage overrides the Temporal UI image.
+                    type: string
                 type: object
               ui:
                 default: {}

@@ -9,6 +9,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
@@ -113,5 +115,80 @@ var _ = Describe("TemporalReconciler", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-temporal", Namespace: namespace}, deploy)).To(Succeed())
 			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/example/temporal:pinned"))
 		})
+	})
+})
+
+var _ = Describe("TemporalReconciler UI", func() {
+	const namespace = "default"
+	enabled := true
+
+	It("is off by default — the agent does not need it to run workflows", func() {
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: "tui-off-pulse", Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Temporal: pulsev1alpha1.TemporalConfig{Enabled: &enabled},
+			},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		tr := &TemporalReconciler{Client: k8sClient, Scheme: testScheme}
+		Expect(tr.reconcileTemporal(testCtx, cr)).To(Succeed())
+
+		deploy := &appsv1.Deployment{}
+		err := k8sClient.Get(testCtx, types.NamespacedName{Name: "tui-off-pulse-temporal-ui", Namespace: namespace}, deploy)
+		Expect(err).To(HaveOccurred(), "no UI Deployment unless spec.temporal.ui is true")
+	})
+
+	It("deploys the UI pointed at the server when enabled", func() {
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: "tui-on-pulse", Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Temporal: pulsev1alpha1.TemporalConfig{Enabled: &enabled, UI: &enabled},
+			},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		tr := &TemporalReconciler{Client: k8sClient, Scheme: testScheme}
+		Expect(tr.reconcileTemporal(testCtx, cr)).To(Succeed())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: "tui-on-pulse-temporal-ui", Namespace: namespace}, deploy)).To(Succeed())
+		c := deploy.Spec.Template.Spec.Containers[0]
+		Expect(c.Image).To(Equal(defaultTemporalUIImage))
+		var addr string
+		for _, e := range c.Env {
+			if e.Name == "TEMPORAL_ADDRESS" {
+				addr = e.Value
+			}
+		}
+		Expect(addr).To(Equal("tui-on-pulse-temporal:7233"), "UI must point at this CR's own server")
+
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: "tui-on-pulse-temporal-ui", Namespace: namespace}, svc)).To(Succeed())
+	})
+
+	It("creates no Route — the Temporal UI has no auth of its own", func() {
+		// A public Route would put an unauthenticated "terminate workflow"
+		// button on the internet. Port-forward, or front it with a proxy.
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: "tui-noroute-pulse", Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Temporal: pulsev1alpha1.TemporalConfig{Enabled: &enabled, UI: &enabled},
+			},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		tr := &TemporalReconciler{Client: k8sClient, Scheme: testScheme}
+		Expect(tr.reconcileTemporal(testCtx, cr)).To(Succeed())
+
+		route := &unstructured.Unstructured{}
+		route.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "route.openshift.io", Version: "v1", Kind: "Route",
+		})
+		err := k8sClient.Get(testCtx, types.NamespacedName{Name: "tui-noroute-pulse-temporal-ui", Namespace: namespace}, route)
+		Expect(err).To(HaveOccurred())
 	})
 })

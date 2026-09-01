@@ -392,6 +392,20 @@ oc exec -n <ns> <name>-openshift-sre-agent-postgresql-0 -- \
   sh -c 'psql -U postgres -c "ALTER USER \"$POSTGRESQL_USER\" CREATEDB;"'
 ```
 
+**Workflow history (spec.temporal.ui):** `ui: true` also deploys the Temporal
+Web UI (`{name}-temporal-ui`), where every run's full history — each activity
+attempt, retry, durable timer and approval signal — is inspectable without a
+CLI. It is off by default, and it gets a Service but deliberately **no
+Route**: the Temporal UI ships with no authentication of its own and offers a
+"terminate workflow" button to anyone who can load it, so a public Route would
+be an unauthed kill switch for every in-flight fix. Reach it locally:
+
+```bash
+oc port-forward -n <ns> svc/<name>-temporal-ui 8080:8080
+```
+
+Front it with an oauth-proxy before exposing it permanently.
+
 ## CR Status
 
 ```yaml
