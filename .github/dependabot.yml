@@ -9,7 +9,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # Daily, unlike the two ecosystems above. The container scan runs with
+  # ignore-unfixed and exit-code 1, so the day a CVE is published against a
+  # package in the pinned base image, every branch goes red until the digest
+  # is bumped — nothing in the repo has to change to trigger it. Dependabot is
+  # what notices the new digest, so its cadence is the ceiling on how long
+  # main stays broken: weekly meant a CVE published on a Tuesday blocked all
+  # work until the following Monday.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
