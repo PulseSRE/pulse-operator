@@ -28,6 +28,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
 # Runtime stage
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest@sha256:8eb2830d0936237fc13a1f2f7e45aecf90d69043380ad167fad0343632937f41
 WORKDIR /
+# The base digest is pinned for reproducibility, which also pins its CVEs.
+# Pull in published package fixes at build time so a rebuild picks up errata
+# (e.g. sqlite-libs CVE-2026-11822) without waiting for a digest bump.
+RUN microdnf update -y && microdnf clean all
 COPY --from=builder /opt/app-root/src/manager .
 USER 65532:65532
 ENTRYPOINT ["/manager"]
