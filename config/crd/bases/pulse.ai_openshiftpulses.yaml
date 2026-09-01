@@ -68,6 +68,13 @@ spec:
                     type: boolean
                   allowWriteOperations:
                     type: boolean
+                  durableAutoFix:
+                    description: |-
+                      DurableAutoFix routes auto-fix execution through the durable incident
+                      workflow instead of running it inline, so the sequence a pod restart
+                      currently loses — apply, verify, settle, recheck — survives. Requires
+                      spec.temporal.enabled; without it the agent falls back to inline.
+                    type: boolean
                   image:
                     description: |-
                       Image is the container image for the Pulse Agent.
@@ -165,13 +172,6 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
-                  durableAutoFix:
-                    description: |-
-                      DurableAutoFix routes auto-fix execution through the durable incident
-                      workflow instead of running it inline, so the sequence a pod restart
-                      currently loses — apply, verify, settle, recheck — survives. Requires
-                      spec.temporal.enabled; without it the agent falls back to inline.
-                    type: boolean
                   trustLevel:
                     default: 2
                     description: |-
