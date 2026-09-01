@@ -17,13 +17,14 @@ actually contains, taken from its commits.
 - The auto-setup image renders config into `/etc/temporal/config`, owned by UID 1000 in the image, while OpenShift assigns an arbitrary UID — the pod crash-looped on "permission denied". A `config-template` init container copies the shipped templates into an `emptyDir` any UID can write
 - The app PostgreSQL user has no `CREATEDB`, so schema setup died with `pq: permission denied to create database`. Fixed with a `postgresql-start` script
 
-> **Known issue (open):** the permission fix is incomplete on dev05 as of
-> 2026-09-01. The init container writes the templates into the `temporal-config`
-> emptyDir, but the **server container mounts no volumes at all**, so it still
-> reads and writes the image's `/etc/temporal/config` and crash-loops with the
-> original `unable to create open /etc/temporal/config/docker.yaml: permission
-> denied`. The emptyDir needs mounting at `/etc/temporal/config` in the main
-> container.
+> **Known issue (resolved in v0.6.1):** the symptom above was observed on dev05
+> while the *live prototype* Deployment patch coexisted with the deployed
+> v0.6.0 operator: the operator's reconcile owns the container list and kept
+> rewriting it, wiping the prototype's main-container mount while leaving the
+> init container and volume — hence "mounts no volumes at all" on the cluster.
+> The codified reconciler (10ca82a, shipped in v0.6.1) sets all three pieces:
+> the volume, the init container, and the server mount at
+> `/etc/temporal/config`, so the deployed operator produces the complete spec.
 
 ## v0.5.1 (2026-08-25)
 
