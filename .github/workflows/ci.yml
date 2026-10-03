@@ -47,6 +47,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Acceptance runner fail-closed behavior (mocked; no cluster)
+        run: python3 scripts/test_cluster_acceptance.py
       - run: pip install pyyaml
       - name: RBAC must not have drifted from config/rbac/role.yaml
         run: python3 scripts/sync-rbac.py --check

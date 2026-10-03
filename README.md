@@ -927,6 +927,10 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ---
 
+## Cluster acceptance
+
+Use the [explicit-context acceptance runner](docs/CLUSTER_ACCEPTANCE.md) against an existing disposable test installation. It records ownership, workload readiness, exact image IDs, policy selectors, stability, and opt-in token/Temporal/network observations. Runner unit tests are mocked; real cluster acceptance is separate and remains unproven until those checks execute.
+
 ## Contributing
 
 Pull requests are welcome. For substantial changes, open an issue first to discuss the approach.
