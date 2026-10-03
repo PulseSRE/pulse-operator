@@ -739,15 +739,22 @@ git push origin v0.2.0
 ```
 
 CI ([`.github/workflows/release.yml`](.github/workflows/release.yml)) builds and pushes:
-- `quay.io/amobrem/pulse-operator:v0.2.0` + `:latest` (the operator image, from `Dockerfile`)
-- `quay.io/amobrem/pulse-operator-bundle:v0.2.0` + `:latest` (the OLM bundle, from `Dockerfile.bundle`)
+- `quay.io/amobrem/pulse-operator:<tag>` + `:latest` (the operator image, from `Dockerfile`)
+- `quay.io/amobrem/pulse-operator-bundle:<tag>` + `:latest` (the OLM bundle, from `Dockerfile.bundle`)
+- `quay.io/amobrem/pulse-operator-catalog:<tag>` + `:latest` (the file-based OLM catalog, from `Dockerfile.catalog`)
 
-Before the bundle image is built, CI runs [`scripts/bump-bundle-version.py`](scripts/bump-bundle-version.py) against the pushed tag, which updates the CSV's `metadata.name`, `spec.version`, `metadata.annotations.containerImage`, and the manager Deployment's `image` to match — and sets `spec.replaces` to whatever CSV name was current before the bump, extending the upgrade graph by one step. This runs in CI only; the version bump is never committed back to `main`, so `bundle/manifests/pulse-operator.clusterserviceversion.yaml` on `main` always reflects the most recently *released* version, not a preview of the next one.
+Before the bundle image is built, CI runs [`scripts/bump-bundle-version.py`](scripts/bump-bundle-version.py) against the pushed tag, which updates the CSV's `metadata.name`, `spec.version`, `metadata.annotations.containerImage`, and the manager Deployment's `image` to match — and sets `spec.replaces` to whatever CSV name was current before the bump, extending the upgrade graph by one step. This runs in CI only; the version bump is never committed back to `main`, so the checked-in CSV may lag the release; verify the published bundle rather than inferring its version from `main`.
 
-The **catalog** image (`pulse-operator-catalog`, used by the CatalogSource in
-[Install via OLM](#install-via-olm)) is *not* built by this workflow — publish it
-manually via [Build the catalog image](#build-the-catalog-image) above after
-tagging a release.
+The workflow renders available released bundles into the **catalog** image
+(`pulse-operator-catalog`, used by the CatalogSource in [Install via OLM](#install-via-olm)),
+and publishes it with the operator and bundle. The current bundle
+must render successfully; unavailable historical bundles are skipped and
+`replaces` is rewired to available predecessors. Verify the resulting upgrade
+graph and all three published image digests before deployment.
+
+Before tagging, update `internal/controller/compat.go`
+`OperatorVersion` to the tag without `v`; the release workflow rejects a mismatch.
+These image publications do not themselves create a GitHub Release.
 
 Requires `QUAY_USERNAME` and `QUAY_TOKEN` as GitHub repository secrets.
 
