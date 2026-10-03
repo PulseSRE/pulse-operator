@@ -721,8 +721,8 @@ http {
 		if err := controllerutil.SetControllerReference(pulse, cm, r.Scheme); err != nil {
 			return err
 		}
-		cm.StringData = map[string]string{
-			"nginx.conf": nginxConf,
+		cm.Data = map[string][]byte{
+			"nginx.conf": []byte(nginxConf),
 		}
 		return nil
 	})

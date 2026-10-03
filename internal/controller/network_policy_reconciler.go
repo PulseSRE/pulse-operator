@@ -111,15 +111,22 @@ func (r *OpenShiftPulseReconciler) reconcilePGNetworkPolicy(ctx context.Context,
 	tcpProto := corev1.ProtocolTCP
 	port5432 := intstr.FromInt(5432)
 
+	peers := []networkingv1.NetworkPolicyPeer{{
+		PodSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"app": agentApp},
+		},
+	}}
+	if temporalEnabled(pulse) {
+		peers = append(peers, networkingv1.NetworkPolicyPeer{
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": temporalResourceName(pulse.Name)},
+			},
+		})
+	}
+
 	ingress := []networkingv1.NetworkPolicyIngressRule{
 		{
-			From: []networkingv1.NetworkPolicyPeer{
-				{
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": agentApp},
-					},
-				},
-			},
+			From: peers,
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcpProto, Port: &port5432},
 			},

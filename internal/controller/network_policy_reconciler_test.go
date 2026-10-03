@@ -113,7 +113,35 @@ var _ = Describe("NetworkPolicyReconciler", func() {
 			HaveKeyWithValue("app", crName+"-openshift-sre-agent"))
 	})
 
-	It("PostgreSQL NetworkPolicy does not open any port to pods other than the agent", func() {
+	It("allows only the agent and enabled Temporal server to reach PostgreSQL", func() {
+		enabled := true
+		cr.Spec.Temporal.Enabled = &enabled
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
+
+		np := &networkingv1.NetworkPolicy{}
+		key := types.NamespacedName{Name: crName + "-pg-access", Namespace: namespace}
+		Expect(k8sClient.Get(ctx, key, np)).To(Succeed())
+		Expect(np.Spec.Ingress).To(HaveLen(1))
+		Expect(np.Spec.Ingress[0].Ports).To(HaveLen(1))
+		Expect(np.Spec.Ingress[0].Ports[0].Port.IntVal).To(Equal(int32(5432)))
+		apps := []string{}
+		for _, peer := range np.Spec.Ingress[0].From {
+			Expect(peer.NamespaceSelector).To(BeNil())
+			Expect(peer.PodSelector).NotTo(BeNil())
+			apps = append(apps, peer.PodSelector.MatchLabels["app"])
+		}
+		Expect(apps).To(ConsistOf(crName+"-openshift-sre-agent", temporalResourceName(crName)))
+
+		// Disabling Temporal revokes the extra peer on the next reconcile.
+		enabled = false
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
+		Expect(k8sClient.Get(ctx, key, np)).To(Succeed())
+		Expect(np.Spec.Ingress[0].From).To(HaveLen(1))
+		Expect(np.Spec.Ingress[0].From[0].PodSelector.MatchLabels).To(
+			HaveKeyWithValue("app", crName+"-openshift-sre-agent"))
+	})
+
+	It("PostgreSQL NetworkPolicy keeps every peer narrowly scoped", func() {
 		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
 
 		np := &networkingv1.NetworkPolicy{}
