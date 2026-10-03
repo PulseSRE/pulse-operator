@@ -43,10 +43,10 @@ One `OpenShiftPulse` CR drives the full lifecycle:
 |---|---|
 | **Agent** | ClusterRole (read-only cluster access), WS token Secret, memory PVC, Deployment, Service |
 | **PostgreSQL** | StatefulSet (pg-data PVC retained on delete), pg-auth Secret (also retained — see below), ClusterIP + headless Services |
-| **UI** | nginx ConfigMap, oauth-proxy Deployment (TLS on 8443), Service, Route, OAuthClient |
+| **UI** | nginx configuration Secret, Deployment with nginx and oauth-proxy (TLS on 8443), Service, Route, OAuthClient |
 | **Monitoring** | ServiceMonitor (agent `/metrics`), PrometheusRule (`PulseAgentDown`, `PulsePostgreSQLDown`) |
 | **MCP** | MCP server ServiceAccount + ClusterRole (read-only) + ClusterRoleBinding, Deployment, Service (optional, `spec.agent.mcp.enabled: true`) |
-| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent pod only), agent (UI pod + Prometheus), MCP server (agent pod only) |
+| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent and enabled Temporal pods), agent (UI pod + Prometheus), MCP server (agent pod only) |
 | **Cluster detect** | Reads ingress domain, oauth-proxy image digest, ACM availability on first reconcile |
 
 A `pulse.ai/cleanup` finalizer ensures ClusterRoles and OAuthClient are removed when the CR is deleted — no orphans on uninstall.
@@ -89,9 +89,9 @@ no skew rather than guessing.
 
 ### Why the operator's version differs
 
-The operator versions independently of the Pulse application it deploys. As of
-this release the operator is **v0.7.0** while the agent and UI ship **v2.27.0**
-— that gap is deliberate, not drift:
+The operator versions independently of the Pulse application it deploys.
+Read `OperatorVersion` in `internal/controller/compat.go` for this checkout's
+operator version, and the CR's image fields for the deployed application versions:
 
 - The operator's version tracks *its own* API and reconcile behaviour. The CRD
   is still `v1alpha1`, and a 0.x version says so honestly.
@@ -334,12 +334,13 @@ spec:
   # ── Agent ───────────────────────────────────────────────────────────────────
   agent:
     image: quay.io/amobrem/pulse-agent:latest
-    trustLevel: 2          # 0=observe · 1=suggest · 2=confirm · 3=batch · 4=autonomous
-    allowWriteOperations: false   # adds delete(pods), patch(deployments) to agent ClusterRole
+    trustLevel: 2          # monitor: 0/1=no remediation, 2=propose, 3/4=execute
+    adminUsers: "kube:admin" # restrict administrator endpoints; empty allows any authenticated identity
+    allowWriteOperations: false   # adds delete(pods), patch/update(deployments,statefulsets) to agent ClusterRole
     allowSecretAccess: false      # adds get/list/watch(secrets) to agent ClusterRole
     resources: {}                 # corev1.ResourceRequirements
     mcp:
-      enabled: false       # deploys MCP server sidecar for tool extension
+      enabled: false       # deploys a separate MCP server Deployment for tool extension
     minOperatorVersion: ""  # optional semver floor for this operator build; unset (default) = inert — see "Agent-version compatibility gate" below
 
   # ── UI ──────────────────────────────────────────────────────────────────────
@@ -364,11 +365,17 @@ spec:
 
 | Level | Behaviour |
 |---|---|
-| `0` — observe | Read-only. Agent answers questions but takes no action. |
-| `1` — suggest | Proposes actions in the UI, user approves each one. |
-| `2` — confirm | Default. Agent executes after a single user confirmation. |
-| `3` — batch | Executes batches of low-risk actions with one confirmation. |
-| `4` — autonomous | Executes without confirmation. Use with caution. |
+| `0` / `1` | Background monitor does not enter remediation; investigations can still run. |
+| `2` | Background monitor creates proposed actions for approval. |
+| `3` / `4` | Background monitor executes eligible remediation without the level-2 approval gate. |
+
+This table describes the background monitor, not a universal authorization
+boundary for chat, MCP tools, or plans. Kubernetes RBAC still applies. The
+current monitor uses the configured level as a floor and caps browser requests
+at that same level, so browser trust selection cannot lower its authority.
+Its enabled categories start with all server handlers; browser category
+checkboxes currently cannot restrict that set. Configure the CR and agent
+permissions deliberately rather than relying on browser preferences.
 
 ---
 
@@ -523,12 +530,7 @@ that outage window actually took, and holds its previous value between upgrades 
 first one ever completes).
 
 The agent Deployment uses the `Recreate` strategy, not `RollingUpdate` — a deliberate choice, not
-an unexamined default. Its memory-cache PVC is `ReadWriteOnce`, and `pulse-agent`'s own Helm chart
-runs `Recreate` for the identical reason (`chart/values.yaml`: *"Required because the memory PVC
-is ReadWriteOnce (RWO) and cannot be mounted by two pods simultaneously"*) — a `RollingUpdate`
-overlap here would leave the surging pod's volume attach stuck `Pending`
-(`FailedAttachVolume`), arguably a worse failure mode than today's brief, bounded stop-then-start
-outage. The agent also runs forward-only, no-rollback DB migrations automatically on startup, so
+an unexamined default. Its memory-cache PVC is `ReadWriteOnce`; overlapping pods on different nodes can fail volume attachment. The agent also runs forward-only, no-rollback DB migrations automatically on startup, so
 two concurrent agent versions sharing one Postgres instance is a second, independent reason to
 avoid the overlap. `lastUpgradeDurationSeconds` exists to make that outage window's size visible
 and measured, not to eliminate it — see the self-heal coverage above for what happens if the new
@@ -597,14 +599,16 @@ scripts/olm-uninstall.py authorino --yes      # actually uninstall
 ### Prerequisites
 
 ```bash
+# Install the Go version required by go.mod first.
 go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-setup-envtest use 1.31 --bin-dir /tmp/kubebuilder-bin
+export KUBEBUILDER_ASSETS="$(setup-envtest use 1.31 -p path)"
 ```
 
 ### Run tests
 
 ```bash
-KUBEBUILDER_ASSETS=/tmp/kubebuilder-bin/k8s/1.31.0-darwin-arm64 make test
+make test
+make vet
 ```
 
 ### Run locally against a live cluster
@@ -774,7 +778,7 @@ pulse-operator-system/
         │   ├── {ns}/{name}-openshiftpulse       (ServiceAccount)
         │   ├── {ns}-{name}-openshiftpulse-reader  (ClusterRole + ClusterRoleBinding [+ -auth-delegator] — cluster-scoped)
         │   ├── {ns}/{name}-oauth-secrets        (Secret — client-secret + cookie-secret)
-        │   ├── {ns}/{name}-nginx                (ConfigMap — nginx.conf, root /opt/app-root/src)
+        │   ├── {ns}/{name}-nginx                (Secret — nginx.conf, root /opt/app-root/src)
         │   ├── {ns}/{name}-openshiftpulse       (Deployment: nginx + oauth-proxy sidecars)
         │   ├── {ns}/{name}-openshiftpulse       (Service :8443)
         │   ├── {ns}/{name}-openshiftpulse       (Route — reencrypt, OCP assigns hostname)
@@ -791,7 +795,7 @@ pulse-operator-system/
         │
         └── NetworkPolicyReconciler
             ├── {ns}/{name}-openshiftpulse       (UI: ingress from OCP router + Prometheus only)
-            ├── {ns}/{name}-pg-access            (PG: ingress from the agent pod only)
+            ├── {ns}/{name}-pg-access            (PG: ingress from agent and enabled Temporal pods)
             └── {ns}/{name}-agent-access         (Agent: ingress from the UI pod + Prometheus only)
 ```
 
@@ -826,10 +830,10 @@ oc delete pods -n openshiftpulse -l app=pulse-openshiftpulse
 
 **Symptom:** Default nginx welcome page at the route URL.
 
-**Cause:** Stale ConfigMap or nginx not pointing at `/opt/app-root/src`. Force reconcile:
+**Possible cause:** Stale nginx configuration or nginx not pointing at `/opt/app-root/src`. Force reconcile:
 
 ```bash
-oc delete configmap pulse-nginx -n openshiftpulse
+oc delete secret pulse-nginx -n openshiftpulse
 # Operator recreates it within seconds
 ```
 
@@ -874,8 +878,8 @@ oc get clusterrolebinding | grep monitoring-view
 **Cause:** The Alerts view reads firing alerts/rules from `/api/prometheus/` (Thanos-querier) but silences from a separate `/api/alertmanager/` proxy — a pre-existing gap where that location didn't exist in nginx at all, so requests fell through to the SPA's own `index.html` (200 OK, `text/html`) instead of reaching Alertmanager. The UI correctly detected the non-JSON response and reported the backend as unreachable, even though Prometheus itself was fine.
 
 ```bash
-# Confirm the proxy exists in the live ConfigMap
-oc get configmap {name}-nginx -n <namespace> -o jsonpath='{.data.nginx\.conf}' | grep -A5 'location /api/alertmanager/'
+# Confirm the proxy exists in the live configuration Secret
+oc get secret <name>-nginx -n <namespace> -o jsonpath='{.data.nginx\.conf}' | base64 --decode | grep -A5 'location /api/alertmanager/'
 ```
 
 If it's missing, the operator image predates this fix — upgrade and restart the UI pods. Also confirm the logged-in user holds `monitoring-alertmanager-view` (or `-edit`) in `openshift-monitoring`; `cluster-monitoring-view` alone (which covers the Thanos path) is not sufficient for silences.
@@ -912,7 +916,7 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 - All managed pods run as non-root with `AllowPrivilegeEscalation=false`, `Capabilities.Drop=ALL`, and `SeccompProfile=RuntimeDefault`.
 - PostgreSQL sets `ReadOnlyRootFilesystem=false` (PG requires writable socket and temp paths).
-- The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict exec access to `pulse-operator-system` via NetworkPolicy.
+- The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict `pods/exec` access in `pulse-operator-system` with RBAC. NetworkPolicy controls pod traffic and does not authorize Kubernetes exec requests.
 - The agent, UI, PostgreSQL, and MCP server pods each get their own NetworkPolicy restricting ingress to only the pods/namespaces that legitimately call them (e.g. only the UI pod may reach the agent on :8080; only the agent pod may reach the MCP server on :8081) — no pod is reachable cluster-wide by default.
 - Every cluster-scoped resource the operator creates — the agent/UI/MCP ClusterRoles and ClusterRoleBindings, the agent's `-monitoring-view` binding, and the OAuthClient — is named `{namespace}-{name}-…` to prevent collision when multiple CRs coexist on the same cluster. Namespaced resources keep plain `{name}-…` names; Kubernetes already scopes those.
 - The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
