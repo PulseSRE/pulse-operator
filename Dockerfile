@@ -9,7 +9,7 @@
 # themselves regardless of the Go version baked into this base image. This image's
 # default WORKDIR is /opt/app-root/src, owned by its non-root default user (uid 1001),
 # so we build there instead of /workspace.
-FROM registry.access.redhat.com/ubi9/go-toolset:1.26@sha256:1a9bbbfa854931a97dbff276bd69dc0e32b36cb2fbce3b9813b2cf9892aa8d43 AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:1.26@sha256:8cf89835994846ca0dffb9078e3a5638c57ec6175750f0af02fbe9c9942696d3 AS builder
 WORKDIR /opt/app-root/src
 # Unlike Docker Hub's golang images, Red Hat's go-toolset builds Go with
 # GOTOOLCHAIN defaulting to "local" instead of upstream's "auto". Without this,
@@ -26,7 +26,7 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
 
 # Runtime stage
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest@sha256:8eb2830d0936237fc13a1f2f7e45aecf90d69043380ad167fad0343632937f41
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest@sha256:7fbeae18dc9476399f565e68255f602a3374ea8614ba3d14843565131a13ff93
 WORKDIR /
 # The base digest is pinned for reproducibility, which also pins its CVEs.
 # Pull in published package fixes at build time so a rebuild picks up errata

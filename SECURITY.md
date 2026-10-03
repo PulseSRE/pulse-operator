@@ -33,6 +33,30 @@ following are especially welcome:
 - Secrets (ws-token, oauth cookie/client secret, PostgreSQL password) leaking
   via logs, events, or status fields
 
+## Refreshing container dependencies after a CVE
+
+The `container-scan` job builds the operator image and runs Trivy with
+`severity: CRITICAL,HIGH`, `ignore-unfixed: true`, and `exit-code: 1`.
+The runtime base is digest-pinned, and `microdnf update` applies available
+package errata during each build. A new fixable vulnerability can therefore
+change CI results even when the source tree has not changed.
+
+Dependabot checks Docker digests daily. Review its existing PRs before opening
+another update. To validate a candidate, build the complete operator image and
+scan that image with the same Trivy settings; scanning only the base does not
+exercise the package update or inspect the operator binary. Preserve the
+`microdnf update` step when resolving an older digest PR against current main.
+
+The builder contributes only the statically linked manager executable
+(`CGO_ENABLED=0`) to the runtime stage. Updating builder RPMs alone does not
+repair a runtime RPM vulnerability. Updating Go modules or the Go toolchain
+may still be needed for vulnerabilities in the executable.
+
+Kubernetes Go modules and controller-runtime are grouped in Dependabot because
+independent minor updates can produce incompatible generated validation code.
+Resolve them together, run `go mod tidy`, and run the full envtest suite before
+landing the update.
+
 ## Supported versions
 
 This project is `alpha` maturity (see the CSV's `maturity` field) with a
