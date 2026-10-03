@@ -5,14 +5,14 @@
 go build -o /tmp/pulse-operator ./cmd/main.go
 ```
 
-## envtest (unit tests with fake cluster)
+## envtest (local API server and etcd, without workload controllers)
 ```bash
 # Install once
 go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-$(go env GOPATH)/bin/setup-envtest use 1.31 --bin-dir /tmp/kubebuilder-bin
+export KUBEBUILDER_ASSETS="$("$(go env GOPATH)/bin/setup-envtest" use 1.31 -p path)"
 
 # Run
-KUBEBUILDER_ASSETS=/tmp/kubebuilder-bin/k8s/1.31.0-darwin-arm64 go test ./...
+go test -count=1 ./...
 ```
 
 ## Local run against live OCP cluster
@@ -38,8 +38,9 @@ oc apply -f examples/pulse.yaml
   agent Deployment (removed — see agent_reconciler_test.go "Deployment is created even
   while memory PVC is Pending"); Kubernetes just holds the pod Pending until it binds.
 - `--metrics-bind-address` defaults to `:8082`. Specify a different port if 8082 is in use.
-- controller-runtime v0.24.1: startup sequence logs "Stopping and waiting..." during init,
-  not during shutdown — ignore these; wait for "Reconciling OpenShiftPulse" log line.
+- Inspect errors and process exit status when startup logs say "Stopping and waiting";
+  do not treat a shutdown message as proof that initialization is healthy. Confirm
+  readiness and successful reconciliation separately.
 - Finalizer: delete CR only after operator is running so finalizer cleanup fires correctly.
 
 ## Sample CR
