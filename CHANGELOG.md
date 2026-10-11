@@ -7,6 +7,11 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+- Require Go 1.26.9 and update `golang.org/x/net` to 0.60.0 with its required dependencies to address the October HTTP/TLS security findings. Source changes and CI are not evidence of a published image or a deployed upgrade.
+- Integrate controller-runtime 0.25.2 and coordinated dependency/image updates; group Kubernetes module updates in Dependabot.
+- Permit enabled Temporal pods through the scoped PostgreSQL ingress policy and avoid nginx Secret updates for unchanged configuration.
+- Add an explicit-context cluster acceptance runner with optional disposable-namespace probes and mocked runner tests. Real cluster acceptance remains a separate required observation.
+
 - The Temporal config init container copies with `cp -r` rather than `cp -a`. An arbitrary UID cannot chown the copies, so `-a` fails to preserve ownership on every file; busybox only warns, but GNU coreutils exits non-zero — which would hard-fail the init container under a `spec.temporal.image` override built on a coreutils base
 - The envtest for that Deployment now asserts the two halves are wired *to each other* — the server container mounts the same volume the init container populates, over the path it reads — instead of checking each half in isolation, which is how a disconnected pair passed CI
 - The same by-name assertion applied to the Temporal UI Deployment (v0.8.3), which was pinned by index and length: a volume renamed on one side alone leaves the mount pointing at nothing and the pod unschedulable, and "one volume, one mount, right path" is satisfied by two halves that never refer to each other

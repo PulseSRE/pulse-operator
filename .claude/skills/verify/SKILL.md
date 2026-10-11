@@ -15,22 +15,23 @@ export KUBEBUILDER_ASSETS="$("$(go env GOPATH)/bin/setup-envtest" use 1.31 -p pa
 go test -count=1 ./...
 ```
 
-## Local run against live OCP cluster
+## Existing cluster observations
+
+Do not start a local operator or mutate a cluster as part of offline verification.
+For an explicitly authorized existing test installation, reuse the acceptance
+runner and its [guide](../../../docs/CLUSTER_ACCEPTANCE.md):
+
 ```bash
-# Install CRD
-oc apply -f config/crd/bases/pulse.ai_openshiftpulses.yaml
-
-# Run operator (unique ports to avoid 8080/8081 conflicts)
-# --zap-devel: human-readable console logs; omit for the production default (JSON).
-/tmp/pulse-operator \
-  --leader-elect=false \
-  --metrics-bind-address=:9191 \
-  --health-probe-bind-address=:9292 \
-  --zap-devel
-
-# Apply sample CR
-oc apply -f examples/pulse.yaml
+# Plan only; no cluster calls.
+python3 scripts/cluster-acceptance.py \
+  --context YOUR_CONTEXT --namespace YOUR_NAMESPACE --pulse YOUR_CR
+# Add --execute only when the selected cluster is available and reads are authorized.
 ```
+
+Live installation and reconciliation are separate from build/envtest verification.
+Use the canonical README installation guide, select the cluster explicitly, and
+retain exact images and observed identities. Do not infer provider access or
+incident recovery from component readiness.
 
 ## Gotchas
 - Cache warmup takes ~60-90s over WAN. Don't kill before the first reconcile log line appears.
@@ -44,25 +45,8 @@ oc apply -f examples/pulse.yaml
 - Finalizer: delete CR only after operator is running so finalizer cleanup fires correctly.
 
 ## Sample CR
-```yaml
-apiVersion: pulse.ai/v1alpha1
-kind: OpenShiftPulse
-metadata:
-  name: pulse
-  namespace: openshiftpulse
-spec:
-  vertexAI:
-    projectId: my-gcp-project
-    region: us-east5
-    credentialSecret: gcp-sa-key
-  agent:
-    image: quay.io/amobrem/pulse-agent:latest
-    trustLevel: 2
-  ui:
-    image: quay.io/amobrem/openshiftpulse:latest
-    replicas: 2
-  database:
-    storageSize: 5Gi
-  monitoring:
-    enabled: true
-```
+
+Use [examples/pulse.yaml](../../../examples/pulse.yaml) together with the
+[README CR reference](../../../README.md#cr-spec). Replace example provider
+credentials and mutable application tags with the approved matched image pair
+for your test. Keep trust level 2 for approval acceptance tests.
