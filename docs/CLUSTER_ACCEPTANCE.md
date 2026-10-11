@@ -69,3 +69,12 @@ Before accepting a release, retain:
 5. Authenticated UI/API, user RBAC/approval denial, verified writes/rollback in a disposable scope, Temporal approvals/persistence, and database recovery evidence. Those flows require separate end-to-end checks; this runner lists them as unverified.
 
 Do not turn mocked tests, a policy manifest, pod readiness, or an `acceptance: incomplete` report into a claim that the full Pulse release is healthy.
+
+## Controlled incident fixtures
+
+The [offline incident kit](../examples/cluster-test-kit/RUNBOOK.md) generates
+digest-pinned crashloop, failed-rollout and pending-selector workloads for an
+explicit disposable namespace. It reuses this runner for installation checks
+and collects separate incident observations. Approval, stale-target denial,
+sustained recovery, recurrence and browser persistence still require real
+provider-backed cluster execution; fixture generation proves none of them.

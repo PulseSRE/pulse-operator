@@ -50,7 +50,11 @@ exercise the package update or inspect the operator binary. Preserve the
 The builder contributes only the statically linked manager executable
 (`CGO_ENABLED=0`) to the runtime stage. Updating builder RPMs alone does not
 repair a runtime RPM vulnerability. Updating Go modules or the Go toolchain
-may still be needed for vulnerabilities in the executable.
+may still be needed for vulnerabilities in the executable. The current module
+requires Go 1.26.9 or newer and x/net 0.60.0; changing RPMs does not update
+statically linked Go standard-library code. Respect the minimum in `go.mod`
+when building or running security checks, and re-run both govulncheck and the
+built-image scan after such an update.
 
 Kubernetes Go modules and controller-runtime are grouped in Dependabot because
 independent minor updates can produce incompatible generated validation code.
