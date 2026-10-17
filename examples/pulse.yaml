@@ -28,3 +28,7 @@ spec:
   # survive agent restarts and approval phases genuinely wait for a human.
   # temporal:
   #   enabled: true
+  # Dashboard preview (optional). Lets the agent's view designer see a draft
+  # dashboard, rendered with the user's own permissions, before saving it.
+  # render:
+  #   enabled: true

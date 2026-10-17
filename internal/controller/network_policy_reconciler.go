@@ -78,6 +78,20 @@ func (r *OpenShiftPulseReconciler) reconcileUIPodNetworkPolicy(ctx context.Conte
 			},
 		},
 	}
+	// The render listener, from the render pod only (render_reconciler.go).
+	// The main listener on 8080 stays unreachable from it: that is the one
+	// whose /api/agent/ route carries the agent's credential.
+	if renderEnabled(pulse) {
+		portRender := intstr.FromInt32(uiRenderPort)
+		ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
+			From: []networkingv1.NetworkPolicyPeer{{
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": renderResourceName(pulse.Name)},
+				},
+			}},
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcpProto, Port: &portRender}},
+		})
+	}
 	egress := []networkingv1.NetworkPolicyEgressRule{{}}
 	policyTypes := []networkingv1.PolicyType{
 		networkingv1.PolicyTypeIngress,

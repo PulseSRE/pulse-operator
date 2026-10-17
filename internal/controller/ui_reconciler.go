@@ -553,56 +553,15 @@ func (r *UIReconciler) reconcileUIServiceCABundle(ctx context.Context, pulse *pu
 // short hash of the config content so callers can embed it as a Deployment
 // pod-template annotation — Kubernetes then rolls out new pods automatically
 // whenever the nginx config changes (subPath mounts never live-update).
-func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
-	name := uiNginxSecretName(pulse.Name)
-
-	// Read WS token from the agent's ws-token secret so it can be embedded in
-	// the nginx WebSocket proxy rules. Token is created by AgentReconciler on first
-	// reconcile and is stable across upgrades — fall back to empty string on lookup
-	// failure (agent not yet created) and the configmap will update on the next
-	// reconcile after the token secret appears.
-	wsToken := ""
-	tokenSecret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      wsTokenSecretName(pulse.Name),
-		Namespace: pulse.Namespace,
-	}, tokenSecret); err == nil {
-		wsToken = string(tokenSecret.Data["token"])
-	}
-
-	agentSvc := agentResourceName(pulse.Name) // e.g. "pulse-openshift-sre-agent"
-
-	nginxConf := fmt.Sprintf(`worker_processes auto;
-error_log /dev/stderr warn;
-pid /tmp/nginx.pid;
-events { worker_connections 1024; }
-http {
-  include /etc/nginx/mime.types;
-  default_type application/octet-stream;
-  access_log /dev/stdout;
-  sendfile on;
-  keepalive_timeout 65;
-  client_body_temp_path /tmp/client_temp;
-  proxy_temp_path /tmp/proxy_temp;
-  fastcgi_temp_path /tmp/fastcgi_temp;
-  uwsgi_temp_path /tmp/uwsgi_temp;
-  scgi_temp_path /tmp/scgi_temp;
-  map $http_upgrade $connection_upgrade {
-    default upgrade;
-    '' close;
-  }
-  server {
-    listen 8080;
-    server_name _;
-    root /opt/app-root/src;
-    index index.html;
-
-    add_header X-Frame-Options "DENY" always;
+// Shared by the main and render listeners, so the two cannot drift.
+const uiNginxHeaders = `    add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+`
 
-    # Kubernetes API proxy — UI reads cluster resources directly.
+// Proxies that authenticate the logged-in user's own token upstream.
+const uiNginxUserAuthProxies = `    # Kubernetes API proxy — UI reads cluster resources directly.
     #
     # proxy_set_header Origin below is load-bearing, not cosmetic: the
     # frontend watches resources (pods, deployments, etc.) over a raw
@@ -665,7 +624,87 @@ http {
       proxy_read_timeout 60s;
     }
 
-    # Agent WebSocket — appends the shared token as a query param.
+`
+
+const uiNginxStatic = `    # Runtime config served by nginx (no disk file needed).
+    location = /config.js {
+      add_header Content-Type application/javascript;
+      return 200 'window.__PULSE_CONFIG__={};';
+    }
+    location /healthz { return 200 'OK\n'; add_header Content-Type text/plain; }
+    location ~* \.(js|css|png|svg|ico|woff2?|ttf|eot|map)$ {
+      try_files $uri =404;
+      expires 1y;
+      add_header Cache-Control "public, immutable";
+    }
+    location / { try_files $uri $uri/ /index.html; }
+`
+
+func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
+	name := uiNginxSecretName(pulse.Name)
+
+	// Read WS token from the agent's ws-token secret so it can be embedded in
+	// the nginx WebSocket proxy rules. Token is created by AgentReconciler on first
+	// reconcile and is stable across upgrades — fall back to empty string on lookup
+	// failure (agent not yet created) and the configmap will update on the next
+	// reconcile after the token secret appears.
+	wsToken := ""
+	tokenSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      wsTokenSecretName(pulse.Name),
+		Namespace: pulse.Namespace,
+	}, tokenSecret); err == nil {
+		wsToken = string(tokenSecret.Data["token"])
+	}
+
+	agentSvc := agentResourceName(pulse.Name) // e.g. "pulse-openshift-sre-agent"
+
+	// The render-only listener (see render_reconciler.go): what a page needs
+	// to draw with the forwarded user's token, and nothing that carries the
+	// agent's credential. /api/agent/ answers 404 rather than falling through
+	// to the SPA, so a widget that needs the agent fails visibly.
+	renderServer := ""
+	if renderEnabled(pulse) {
+		renderServer = fmt.Sprintf(`  server {
+    listen %d;
+    server_name _;
+    root /opt/app-root/src;
+    index index.html;
+
+%s
+%s    location /api/agent/ { return 404; }
+
+%s  }
+`, uiRenderPort, uiNginxHeaders, uiNginxUserAuthProxies, uiNginxStatic)
+	}
+
+	nginxConf := fmt.Sprintf(`worker_processes auto;
+error_log /dev/stderr warn;
+pid /tmp/nginx.pid;
+events { worker_connections 1024; }
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  access_log /dev/stdout;
+  sendfile on;
+  keepalive_timeout 65;
+  client_body_temp_path /tmp/client_temp;
+  proxy_temp_path /tmp/proxy_temp;
+  fastcgi_temp_path /tmp/fastcgi_temp;
+  uwsgi_temp_path /tmp/uwsgi_temp;
+  scgi_temp_path /tmp/scgi_temp;
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+  }
+  server {
+    listen 8080;
+    server_name _;
+    root /opt/app-root/src;
+    index index.html;
+
+%s
+%s    # Agent WebSocket — appends the shared token as a query param.
     # SECURITY NOTE: unlike the REST proxy below (Authorization: Bearer header),
     # this passes the token via the upstream URL, which risks it appearing in
     # the agent's own request logs. It is NOT switched to a header here because
@@ -693,21 +732,9 @@ http {
       proxy_read_timeout 60s;
     }
 
-    # Runtime config served by nginx (no disk file needed).
-    location = /config.js {
-      add_header Content-Type application/javascript;
-      return 200 'window.__PULSE_CONFIG__={};';
-    }
-    location /healthz { return 200 'OK\n'; add_header Content-Type text/plain; }
-    location ~* \.(js|css|png|svg|ico|woff2?|ttf|eot|map)$ {
-      try_files $uri =404;
-      expires 1y;
-      add_header Cache-Control "public, immutable";
-    }
-    location / { try_files $uri $uri/ /index.html; }
-  }
-}
-`, agentSvc, wsToken, agentSvc, wsToken)
+%s  }
+%s}
+`, uiNginxHeaders, uiNginxUserAuthProxies, agentSvc, wsToken, agentSvc, wsToken, uiNginxStatic, renderServer)
 	cm := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -739,6 +766,16 @@ http {
 	}
 
 	return hash, nil
+}
+
+func uiContainerPorts(pulse *pulsev1alpha1.OpenShiftPulse) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{
+		{Name: "http", ContainerPort: uiHTTPPort, Protocol: corev1.ProtocolTCP},
+	}
+	if renderEnabled(pulse) {
+		ports = append(ports, corev1.ContainerPort{Name: "render", ContainerPort: uiRenderPort, Protocol: corev1.ProtocolTCP})
+	}
+	return ports
 }
 
 // f. Deployment — openshiftpulse (nginx) + oauth-proxy sidecar.
@@ -795,9 +832,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 						Image:           uiImage,
 						Resources:       uiResources(pulse),
 						SecurityContext: defaultContainerSecCtx(),
-						Ports: []corev1.ContainerPort{
-							{Name: "http", ContainerPort: uiHTTPPort, Protocol: corev1.ProtocolTCP},
-						},
+						Ports:           uiContainerPorts(pulse),
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      "nginx-conf",
@@ -1011,6 +1046,16 @@ func (r *UIReconciler) reconcileUIService(ctx context.Context, pulse *pulsev1alp
 				TargetPort: intstr.FromInt(int(uiProxyPort)),
 				Protocol:   corev1.ProtocolTCP,
 			},
+		}
+		// The render listener, for the render service only (its own
+		// NetworkPolicy and the UI pod's admit nothing else to this port).
+		if renderEnabled(pulse) {
+			svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{
+				Name:       "render",
+				Port:       uiRenderPort,
+				TargetPort: intstr.FromInt32(uiRenderPort),
+				Protocol:   corev1.ProtocolTCP,
+			})
 		}
 		return nil
 	})

@@ -113,6 +113,16 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return pgResult, nil
 	}
 
+	// 1b. Render service, before the agent: the agent's env reads the render
+	// token Secret, and a pod referencing a missing Secret will not start.
+	// Also removes the render resources when spec.render is turned off.
+	rr := &RenderReconciler{Client: r.Client, Scheme: r.Scheme}
+	if err := rr.reconcileRender(ctx, pulse); err != nil {
+		logger.Error(err, "render reconcile failed")
+		reconcileErrorsTotal.WithLabelValues("render").Inc()
+		return ctrl.Result{}, fmt.Errorf("reconcileRender: %w", err)
+	}
+
 	// 2. Reconcile Agent sub-resources, providing the database URL.
 	if agentResult, err := r.reconcileAgent(ctx, pulse, dbURL); err != nil {
 		logger.Error(err, "agent reconcile failed")
