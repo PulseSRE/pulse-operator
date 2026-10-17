@@ -561,7 +561,7 @@ const uiNginxHeaders = `    add_header X-Frame-Options "DENY" always;
 `
 
 // Proxies that authenticate the logged-in user's own token upstream.
-const uiNginxUserTokenProxies = `    # Kubernetes API proxy — UI reads cluster resources directly.
+const uiNginxUserAuthProxies = `    # Kubernetes API proxy — UI reads cluster resources directly.
     #
     # proxy_set_header Origin below is load-bearing, not cosmetic: the
     # frontend watches resources (pods, deployments, etc.) over a raw
@@ -675,7 +675,7 @@ func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pul
 %s    location /api/agent/ { return 404; }
 
 %s  }
-`, uiRenderPort, uiNginxHeaders, uiNginxUserTokenProxies, uiNginxStatic)
+`, uiRenderPort, uiNginxHeaders, uiNginxUserAuthProxies, uiNginxStatic)
 	}
 
 	nginxConf := fmt.Sprintf(`worker_processes auto;
@@ -734,7 +734,7 @@ http {
 
 %s  }
 %s}
-`, uiNginxHeaders, uiNginxUserTokenProxies, agentSvc, wsToken, agentSvc, wsToken, uiNginxStatic, renderServer)
+`, uiNginxHeaders, uiNginxUserAuthProxies, agentSvc, wsToken, agentSvc, wsToken, uiNginxStatic, renderServer)
 	cm := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
