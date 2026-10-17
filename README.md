@@ -47,7 +47,7 @@ One `OpenShiftPulse` CR drives the full lifecycle:
 | **UI** | nginx configuration Secret, Deployment with nginx and oauth-proxy (TLS on 8443), Service, Route, OAuthClient |
 | **Monitoring** | ServiceMonitor (agent `/metrics`), PrometheusRule (`PulseAgentDown`, `PulsePostgreSQLDown`) |
 | **MCP** | MCP server ServiceAccount + ClusterRole (read-only) + ClusterRoleBinding, Deployment, Service (optional, `spec.agent.mcp.enabled: true`) |
-| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent and enabled Temporal pods), agent (UI pod + Prometheus), MCP server (agent pod only) |
+| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent and enabled Temporal pods), agent (UI pod + Prometheus), MCP server (agent pod only); render service, when enabled (agent pod in, UI render port and DNS out) |
 | **Cluster detect** | Reads ingress domain, oauth-proxy image digest, ACM availability on first reconcile |
 
 A `pulse.ai/cleanup` finalizer ensures ClusterRoles and OAuthClient are removed when the CR is deleted — no orphans on uninstall.
@@ -413,6 +413,37 @@ oc port-forward -n <ns> svc/<name>-temporal-ui 8080:8080
 ```
 
 Front it with an oauth-proxy before exposing it permanently.
+
+### Dashboard preview (spec.render)
+
+`spec.render.enabled: true` deploys the render service (`{name}-render`, image
+`openshiftpulse-render`, built from pulse-ui's `render/`). It lets the agent's
+view designer screenshot a draft dashboard and fix what it sees before saving.
+The operator injects `PULSE_AGENT_RENDER_URL` and `PULSE_AGENT_RENDER_TOKEN`
+into the agent. Without them, the agent reports preview as unavailable and
+saves as before. Off by default: it runs a headless Chromium (256Mi requested,
+1Gi limit; override with `spec.render.resources`).
+
+The service renders with the requesting user's own token, so it shows nobody
+more than they can already see. The operator enforces that with these pieces:
+
+- **No credentials in the render pod.** `automountServiceAccountToken: false`.
+  The only token it uses is the one each request carries.
+- **Only the agent can call it.** The `{name}-render` NetworkPolicy admits the
+  agent pod only. Requests also need `{name}-render-token`, which only the
+  agent is given.
+- **A render-only UI listener.** The UI pod gains a second nginx listener on
+  8081 (Service port `render`). It serves the static UI and the
+  `/api/kubernetes/`, `/api/prometheus/` and `/api/alertmanager/` proxies,
+  which authenticate the forwarded user token upstream. `/api/agent/` returns
+  404 there. The main listener's agent route adds the agent's own credential
+  and trusts `X-Forwarded-User`, so it must never be reachable from the render
+  pod.
+- **Locked-down egress.** The render pod may reach only that UI port, plus
+  DNS. The UI pod's NetworkPolicy admits only the render pod to 8081.
+
+Turning it off removes the render Deployment, Service, NetworkPolicy and
+token Secret, the agent env vars, and the UI listener.
 
 ## CR Status
 

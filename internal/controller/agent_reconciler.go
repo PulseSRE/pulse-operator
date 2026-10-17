@@ -617,6 +617,21 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		})
 	}
 
+	// preview_dashboard (the view designer seeing its draft) needs both;
+	// without them the agent reports preview as unavailable.
+	if renderEnabled(cr) {
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "PULSE_AGENT_RENDER_URL", Value: RenderServiceURL(cr.Name)},
+			corev1.EnvVar{
+				Name: "PULSE_AGENT_RENDER_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: renderTokenSecretName(cr.Name)},
+					Key:                  "token",
+				}},
+			},
+		)
+	}
+
 	if cr.Spec.Agent.DurableAutoFix != nil && *cr.Spec.Agent.DurableAutoFix {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PULSE_AGENT_DURABLE_AUTOFIX",
