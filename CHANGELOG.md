@@ -5,7 +5,18 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
-## Unreleased
+## v0.9.0 (2026-10-17)
+
+### Added
+- `spec.render` (off by default) deploys the dashboard preview service from pulse-ui v2.32.0. The agent's view designer uses it to see a draft dashboard, rendered with the requesting user's own token, before saving it (#92). It creates:
+  - a `{name}-render` Deployment and Service, with no ServiceAccount token mounted
+  - a `{name}-render-token` Secret shared with the agent (`PULSE_AGENT_RENDER_URL`/`PULSE_AGENT_RENDER_TOKEN`)
+  - a render-only nginx listener on the UI pod (port 8081): static UI and user-token proxies only, with `/api/agent/` returning 404
+  - NetworkPolicies limiting the render pod to agent ingress and UI-render-port plus DNS egress
+
+  Turning it off removes all of it. With render off the generated nginx config is unchanged, so upgrading does not roll the UI pods.
+
+### Changed
 
 - Require Go 1.26.9 and update `golang.org/x/net` to 0.60.0 with its required dependencies to address the October HTTP/TLS security findings. Source changes and CI are not evidence of a published image or a deployed upgrade.
 - Integrate controller-runtime 0.25.2 and coordinated dependency/image updates; group Kubernetes module updates in Dependabot.
