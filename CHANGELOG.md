@@ -8,6 +8,7 @@ actually contains, taken from its commits.
 ## Unreleased
 
 ### Fixed
+- The agent's ClusterRole also grants read-only `get`/`list` on ControllerRevisions, Argo CD Applications and MachineConfigPools: StatefulSet/DaemonSet rollouts and GitOps syncs in "what changed before this incident" (pulse-agent #164), and the maintenance-blocker scanner (pulse-agent #165)
 - The agent's ClusterRole grants read-only `get`/`list` on ClusterOperators and ClusterVersions (`config.openshift.io`), CustomResourceDefinitions and Routes. Without them the monitor's degraded-operators scanner, stuck-CRD check and upgrade and route-certificate inbox generators got 403 on every scan of a default install. The operator's own role gains read on CRDs so it can grant it without `escalate`. Secrets stay opt-in (`spec.agent.allowSecretAccess`)
 
 ## v0.9.0 (2026-10-17)
