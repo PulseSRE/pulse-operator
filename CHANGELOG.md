@@ -5,6 +5,11 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## Unreleased
+
+### Fixed
+- The agent's ClusterRole grants read-only `get`/`list` on ClusterOperators and ClusterVersions (`config.openshift.io`), CustomResourceDefinitions and Routes. Without them the monitor's degraded-operators scanner, stuck-CRD check and upgrade and route-certificate inbox generators got 403 on every scan of a default install. The operator's own role gains read on CRDs so it can grant it without `escalate`. Secrets stay opt-in (`spec.agent.allowSecretAccess`)
+
 ## v0.9.0 (2026-10-17)
 
 ### Added
