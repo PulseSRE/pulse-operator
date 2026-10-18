@@ -287,9 +287,12 @@ var _ = Describe("AgentReconciler", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, role)).To(Succeed())
 
 		want := map[string][]string{
-			"config.openshift.io":  {"clusteroperators", "clusterversions"},
-			"apiextensions.k8s.io": {"customresourcedefinitions"},
-			"route.openshift.io":   {"routes"},
+			"config.openshift.io":               {"clusteroperators", "clusterversions"},
+			"apiextensions.k8s.io":              {"customresourcedefinitions"},
+			"route.openshift.io":                {"routes"},
+			"apps":                              {"controllerrevisions"},
+			"argoproj.io":                       {"applications"},
+			"machineconfiguration.openshift.io": {"machineconfigpools"},
 		}
 		for group, resources := range want {
 			for _, res := range resources {

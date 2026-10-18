@@ -356,6 +356,25 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"routes"},
 				Verbs:     []string{"get", "list"},
 			},
+			// "What changed before this incident": StatefulSet and DaemonSet
+			// rollouts are ControllerRevisions, and GitOps syncs are Argo CD
+			// Applications. The maintenance scanner reads MachineConfigPools
+			// to say which pool will make an upgrade hang. All read-only.
+			{
+				APIGroups: []string{"apps"},
+				Resources: []string{"controllerrevisions"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"argoproj.io"},
+				Resources: []string{"applications"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"machineconfiguration.openshift.io"},
+				Resources: []string{"machineconfigpools"},
+				Verbs:     []string{"get", "list"},
+			},
 		},
 	}
 
