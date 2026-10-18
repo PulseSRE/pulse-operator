@@ -336,6 +336,26 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"nodes", "pods"},
 				Verbs:     []string{"get", "list"},
 			},
+			// What the monitor's scanners and inbox generators read. Without
+			// these the degraded-operators scanner, the stuck-CRD check, the
+			// upgrade and route-certificate generators saw 403 on every scan
+			// and, until the agent reported API errors as scanner failures,
+			// showed "clean". All read-only, cluster-scoped metadata.
+			{
+				APIGroups: []string{"config.openshift.io"},
+				Resources: []string{"clusteroperators", "clusterversions"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"apiextensions.k8s.io"},
+				Resources: []string{"customresourcedefinitions"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"route.openshift.io"},
+				Resources: []string{"routes"},
+				Verbs:     []string{"get", "list"},
+			},
 		},
 	}
 
