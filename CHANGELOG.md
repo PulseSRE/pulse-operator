@@ -5,7 +5,9 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
-## Unreleased
+## v0.10.0 (2026-10-18)
+
+Paired with pulse-agent v2.33.0 and pulse-ui v2.33.0. RBAC-only release: no CRD changes.
 
 ### Fixed
 - The agent's ClusterRole also grants read-only `get`/`list` on ControllerRevisions, Argo CD Applications and MachineConfigPools: StatefulSet/DaemonSet rollouts and GitOps syncs in "what changed before this incident" (pulse-agent #164), and the maintenance-blocker scanner (pulse-agent #165)
