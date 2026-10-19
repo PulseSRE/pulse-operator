@@ -116,6 +116,21 @@ rules:
 - apiGroups: [config.openshift.io]
   resources: [ingresses, clusterversions, clusteroperators]
   verbs: [get, list, watch]
+# Read-only: granted on to the agent's ClusterRole for the stuck-CRD scanner.
+- apiGroups: [apiextensions.k8s.io]
+  resources: [customresourcedefinitions]
+  verbs: [get, list]
+# Read-only: granted on to the agent's ClusterRole for change correlation
+# (rollouts, GitOps syncs) and the maintenance-blocker scanner.
+- apiGroups: [apps]
+  resources: [controllerrevisions]
+  verbs: [get, list]
+- apiGroups: [argoproj.io]
+  resources: [applications]
+  verbs: [get, list]
+- apiGroups: [machineconfiguration.openshift.io]
+  resources: [machineconfigpools]
+  verbs: [get, list]
 - apiGroups: [image.openshift.io]
   resources: [imagestreams]
   verbs: [get, list, watch]

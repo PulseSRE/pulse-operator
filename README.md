@@ -47,7 +47,7 @@ One `OpenShiftPulse` CR drives the full lifecycle:
 | **UI** | nginx configuration Secret, Deployment with nginx and oauth-proxy (TLS on 8443), Service, Route, OAuthClient |
 | **Monitoring** | ServiceMonitor (agent `/metrics`), PrometheusRule (`PulseAgentDown`, `PulsePostgreSQLDown`) |
 | **MCP** | MCP server ServiceAccount + ClusterRole (read-only) + ClusterRoleBinding, Deployment, Service (optional, `spec.agent.mcp.enabled: true`) |
-| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent and enabled Temporal pods), agent (UI pod + Prometheus), MCP server (agent pod only) |
+| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent and enabled Temporal pods), agent (UI pod + Prometheus), MCP server (agent pod only); render service, when enabled (agent pod in, UI render port and DNS out) |
 | **Cluster detect** | Reads ingress domain, oauth-proxy image digest, ACM availability on first reconcile |
 
 A `pulse.ai/cleanup` finalizer ensures ClusterRoles and OAuthClient are removed when the CR is deleted — no orphans on uninstall.
@@ -413,6 +413,37 @@ oc port-forward -n <ns> svc/<name>-temporal-ui 8080:8080
 ```
 
 Front it with an oauth-proxy before exposing it permanently.
+
+### Dashboard preview (spec.render)
+
+`spec.render.enabled: true` deploys the render service (`{name}-render`, image
+`openshiftpulse-render`, built from pulse-ui's `render/`). It lets the agent's
+view designer screenshot a draft dashboard and fix what it sees before saving.
+The operator injects `PULSE_AGENT_RENDER_URL` and `PULSE_AGENT_RENDER_TOKEN`
+into the agent. Without them, the agent reports preview as unavailable and
+saves as before. Off by default: it runs a headless Chromium (256Mi requested,
+1Gi limit; override with `spec.render.resources`).
+
+The service renders with the requesting user's own token, so it shows nobody
+more than they can already see. The operator enforces that with these pieces:
+
+- **No credentials in the render pod.** `automountServiceAccountToken: false`.
+  The only token it uses is the one each request carries.
+- **Only the agent can call it.** The `{name}-render` NetworkPolicy admits the
+  agent pod only. Requests also need `{name}-render-token`, which only the
+  agent is given.
+- **A render-only UI listener.** The UI pod gains a second nginx listener on
+  8081 (Service port `render`). It serves the static UI and the
+  `/api/kubernetes/`, `/api/prometheus/` and `/api/alertmanager/` proxies,
+  which authenticate the forwarded user token upstream. `/api/agent/` returns
+  404 there. The main listener's agent route adds the agent's own credential
+  and trusts `X-Forwarded-User`, so it must never be reachable from the render
+  pod.
+- **Locked-down egress.** The render pod may reach only that UI port, plus
+  DNS. The UI pod's NetworkPolicy admits only the render pod to 8081.
+
+Turning it off removes the render Deployment, Service, NetworkPolicy and
+token Secret, the agent env vars, and the UI listener.
 
 ## CR Status
 
@@ -882,6 +913,7 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict `pods/exec` access in `pulse-operator-system` with RBAC. NetworkPolicy controls pod traffic and does not authorize Kubernetes exec requests.
 - The agent, UI, PostgreSQL, and MCP server have ingress NetworkPolicies. Agent ingress permits UI and Prometheus peers; MCP ingress permits the agent; PostgreSQL permits the agent and enabled Temporal peers. This does not imply all optional components are isolated, does not restrict egress, and requires an enforcing network plugin. Use the cluster acceptance packet probes to verify observed connectivity.
 - Every cluster-scoped resource the operator creates — the agent/UI/MCP ClusterRoles and ClusterRoleBindings, the agent's `-monitoring-view` binding, and the OAuthClient — is named `{namespace}-{name}-…` to prevent collision when multiple CRs coexist on the same cluster. Namespaced resources keep plain `{name}-…` names; Kubernetes already scopes those.
+- The agent's own ClusterRole is read-only unless `allowWriteOperations`/`allowSecretAccess` are set. Besides core workloads, it reads exactly what the monitor's scanners scan: `clusteroperators` and `clusterversions` (degraded operators, upgrades), `customresourcedefinitions` (stuck deletions), `routes` (route errors and certificates), `controllerrevisions` (StatefulSet/DaemonSet rollouts for "what changed"), Argo CD `applications` (GitOps syncs) and `machineconfigpools` (maintenance blockers). All are `get`/`list` only. Before v0.10.0 these reads were missing, and the agent reports the scanners that needed them as degraded ("To fix: …" in the UI); upgrading the operator updates the role on the next reconcile and those warnings clear. The Argo CD rule is harmless on a cluster without Argo CD.
 - The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
 - The UI's nginx proxies both `/api/prometheus/` (Thanos-querier — firing alerts, rules, CPU/memory charts) and `/api/alertmanager/` (Alertmanager — silences: list/create/expire) to `openshift-monitoring`, forwarding the logged-in user's own OAuth token. Reading/writing silences requires the user to additionally hold `monitoring-alertmanager-view` (read) or `monitoring-alertmanager-edit` (read+write) in the `openshift-monitoring` project — a narrower grant than `cluster-monitoring-view`, which only covers the Thanos path.
 - Secrets are generated once and never rotated automatically. `{name}-ws-token` and `{name}-oauth-secrets` can be rotated by deleting the Secret — the operator regenerates it on the next reconcile.

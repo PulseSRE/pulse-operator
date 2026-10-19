@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -38,7 +38,7 @@ jobs:
           $(go env GOPATH)/bin/golangci-lint run ./...
 
   rbac-and-crd-sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -82,7 +82,7 @@ jobs:
           fi
 
   bundle-validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Install operator-sdk
@@ -103,9 +103,9 @@ jobs:
     # bundle/tests/scorecard/config.yaml, so those suites have never
     # actually run. This job runs them for real with `operator-sdk
     # scorecard`, which needs a live Kubernetes API server to schedule its
-    # test Pods against (a plain ubuntu-latest runner has none), so it
+    # test Pods against (a plain ubuntu-24.04 runner has none), so it
     # stands up a throwaway kind cluster first.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Install operator-sdk
@@ -123,7 +123,7 @@ jobs:
         # v1.31.12 build kind v0.30.0 shipped, matching the Kubernetes
         # version the `test` job above already pins via
         # `setup-envtest use 1.31`. `sudo` is required here (unlike the
-        # operator-sdk install above): ubuntu-latest ships its own kind and
+        # operator-sdk install above): ubuntu-24.04 ships its own kind and
         # kubectl at these exact paths, root-owned but world-writable, so a
         # plain `curl -o` overwrites the content fine but a non-root
         # `chmod` on that root-owned file fails with "Operation not
@@ -162,7 +162,7 @@ jobs:
             --output text
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -178,7 +178,7 @@ jobs:
           args: '-exclude-generated ./...'
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -271,7 +271,7 @@ jobs:
           [ $OK -eq 1 ] || { echo "❌ Health probe did not respond"; cat /tmp/operator.log; exit 1; }
 
   container-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Build operator image (not pushed)
@@ -293,7 +293,7 @@ jobs:
     # "exec container process `/bin/opm`: Exec format error". This runner is
     # amd64-native, so it reproduces that failure directly, either at build
     # time (the cache-populate RUN step) or here at run time.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Render the local bundle into a throwaway FBC catalog
