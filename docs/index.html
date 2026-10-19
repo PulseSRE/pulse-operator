@@ -143,7 +143,7 @@
 <main>
 <section class="hero" aria-labelledby="title">
 <h1 id="title">Pulse Operator</h1>
-<div class="version">CURRENT IMPLEMENTATION // INDEPENDENT OPERATOR VERSION</div>
+<div class="version">v0.10.0 // INDEPENDENT OPERATOR VERSION</div>
 <p class="tagline">Deploy and reconcile Pulse through an OpenShiftPulse custom resource.</p>
 <div class="hero-buttons"><a class="btn btn-primary" href="https://github.com/PulseSRE/pulse-operator">Source and setup</a><a class="btn btn-secondary" href="https://github.com/PulseSRE/pulse-operator/releases/latest">Published releases</a></div>
 </section>
@@ -151,6 +151,9 @@
 <article class="feature-card"><h3>Manage image compatibility</h3><p>Agent and UI deploy as a matched pair. Operator versioning is independent; an optional minimum operator version checks the running operator build, not database schema compatibility.</p></article>
 <article class="feature-card"><h3>Publish OLM artifacts</h3><p>The tag workflow builds operator, bundle and file-based catalog images. It updates the bundle CSV for the tag and renders available release history into the catalog.</p></article>
 <article class="feature-card"><h3>Inspect real cluster prerequisites</h3><p>The explicit-context acceptance runner observes component ownership, rollout readiness, image IDs and PostgreSQL policy. Optional disposable-namespace probes test actual connectivity and selected mutations.</p></article></div></section>
+<section class="section" aria-labelledby="new"><h2 id="new">New in v0.10.0</h2><p class="subtitle">Pairs with Pulse Agent and UI v2.33.0. <a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Changelog</a></p><div class="features"><article class="feature-card"><h3>The agent can read what it scans</h3><p>The agent ClusterRole gains read-only access to ClusterOperators, ClusterVersions, CRDs and Routes, so the operator, upgrade, stuck-deletion and route scanners stop running blind.</p></article>
+<article class="feature-card"><h3>What changed, and what will block maintenance</h3><p>Read access to ControllerRevisions and Argo CD Applications lets investigations show StatefulSet and DaemonSet rollouts and GitOps syncs; MachineConfigPools let the maintenance scanner say which pool will hang the next upgrade.</p></article>
+<article class="feature-card"><h3>No new privileges for the operator</h3><p>The operator's own role remains a superset of what it grants, with no escalate or bind; CI checks the role, deploy manifest and CSV stay in sync.</p></article></div></section>
 <section class="section" aria-labelledby="evidence"><h2 id="evidence">Readiness and recovery evidence</h2><p class="subtitle">A ready installation is a prerequisite, not evidence that Pulse diagnosed or repaired an incident. The runner reports incomplete overall acceptance even when its requested observations pass. Real browser, provider, authorization and recovery evidence must be collected separately.</p><p>Crashloop, failed rollout and pending-pod acceptance must preserve diagnostic observations, the exact approved target/change, execution results and fresh recovery measurements. Rejected or unverifiable operations stay unresolved.</p></section>
 <section class="section" aria-labelledby="guides"><h2 id="guides">Operational guides</h2><p class="subtitle">These links open current repository documentation. Historical plans and designs describe proposals, not current operational guarantees.</p><p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/README.md">Install and configure</a></p>
 <p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/config/crd/bases/pulse.ai_openshiftpulses.yaml">Custom resource schema</a></p>
