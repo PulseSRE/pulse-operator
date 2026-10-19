@@ -277,6 +277,37 @@ var _ = Describe("AgentReconciler", func() {
 		Expect(found).To(BeTrue(), "agent ClusterRole must allow creating tokenreviews")
 	})
 
+	// The monitor's scanners read these on every scan. Without them the
+	// degraded-operators and stuck-CRD scanners and the upgrade/route-cert
+	// inbox generators were blind on a default install.
+	It("lets the monitor read what its scanners scan, and nothing more", func() {
+		Expect(reconciler.reconcileClusterRole(ctx, cr)).To(Succeed())
+
+		role := &rbacv1.ClusterRole{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, role)).To(Succeed())
+
+		want := map[string][]string{
+			"config.openshift.io":               {"clusteroperators", "clusterversions"},
+			"apiextensions.k8s.io":              {"customresourcedefinitions"},
+			"route.openshift.io":                {"routes"},
+			"apps":                              {"controllerrevisions"},
+			"argoproj.io":                       {"applications"},
+			"machineconfiguration.openshift.io": {"machineconfigpools"},
+		}
+		for group, resources := range want {
+			for _, res := range resources {
+				var granted bool
+				for _, rule := range role.Rules {
+					if slices.Contains(rule.APIGroups, group) && slices.Contains(rule.Resources, res) {
+						granted = slices.Contains(rule.Verbs, "list")
+						Expect(rule.Verbs).To(ConsistOf("get", "list"), "%s/%s must stay read-only", group, res)
+					}
+				}
+				Expect(granted).To(BeTrue(), "agent ClusterRole must allow listing %s/%s", group, res)
+			}
+		}
+	})
+
 	It("does not hand the agent any authorisation power along with authentication", func() {
 		// TokenReview answers "who is this"; SubjectAccessReview answers "may
 		// they". The agent needs the first and must not quietly acquire the

@@ -51,6 +51,28 @@ type OpenShiftPulseSpec struct {
 	// +optional
 	// +kubebuilder:default={}
 	Temporal TemporalConfig `json:"temporal,omitempty"`
+	// Render deploys the render service (pulse-ui's render/) that lets the
+	// agent's view designer see a draft dashboard before saving it. Off by
+	// default: it runs a headless browser.
+	// +optional
+	// +kubebuilder:default={}
+	Render RenderConfig `json:"render,omitempty"`
+}
+
+type RenderConfig struct {
+	// Enabled is *bool for the same omitempty reason MonitoringConfig
+	// documents. Unset means off.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+	// Image overrides the render service image. Defaults to the UI image's
+	// -render companion (quay.io/amobrem/openshiftpulse-render:latest); pin a
+	// digest in production, as for the UI image.
+	// +optional
+	Image string `json:"image,omitempty"`
+	// Resources for the render container. Defaults to 256Mi requested, 1Gi
+	// limit: Chromium is the whole cost.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 type TemporalConfig struct {

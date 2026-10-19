@@ -336,6 +336,45 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"nodes", "pods"},
 				Verbs:     []string{"get", "list"},
 			},
+			// What the monitor's scanners and inbox generators read. Without
+			// these the degraded-operators scanner, the stuck-CRD check, the
+			// upgrade and route-certificate generators saw 403 on every scan
+			// and, until the agent reported API errors as scanner failures,
+			// showed "clean". All read-only, cluster-scoped metadata.
+			{
+				APIGroups: []string{"config.openshift.io"},
+				Resources: []string{"clusteroperators", "clusterversions"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"apiextensions.k8s.io"},
+				Resources: []string{"customresourcedefinitions"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"route.openshift.io"},
+				Resources: []string{"routes"},
+				Verbs:     []string{"get", "list"},
+			},
+			// "What changed before this incident": StatefulSet and DaemonSet
+			// rollouts are ControllerRevisions, and GitOps syncs are Argo CD
+			// Applications. The maintenance scanner reads MachineConfigPools
+			// to say which pool will make an upgrade hang. All read-only.
+			{
+				APIGroups: []string{"apps"},
+				Resources: []string{"controllerrevisions"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"argoproj.io"},
+				Resources: []string{"applications"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"machineconfiguration.openshift.io"},
+				Resources: []string{"machineconfigpools"},
+				Verbs:     []string{"get", "list"},
+			},
 		},
 	}
 
@@ -615,6 +654,21 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 			Name:  "PULSE_AGENT_TEMPORAL_HOST",
 			Value: TemporalHostFor(cr.Name),
 		})
+	}
+
+	// preview_dashboard (the view designer seeing its draft) needs both;
+	// without them the agent reports preview as unavailable.
+	if renderEnabled(cr) {
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "PULSE_AGENT_RENDER_URL", Value: RenderServiceURL(cr.Name)},
+			corev1.EnvVar{
+				Name: "PULSE_AGENT_RENDER_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: renderTokenSecretName(cr.Name)},
+					Key:                  "token",
+				}},
+			},
+		)
 	}
 
 	if cr.Spec.Agent.DurableAutoFix != nil && *cr.Spec.Agent.DurableAutoFix {
