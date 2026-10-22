@@ -14,7 +14,7 @@
 <body>
 <header class="wrap"><nav class="sites" aria-label="Pulse projects">
 <a class="mark" href="https://github.com/PulseSRE"><svg viewBox="0 0 68 36" aria-hidden="true"><path d="M0 20 H18 L22 24 L28 3 L34 32 L38 20 H50 L54 15 L58 20 H68" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Pulse</span></a>
-<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><span class="ver">operator v0.11.0</span>
+<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.11.0</span>
 </nav></header>
 <main>
 <section class="hero wrap" aria-labelledby="title">
@@ -60,6 +60,15 @@
 </video>
 <figcaption id="film-cap"><b>See it in 30 seconds.</b> A rollout breaks checkout; Pulse opens one incident, asks before rolling back, and marks the fix held after 30 minutes. No sound.</figcaption>
 </figure>
+</section>
+
+<section class="block" aria-labelledby="why">
+<div class="wrap">
+<h2 id="why">Why it matters</h2>
+<p class="intro">An AI agent in your cluster is several services, a database, sign-in, permissions and network rules that all have to stay right. The operator makes that one resource you can review, and keeps it that way.</p>
+<div class="why"><div class="p"><b>Many parts to install and keep in step</b></div><div class="a"><p>One OpenShiftPulse resource. The agent and the console upgrade together as a matched pair, through OLM.</p></div><div class="p"><b>Broken pods and drift at 3 a.m.</b></div><div class="a"><p>The operator replaces stuck pods, restores changed Routes and secrets, and reports each repair it makes.</p></div><div class="p"><b>An over-privileged AI</b></div><div class="a"><p>Read-only by default. Writes, Secret access and who may approve fixes are explicit switches, and each component gets its own network policy.</p></div><div class="p"><b>Losing what it learned</b></div><div class="a"><p>Deleting Pulse keeps the database volume and password, so a reinstall picks up its history, memory and skills.</p></div></div>
+
+</div>
 </section>
 
 <section class="block" aria-labelledby="all">
