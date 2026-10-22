@@ -303,3 +303,30 @@ func (r *TemporalReconciler) reconcileService(ctx context.Context, pulse *pulsev
 	})
 	return err
 }
+
+// removeTemporal deletes the Temporal server when spec.temporal.enabled is off,
+// and the Web UI when either Temporal or spec.temporal.ui is off. Previously
+// both kept running after being disabled. Workflow history lives in the
+// operator's PostgreSQL, not in these pods, so removing them loses nothing and
+// re-enabling picks the history back up.
+func (r *TemporalReconciler) removeTemporal(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	names := []string{temporalResourceName(pulse.Name) + "-ui"}
+	if temporalEnabled(pulse) {
+		if pulse.Spec.Temporal.UI != nil && *pulse.Spec.Temporal.UI {
+			return nil
+		}
+	} else {
+		names = append(names, temporalResourceName(pulse.Name))
+	}
+	for _, name := range names {
+		for _, obj := range []client.Object{
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name}},
+			&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name}},
+		} {
+			if err := deleteOwned(ctx, r.Client, obj, pulse); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

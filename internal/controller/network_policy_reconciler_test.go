@@ -9,8 +9,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
@@ -105,12 +108,67 @@ var _ = Describe("NetworkPolicyReconciler", func() {
 			Namespace: namespace,
 		}, np)).To(Succeed())
 
-		Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app", crName+"-openshift-sre-agent-postgresql"))
+		// Exactly the labels the PostgreSQL pods carry. This asserted
+		// app=<name>-openshift-sre-agent-postgresql, a label no PostgreSQL
+		// pod has, so the policy matched nothing and the test passed anyway.
+		Expect(np.Spec.PodSelector.MatchLabels).To(Equal(pgLabels(crName)))
 		Expect(np.Spec.PolicyTypes).To(ConsistOf(networkingv1.PolicyTypeIngress))
 		Expect(np.Spec.Ingress).To(HaveLen(1))
 		Expect(np.Spec.Ingress[0].From).To(HaveLen(1))
 		Expect(np.Spec.Ingress[0].From[0].PodSelector.MatchLabels).To(
 			HaveKeyWithValue("app", crName+"-openshift-sre-agent"))
+	})
+
+	It("selects the pods the PostgreSQL StatefulSet actually runs", func() {
+		// Compare against the rendered pod template, not a label written in
+		// the test: that is how the old selector stayed wrong.
+		pgCR := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: "netpol-pgsel", Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Database: pulsev1alpha1.DatabaseConfig{StorageSize: "1Gi"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pgCR)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, pgCR)
+			_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pgCR.Name + "-pg-auth", Namespace: namespace}})
+		})
+
+		pg := &PostgreSQLReconciler{Client: k8sClient, Scheme: testScheme}
+		_, _, err := pg.reconcilePostgres(ctx, pgCR)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, pgCR)).To(Succeed())
+
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: pgCR.Name + "-openshift-sre-agent-postgresql", Namespace: namespace,
+		}, sts)).To(Succeed())
+		np := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pgCR.Name + "-pg-access", Namespace: namespace}, np)).To(Succeed())
+
+		selector, err := metav1.LabelSelectorAsSelector(&np.Spec.PodSelector)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(selector.Matches(labels.Set(sts.Spec.Template.Labels))).To(BeTrue(),
+			"the PostgreSQL NetworkPolicy must select the PostgreSQL pods")
+	})
+
+	It("UI NetworkPolicy does not admit user-workload-monitoring", func() {
+		// nginx adds the agent's credential to /api/agent/ and passes identity
+		// headers through; a peer that skips oauth-proxy can act as anyone.
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
+		np := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-openshiftpulse", Namespace: namespace}, np)).To(Succeed())
+		for _, rule := range np.Spec.Ingress {
+			for _, peer := range rule.From {
+				if peer.NamespaceSelector != nil {
+					Expect(peer.NamespaceSelector.MatchLabels).NotTo(
+						HaveKeyWithValue("kubernetes.io/metadata.name", "openshift-user-workload-monitoring"))
+				}
+			}
+			for _, port := range rule.Ports {
+				Expect(port.Port.IntValue()).NotTo(Equal(8080), "nothing may reach nginx's 8080 except through oauth-proxy")
+			}
+		}
 	})
 
 	It("allows only the agent and enabled Temporal server to reach PostgreSQL", func() {

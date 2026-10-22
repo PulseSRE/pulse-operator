@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -176,17 +177,30 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			reconcileErrorsTotal.WithLabelValues("mcp").Inc()
 			return ctrl.Result{}, fmt.Errorf("reconcileMCP: %w", err)
 		}
+	} else {
+		mcpr := &MCPReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
+		if err := mcpr.removeMCP(ctx, pulse); err != nil {
+			logger.Error(err, "MCP removal failed")
+			reconcileErrorsTotal.WithLabelValues("mcp").Inc()
+			return ctrl.Result{}, fmt.Errorf("removeMCP: %w", err)
+		}
 	}
 
 	// 2f. Optional: Temporal server for durable plan execution. Before the
 	// agent step consumes TemporalHostFor — the Service should exist by the
 	// time the agent env points at it, even though DNS would tolerate the gap.
-	if pulse.Spec.Temporal.Enabled != nil && *pulse.Spec.Temporal.Enabled {
+	{
 		tr := &TemporalReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
 		if err := tr.reconcileTemporal(ctx, pulse); err != nil {
 			logger.Error(err, "Temporal reconcile failed")
 			reconcileErrorsTotal.WithLabelValues("temporal").Inc()
 			return ctrl.Result{}, fmt.Errorf("reconcileTemporal: %w", err)
+		}
+		// Also runs when enabled, to drop the Web UI once spec.temporal.ui is off.
+		if err := tr.removeTemporal(ctx, pulse); err != nil {
+			logger.Error(err, "Temporal removal failed")
+			reconcileErrorsTotal.WithLabelValues("temporal").Inc()
+			return ctrl.Result{}, fmt.Errorf("removeTemporal: %w", err)
 		}
 	}
 
@@ -282,8 +296,25 @@ func (r *OpenShiftPulseReconciler) flushInstallingStatus(ctx context.Context, pu
 func (r *OpenShiftPulseReconciler) deleteClusterScopedResources(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
 	var errs []error
 
+	// gone covers both "already deleted" and "this cluster has no such API"
+	// (OAuthClient off OpenShift). Treating the latter as an error held the
+	// finalizer forever, so the CR could never be deleted there.
+	gone := func(err error) bool { return apierrors.IsNotFound(err) || meta.IsNoMatchError(err) }
 	del := func(obj client.Object, desc string) {
-		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.Get(ctx, types.NamespacedName{Name: obj.GetName()}, obj); err != nil {
+			if !gone(err) {
+				errs = append(errs, fmt.Errorf("get %s: %w", desc, err))
+			}
+			return
+		}
+		// Names are namespace-qualified, but a same-named object stamped with
+		// another CR's UID is that CR's, not ours. Objects without the stamp
+		// predate it and are still ours to clean up.
+		if uid := obj.GetAnnotations()[annotationOwnerUID]; uid != "" && uid != string(pulse.UID) {
+			log.FromContext(ctx).Info("not deleting cluster-scoped object owned by another CR", "object", desc, "name", obj.GetName(), "ownerUID", uid)
+			return
+		}
+		if err := r.Delete(ctx, obj); err != nil && !gone(err) {
 			errs = append(errs, fmt.Errorf("delete %s: %w", desc, err))
 		}
 	}
