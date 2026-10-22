@@ -77,6 +77,30 @@ var _ = Describe("NetworkPolicyReconciler", func() {
 		Expect(sawIngressNamespaceRule).To(BeTrue(), "must allow the OCP router ingress namespace")
 	})
 
+	It("UI NetworkPolicy admits a host-network router on 8443, and only on 8443", func() {
+		Expect(rootRecon.reconcileNetworkPolicies(ctx, cr)).To(Succeed())
+
+		np := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName + "-openshiftpulse", Namespace: namespace}, np)).To(Succeed())
+
+		var ports []int32
+		for _, rule := range np.Spec.Ingress {
+			for _, peer := range rule.From {
+				if peer.NamespaceSelector == nil {
+					continue
+				}
+				if v, ok := peer.NamespaceSelector.MatchLabels["policy-group.network.openshift.io/host-network"]; ok && v == "" {
+					for _, p := range rule.Ports {
+						ports = append(ports, p.Port.IntVal)
+					}
+				}
+			}
+		}
+		// Bare metal, vSphere and SNO run the router on the host network by
+		// default; without this peer the Route reaches the pod and is dropped.
+		Expect(ports).To(Equal([]int32{8443}))
+	})
+
 	It("UI NetworkPolicy does not have an empty (match-all) PodSelector in any ingress rule", func() {
 		// Regression test: an empty PodSelector{} matches every pod in the
 		// namespace, not a scoped subset — this used to broaden the "protect

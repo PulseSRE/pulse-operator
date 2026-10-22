@@ -38,13 +38,28 @@ func (r *OpenShiftPulseReconciler) reconcileUIPodNetworkPolicy(ctx context.Conte
 	port8443 := intstr.FromInt(8443)
 
 	ingress := []networkingv1.NetworkPolicyIngressRule{
-		// OCP router ingress namespace.
+		// The OpenShift router, wherever it runs.
 		{
 			From: []networkingv1.NetworkPolicyPeer{
+				// Router pods on the pod network (cloud LoadBalancerService).
 				{
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"network.openshift.io/policy-group": "ingress",
+						},
+					},
+				},
+				// Router pods on the host network (endpointPublishingStrategy:
+				// HostNetwork, the default on bare metal, vSphere and SNO).
+				// Their traffic arrives from the node, not from
+				// openshift-ingress, so the rule above does not match it and
+				// the Route returns 503. This is the label OpenShift documents
+				// for admitting host-network traffic. It reaches only 8443,
+				// which is oauth-proxy and requires login.
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"policy-group.network.openshift.io/host-network": "",
 						},
 					},
 				},
