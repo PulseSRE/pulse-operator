@@ -51,21 +51,14 @@
 <p class="caption">An example resource. Field names are real; see the <a href="https://github.com/PulseSRE/pulse-operator/blob/main/config/crd/bases/pulse.ai_openshiftpulses.yaml">full schema</a> for every option.</p>
 </div>
 
-<section class="block" aria-labelledby="new">
+<section class="block" aria-labelledby="all">
 <div class="wrap">
-<h2 id="new">What's new</h2>
-<div class="release">
-<p class="when"><strong>v0.11.0</strong>22 October 2026<br>Pairs with agent and UI v2.34.0<br>No CRD or RBAC changes</p>
-<ul>
-<li style="--c:var(--trace)"><b>The database is actually isolated.</b> <span>The PostgreSQL network policy selected no pods, so any pod could reach it. It now admits only the agent and, when enabled, Temporal. This starts applying when you upgrade.</span></li>
-<li style="--c:var(--ok)"><b>Turning something off removes it.</b> <span>Disabling MCP, Temporal or the Temporal UI deletes what was created for it, instead of leaving it running with its permissions in place.</span></li>
-<li style="--c:var(--ask)"><b>Works on bare metal, vSphere and single-node clusters.</b> <span>The console now admits routers running on the host network, the default there, which previously got a 503.</span></li>
-<li style="--c:var(--ink)"><b>Cleaner deletes and a patched toolchain.</b> <span>Deleting the resource no longer hangs where the OpenShift OAuth API is missing, never removes another installation's objects, and the operator is built with Go 1.26.10 for a crypto/x509 advisory.</span></li>
-</ul>
-</div>
-<p class="intro"><a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Full changelog</a></p>
+<h2 id="all">Everything it manages</h2>
+<p class="intro">The operator owns the whole lifecycle of a Pulse installation: install, upgrade, isolation, recovery and removal.</p>
+<div class="areas"><div class="area"><h3>Install and upgrade</h3><p>A real OpenShift operator, through OLM.</p><ul><li>Shows up in Installed Operators and upgrades itself from its catalog</li><li>Every release publishes a bundle and a catalog with the full upgrade path</li><li>Rolls the agent and console as a matched pair of images</li><li>Optional version floor: an incompatible operator pins the agent instead of rolling it</li></ul></div><div class="area"><h3>Heal itself</h3><p>Fixes its own installation and tells you it did.</p><ul><li>Replaces agent and console pods stuck pending, failing to pull, or crash-looping</li><li>Recovers a PostgreSQL pod stuck pending</li><li>Puts back a Route or a sign-in cookie secret that someone changed</li><li>Adopts an installation that was previously managed by Helm</li></ul></div><div class="area"><h3>Sign-in and permissions</h3><p>Least privilege, with the switches in one place.</p><ul><li>OpenShift sign-in through an OAuth proxy and its own OAuthClient</li><li>The agent reads; writes and Secret access are separate opt-ins</li><li>Name the admins who may edit skills and approve monitor fixes</li><li>The operator itself holds no escalate or bind rights</li></ul></div><div class="area"><h3>Data that survives</h3><p>Deleting Pulse does not delete what it learned.</p><ul><li>PostgreSQL as a StatefulSet on its own volume</li><li>The data volume and database password are kept on delete</li><li>Reinstall and the agent picks up its history, memory and skills</li><li>Temporal's databases live in the same instance when enabled</li></ul></div><div class="area"><h3>Observability</h3><p>Status you can read from the resource itself.</p><ul><li>Phase and per-component readiness on the resource, plus the Route it serves</li><li>Operator metrics: self-heal actions, readiness, reconcile errors by step</li><li>Observed against requested memory, to size each component</li><li>A ServiceMonitor and alerts for when the agent or database is down</li></ul></div><div class="area"><h3>Knows your cluster</h3><p>Configures itself from what is already there.</p><ul><li>Finds the cluster's application domain for the Route</li><li>Uses the OAuth proxy image that matches your OpenShift version</li><li>Detects Advanced Cluster Management for multi-cluster features</li><li>Names cluster-wide objects per namespace, so installations never collide</li></ul></div></div>
 </div>
 </section>
+
 
 <section class="block" aria-labelledby="net">
 <div class="wrap">
@@ -80,6 +73,22 @@
 <tr><td>MCP server</td><td>The agent</td><td>8081</td></tr>
 <tr><td>Dashboard renderer</td><td>The agent</td><td>8090</td></tr>
 </tbody></table></div>
+</div>
+</section>
+
+<section class="block" aria-labelledby="new">
+<div class="wrap">
+<h2 id="new">What's new</h2>
+<div class="release">
+<p class="when"><strong>v0.11.0</strong>22 October 2026<br>Pairs with agent and UI v2.34.0<br>No CRD or RBAC changes</p>
+<ul>
+<li style="--c:var(--trace)"><b>The database is actually isolated.</b> <span>The PostgreSQL network policy selected no pods, so any pod could reach it. It now admits only the agent and, when enabled, Temporal. This starts applying when you upgrade.</span></li>
+<li style="--c:var(--ok)"><b>Turning something off removes it.</b> <span>Disabling MCP, Temporal or the Temporal UI deletes what was created for it, instead of leaving it running with its permissions in place.</span></li>
+<li style="--c:var(--ask)"><b>Works on bare metal, vSphere and single-node clusters.</b> <span>The console now admits routers running on the host network, the default there, which previously got a 503.</span></li>
+<li style="--c:var(--ink)"><b>Cleaner deletes and a patched toolchain.</b> <span>Deleting the resource no longer hangs where the OpenShift OAuth API is missing, never removes another installation's objects, and the operator is built with Go 1.26.10 for a crypto/x509 advisory.</span></li>
+</ul>
+</div>
+<p class="intro"><a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Full changelog</a></p>
 </div>
 </section>
 
