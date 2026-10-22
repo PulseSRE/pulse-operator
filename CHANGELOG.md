@@ -5,7 +5,12 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
-## Unreleased
+## v0.11.0 (2026-10-22)
+
+Paired with pulse-agent v2.34.0 and pulse-ui v2.34.0. No CRD or RBAC changes. **Behaviour changes on upgrade:** the PostgreSQL NetworkPolicy now applies (its selector used to match no pod), admitting only the agent and, when enabled, the Temporal server; and turning off `spec.agent.mcp.enabled`, `spec.temporal.enabled` or `spec.temporal.ui` now removes those components instead of leaving them running. Pull requests #89–#99.
+
+### Security
+- Built with Go 1.26.10 for the `crypto/x509` advisory GO-2026-6809, flagged by govulncheck and the image scan in 1.26.9
 
 ### Fixed
 - The PostgreSQL NetworkPolicy selected pods by an `app` label the StatefulSet never sets, so it isolated nothing. It now selects the StatefulSet's own `app.kubernetes.io/*` labels, and a test checks the selector against the pod template the operator actually renders
