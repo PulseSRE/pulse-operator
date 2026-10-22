@@ -1,167 +1,110 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pulse Operator — Documentation</title>
-  <meta name="description" content="Pulse Operator: OpenShiftPulse deployment, OLM release artifacts, explicit image compatibility and cluster acceptance observations.">
-  <meta property="og:title" content="Pulse Operator">
-  <meta property="og:description" content="Pulse Operator: OpenShiftPulse deployment, OLM release artifacts, explicit image compatibility and cluster acceptance observations.">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙️</text></svg>" type="image/svg+xml">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #050510;
-      --surface: #0a0a1a;
-      --border: #1a1a3a;
-      --text: #e0e0f0;
-      --muted: #5a5a8a;
-      --cyan: #00f0ff;
-      --magenta: #ff00aa;
-      --violet: #8b5cf6;
-      --green: #00ff88;
-      --yellow: #ffee00;
-      --red: #ff3355;
-      --orange: #ff8800;
-      --glow-cyan: 0 0 20px rgba(0,240,255,0.3), 0 0 40px rgba(0,240,255,0.1);
-      --glow-magenta: 0 0 20px rgba(255,0,170,0.3), 0 0 40px rgba(255,0,170,0.1);
-      --glow-green: 0 0 20px rgba(0,255,136,0.3);
-      --glow-violet: 0 0 20px rgba(139,92,246,0.3);
-    }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, sans-serif; line-height: 1.6; overflow-x: hidden; }
-    a { color: var(--violet); text-decoration: none; }
-    a:hover { text-shadow: var(--glow-violet); }
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse Operator: the whole Pulse stack from one resource</title>
+<meta name="description" content="The Pulse operator installs and keeps reconciling the agent, the console, PostgreSQL and optional components from a single OpenShiftPulse resource.">
+<meta property="og:title" content="Pulse Operator: the whole Pulse stack from one resource">
+<meta property="og:description" content="The Pulse operator installs and keeps reconciling the agent, the console, PostgreSQL and optional components from a single OpenShiftPulse resource.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 68 68'%3E%3Crect width='68' height='68' rx='10' fill='%2313222b'/%3E%3Cpath d='M4 36 H20 L24 40 L30 16 L36 52 L40 36 H50 L54 31 L58 36 H64' fill='none' stroke='%23eef2ef' stroke-width='5' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
 
-    /* Scanline overlay */
-    body::after { content: ''; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(139,92,246,0.012) 2px, rgba(139,92,246,0.012) 4px); pointer-events: none; z-index: 9999; }
-
-    /* Grid background */
-    .grid-bg { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-image: linear-gradient(rgba(139,92,246,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(139,92,246,0.025) 1px, transparent 1px); background-size: 60px 60px; pointer-events: none; z-index: -1; }
-
-    /* Hero */
-    .hero { text-align: center; padding: 100px 24px 80px; position: relative; }
-    .hero::before { content: ''; position: absolute; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 800px; background: radial-gradient(circle, rgba(139,92,246,0.06) 0%, rgba(0,240,255,0.04) 40%, transparent 70%); pointer-events: none; }
-    .hero-icon { font-size: 4rem; margin-bottom: 16px; display: block; filter: drop-shadow(0 0 20px rgba(139,92,246,0.5)); animation: pulse-glow 3s ease-in-out infinite; }
-    @keyframes pulse-glow { 0%, 100% { filter: drop-shadow(0 0 20px rgba(139,92,246,0.5)); } 50% { filter: drop-shadow(0 0 30px rgba(0,240,255,0.6)); } }
-    .hero h1 { font-size: 3.5rem; font-weight: 900; letter-spacing: -0.03em; background: linear-gradient(135deg, var(--violet), var(--cyan), var(--green)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .hero .version { display: inline-block; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--violet); border: 1px solid rgba(139,92,246,0.3); padding: 2px 10px; border-radius: 4px; margin-top: 12px; text-shadow: var(--glow-violet); }
-    .hero .tagline { font-size: 1.2rem; color: var(--muted); max-width: 650px; margin: 20px auto 36px; }
-    .hero .tagline em { color: var(--violet); font-style: normal; text-shadow: 0 0 10px rgba(139,92,246,0.3); }
-    .hero-buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 28px; border-radius: 4px; font-weight: 700; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; transition: all 0.2s; border: 1px solid transparent; font-family: 'JetBrains Mono', monospace; }
-    .btn-primary { background: transparent; color: var(--violet); border-color: var(--violet); box-shadow: var(--glow-violet), inset 0 0 20px rgba(139,92,246,0.05); }
-    .btn-primary:hover { background: rgba(139,92,246,0.1); box-shadow: 0 0 30px rgba(139,92,246,0.4), inset 0 0 30px rgba(139,92,246,0.1); text-decoration: none; }
-    .btn-secondary { background: transparent; color: var(--cyan); border-color: rgba(0,240,255,0.4); }
-    .btn-secondary:hover { background: rgba(0,240,255,0.1); box-shadow: var(--glow-cyan); text-decoration: none; }
-    .btn-ghost { background: transparent; color: var(--muted); border-color: var(--border); }
-    .btn-ghost:hover { border-color: var(--green); color: var(--green); text-decoration: none; }
-
-    /* Dividers & Stats */
-    .neon-divider { height: 1px; background: linear-gradient(90deg, transparent, var(--violet), var(--cyan), var(--green), transparent); opacity: 0.4; }
-    .stats-bar { display: flex; justify-content: center; gap: 48px; padding: 40px 24px; flex-wrap: wrap; }
-    .stat { text-align: center; }
-    .stat-value { font-size: 2rem; font-weight: 900; font-family: 'JetBrains Mono', monospace; color: var(--violet); text-shadow: 0 0 15px rgba(139,92,246,0.4); }
-    .stat-value.cyan { color: var(--cyan); text-shadow: 0 0 15px rgba(0,240,255,0.4); }
-    .stat-value.green { color: var(--green); text-shadow: 0 0 15px rgba(0,255,136,0.4); }
-    .stat-value.magenta { color: var(--magenta); text-shadow: 0 0 15px rgba(255,0,170,0.4); }
-    .stat-value.yellow { color: var(--yellow); text-shadow: 0 0 15px rgba(255,238,0,0.4); }
-    .stat-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: 'JetBrains Mono', monospace; }
-
-    /* Sections */
-    .section { max-width: 1100px; margin: 0 auto; padding: 80px 24px; }
-    .section h2 { font-size: 1.8rem; font-weight: 800; color: var(--violet); text-shadow: 0 0 20px rgba(139,92,246,0.3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }
-    .section .subtitle { color: var(--muted); margin-bottom: 40px; }
-
-    /* Feature cards */
-    .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
-    .feature-card { background: linear-gradient(135deg, rgba(10,10,30,0.9), rgba(15,10,25,0.9)); border: 1px solid var(--border); border-radius: 4px; padding: 24px; transition: all 0.3s; position: relative; overflow: hidden; }
-    .feature-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--violet), var(--cyan)); opacity: 0; transition: opacity 0.3s; }
-    .feature-card:hover { border-color: rgba(139,92,246,0.3); box-shadow: 0 0 20px rgba(139,92,246,0.05); }
-    .feature-card:hover::before { opacity: 1; }
-    .feature-card h3 { font-size: 1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-    .feature-card p { color: var(--muted); font-size: 0.85rem; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; font-family: 'JetBrains Mono', monospace; }
-    .badge-auto { background: rgba(139,92,246,0.15); color: var(--violet); border: 1px solid rgba(139,92,246,0.3); }
-    .badge-olm { background: rgba(0,240,255,0.1); color: var(--cyan); border: 1px solid rgba(0,240,255,0.3); }
-    .badge-sec { background: rgba(0,255,136,0.1); color: var(--green); border: 1px solid rgba(0,255,136,0.3); }
-
-    /* Code block */
-    .code-block { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 24px; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; line-height: 1.9; overflow-x: auto; color: var(--muted); position: relative; white-space: pre; }
-    .code-block::before { content: 'terminal'; position: absolute; top: 8px; right: 12px; font-size: 0.6rem; color: rgba(139,92,246,0.4); text-transform: uppercase; letter-spacing: 0.1em; }
-    .code-block .cmd { color: var(--violet); }
-    .code-block .flag { color: var(--cyan); }
-    .code-block .comment { color: rgba(90,90,138,0.6); }
-    .code-block .key { color: var(--green); }
-    .code-block .val { color: var(--yellow); }
-
-    /* Reconciler diagram */
-    .reconciler-tree { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 24px; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.8; overflow-x: auto; white-space: pre; }
-    .t-root { color: var(--violet); }
-    .t-branch { color: var(--cyan); }
-    .t-leaf { color: var(--muted); }
-    .t-resource { color: var(--green); }
-    .t-optional { color: var(--yellow); }
-
-    /* Trust grid */
-    .trust-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
-    .trust-card { background: linear-gradient(135deg, rgba(10,10,30,0.9), rgba(15,10,25,0.9)); border: 1px solid var(--border); border-radius: 4px; padding: 20px 16px; text-align: center; transition: all 0.3s; }
-    .trust-card:hover { border-color: rgba(139,92,246,0.4); box-shadow: 0 0 15px rgba(139,92,246,0.1); }
-    .trust-num { font-size: 2.5rem; font-weight: 900; font-family: 'JetBrains Mono', monospace; margin-bottom: 8px; }
-    .trust-label { font-size: 0.7rem; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
-    .trust-desc { font-size: 0.75rem; color: var(--muted); }
-
-    /* Related links */
-    .link-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-    .link-card { display: flex; flex-direction: column; gap: 4px; background: linear-gradient(135deg, rgba(10,10,30,0.9), rgba(15,10,25,0.9)); border: 1px solid var(--border); border-radius: 4px; padding: 20px; transition: all 0.3s; cursor: pointer; }
-    .link-card:hover { border-color: rgba(139,92,246,0.4); box-shadow: 0 0 15px rgba(139,92,246,0.08); text-decoration: none; }
-    .link-card-icon { font-size: 1.25rem; margin-bottom: 4px; }
-    .link-card-title { font-weight: 700; font-size: 0.9rem; font-family: 'JetBrains Mono', monospace; color: var(--text); }
-    .link-card-desc { font-size: 0.78rem; color: var(--muted); }
-
-    /* CTA */
-    .cta-section { text-align: center; padding: 100px 24px; position: relative; }
-    .cta-section h2 { font-size: 2rem; margin-bottom: 12px; color: var(--text); }
-    .cta-section p { color: var(--muted); margin-bottom: 32px; max-width: 500px; margin-left: auto; margin-right: auto; }
-
-    footer { text-align: center; padding: 32px 24px; color: var(--muted); font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; }
-    footer a { color: var(--muted); }
-    footer a:hover { color: var(--violet); }
-
-    @media (max-width: 768px) {
-      .hero h1 { font-size: 2.2rem; }
-      .stats-bar { gap: 20px; }
-      .features { grid-template-columns: 1fr; }
-      .trust-grid { grid-template-columns: repeat(3, 1fr); }
-    }
-      a:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
-    .section p + p { margin-top: 12px; }
-  </style>
+<link rel="stylesheet" href="site.css">
 </head>
 <body>
-<div class="grid-bg" aria-hidden="true"></div>
+<header class="wrap"><nav class="sites" aria-label="Pulse projects">
+<a class="mark" href="https://github.com/PulseSRE"><svg viewBox="0 0 68 36" aria-hidden="true"><path d="M0 20 H18 L22 24 L28 3 L34 32 L38 20 H50 L54 15 L58 20 H68" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Pulse</span></a>
+<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><span class="ver">operator v0.11.0</span>
+</nav></header>
 <main>
-<section class="hero" aria-labelledby="title">
-<h1 id="title">Pulse Operator</h1>
-<div class="version">v0.10.0 // INDEPENDENT OPERATOR VERSION</div>
-<p class="tagline">Deploy and reconcile Pulse through an OpenShiftPulse custom resource.</p>
-<div class="hero-buttons"><a class="btn btn-primary" href="https://github.com/PulseSRE/pulse-operator">Source and setup</a><a class="btn btn-secondary" href="https://github.com/PulseSRE/pulse-operator/releases/latest">Published releases</a></div>
+<section class="hero wrap" aria-labelledby="title">
+<h1 id="title" class="display"><span class="line">One resource.</span> <span class="line">The whole Pulse stack.</span></h1>
+<p class="lede">The Pulse operator installs the agent, the console and PostgreSQL from a single OpenShiftPulse resource, then keeps them matching it. Change a field and the cluster follows; turn a component off and it is removed.</p>
+<div class="actions">
+<a class="btn primary" href="https://github.com/PulseSRE/pulse-operator#install-via-olm">Install from the catalog</a>
+<a class="btn" href="https://github.com/PulseSRE/pulse-operator">Read the source</a>
+</div>
 </section>
-<section class="section" aria-labelledby="capabilities"><h2 id="capabilities">What you can do</h2><p class="subtitle">Capabilities depend on configuration, permissions and the deployed image pair. Consult current source and operational guides.</p><div class="features"><article class="feature-card"><h3>Reconcile the installation</h3><p>The custom resource configures UI, agent, PostgreSQL and optional MCP/Temporal components. Inspect the current CRD and README for supported fields and defaults.</p></article>
-<article class="feature-card"><h3>Manage image compatibility</h3><p>Agent and UI deploy as a matched pair. Operator versioning is independent; an optional minimum operator version checks the running operator build, not database schema compatibility.</p></article>
-<article class="feature-card"><h3>Publish OLM artifacts</h3><p>The tag workflow builds operator, bundle and file-based catalog images. It updates the bundle CSV for the tag and renders available release history into the catalog.</p></article>
-<article class="feature-card"><h3>Inspect real cluster prerequisites</h3><p>The explicit-context acceptance runner observes component ownership, rollout readiness, image IDs and PostgreSQL policy. Optional disposable-namespace probes test actual connectivity and selected mutations.</p></article></div></section>
-<section class="section" aria-labelledby="new"><h2 id="new">New in v0.10.0</h2><p class="subtitle">Pairs with Pulse Agent and UI v2.33.0. <a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Changelog</a></p><div class="features"><article class="feature-card"><h3>The agent can read what it scans</h3><p>The agent ClusterRole gains read-only access to ClusterOperators, ClusterVersions, CRDs and Routes, so the operator, upgrade, stuck-deletion and route scanners stop running blind.</p></article>
-<article class="feature-card"><h3>What changed, and what will block maintenance</h3><p>Read access to ControllerRevisions and Argo CD Applications lets investigations show StatefulSet and DaemonSet rollouts and GitOps syncs; MachineConfigPools let the maintenance scanner say which pool will hang the next upgrade.</p></article>
-<article class="feature-card"><h3>No new privileges for the operator</h3><p>The operator's own role remains a superset of what it grants, with no escalate or bind; CI checks the role, deploy manifest and CSV stay in sync.</p></article></div></section>
-<section class="section" aria-labelledby="evidence"><h2 id="evidence">Readiness and recovery evidence</h2><p class="subtitle">A ready installation is a prerequisite, not evidence that Pulse diagnosed or repaired an incident. The runner reports incomplete overall acceptance even when its requested observations pass. Real browser, provider, authorization and recovery evidence must be collected separately.</p><p>Crashloop, failed rollout and pending-pod acceptance must preserve diagnostic observations, the exact approved target/change, execution results and fresh recovery measurements. Rejected or unverifiable operations stay unresolved.</p></section>
-<section class="section" aria-labelledby="guides"><h2 id="guides">Operational guides</h2><p class="subtitle">These links open current repository documentation. Historical plans and designs describe proposals, not current operational guarantees.</p><p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/README.md">Install and configure</a></p>
-<p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/config/crd/bases/pulse.ai_openshiftpulses.yaml">Custom resource schema</a></p>
-<p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/docs/CLUSTER_ACCEPTANCE.md">Cluster acceptance guide</a></p>
-<p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/scripts/cluster-acceptance.py">Acceptance runner</a></p>
-<p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/.github/workflows/release.yml">Release workflow</a></p>
-<p><a href="https://github.com/PulseSRE/pulse-operator/blob/main/SECURITY.md">Security and build prerequisites</a></p></section>
+
+<div class="wrap">
+<div class="spec" role="group" aria-label="An OpenShiftPulse resource, and what the operator builds from each part"><div class="row"><pre><code><span class="k">apiVersion:</span> pulse.ai/v1alpha1
+<span class="k">kind:</span> OpenShiftPulse
+<span class="k">metadata:</span>
+  <span class="k">name:</span> pulse
+  <span class="k">namespace:</span> openshiftpulse
+<span class="k">spec:</span></code></pre><div class="what"><b>One resource per installation</b><span>Its status reports the phase, whether the agent, database and UI are ready, and the Route the UI is served on.</span></div></div><div class="row"><pre><code>  <span class="k">vertexAI:</span>
+    <span class="k">projectId:</span> my-gcp-project
+    <span class="k">region:</span> us-east5
+    <span class="k">credentialSecret:</span> gcp-sa-key</code></pre><div class="what"><b>The Claude backend</b><span>Vertex AI by reference to a Secret you create, or an Anthropic API key. The operator never copies the credential into the resource.</span></div></div><div class="row"><pre><code>  <span class="k">agent:</span>
+    <span class="k">image:</span> <span class="v">quay.io/amobrem/pulse-agent:v2.34.0</span>
+    <span class="k">trustLevel:</span> 2
+    <span class="k">allowWriteOperations:</span> false
+    <span class="k">adminUsers:</span> "kube:admin"</code></pre><div class="what"><b>The agent</b><span>Deployment, Service, token Secret and memory volume, and a read-only ClusterRole. Writes stay off until you allow them. Only the users you list can edit skills or approve monitor fixes; left empty, any signed-in user can.</span></div></div><div class="row"><pre><code>  <span class="k">ui:</span>
+    <span class="k">image:</span> <span class="v">quay.io/amobrem/openshiftpulse:v2.34.0</span>
+    <span class="k">replicas:</span> 2</code></pre><div class="what"><b>The console</b><span>nginx and an OpenShift OAuth proxy behind a Route and an OAuthClient. With more than one replica it also gets a disruption budget, removed again if you scale back to one.</span></div></div><div class="row"><pre><code>  <span class="k">database:</span>
+    <span class="k">storageSize:</span> 5Gi</code></pre><div class="what"><b>PostgreSQL</b><span>A StatefulSet and its volume. The data volume and password Secret are kept when the resource is deleted, so a reinstall finds its history.</span></div></div><div class="row"><pre><code>  <span class="k">monitoring:</span>
+    <span class="k">enabled:</span> true</code></pre><div class="what"><b>Monitoring<span class="opt">optional</span></b><span>A ServiceMonitor for the agent's metrics and alerts for when the agent or the database is down.</span></div></div><div class="row"><pre><code>  <span class="c"># inside agent:</span>
+    <span class="k">mcp:</span>
+      <span class="k">enabled:</span> true</code></pre><div class="what"><b>OpenShift MCP server<span class="opt">optional</span></b><span>A read-only tool server the agent can call. Setting it back to false removes it, including its cluster-wide role.</span></div></div><div class="row"><pre><code>  <span class="k">temporal:</span>
+    <span class="k">enabled:</span> true
+    <span class="k">ui:</span> false</code></pre><div class="what"><b>Durable plans<span class="opt">optional</span></b><span>A Temporal server on the same PostgreSQL, so long plans survive restarts and can wait for approval. Turning it off removes it; the history stays in the database.</span></div></div></div>
+<p class="caption">An example resource. Field names are real; see the <a href="https://github.com/PulseSRE/pulse-operator/blob/main/config/crd/bases/pulse.ai_openshiftpulses.yaml">full schema</a> for every option.</p>
+</div>
+
+<section class="block" aria-labelledby="new">
+<div class="wrap">
+<h2 id="new">What's new</h2>
+<div class="release">
+<p class="when"><strong>v0.11.0</strong>22 October 2026<br>Pairs with agent and UI v2.34.0<br>No CRD or RBAC changes</p>
+<ul>
+<li style="--c:var(--trace)"><b>The database is actually isolated.</b> <span>The PostgreSQL network policy selected no pods, so any pod could reach it. It now admits only the agent and, when enabled, Temporal. This starts applying when you upgrade.</span></li>
+<li style="--c:var(--ok)"><b>Turning something off removes it.</b> <span>Disabling MCP, Temporal or the Temporal UI deletes what was created for it, instead of leaving it running with its permissions in place.</span></li>
+<li style="--c:var(--ask)"><b>Works on bare metal, vSphere and single-node clusters.</b> <span>The console now admits routers running on the host network, the default there, which previously got a 503.</span></li>
+<li style="--c:var(--ink)"><b>Cleaner deletes and a patched toolchain.</b> <span>Deleting the resource no longer hangs where the OpenShift OAuth API is missing, never removes another installation's objects, and the operator is built with Go 1.26.10 for a crypto/x509 advisory.</span></li>
+</ul>
+</div>
+<p class="intro"><a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Full changelog</a></p>
+</div>
+</section>
+
+<section class="block" aria-labelledby="net">
+<div class="wrap">
+<h2 id="net">Who can reach what</h2>
+<p class="intro">Each component gets a network policy for what may connect to it. Outgoing traffic is not restricted, so metrics, logs, sign-in and the Claude API keep working.</p>
+<div class="table-scroll"><table class="facts">
+<thead><tr><th scope="col">Into</th><th scope="col">From</th><th scope="col">Port</th></tr></thead>
+<tbody>
+<tr><td>Console</td><td>The OpenShift router, on the pod or the host network</td><td>8443</td></tr>
+<tr><td>Agent</td><td>The console, and user-workload Prometheus for metrics</td><td>8080</td></tr>
+<tr><td>PostgreSQL</td><td>The agent, and the Temporal server when enabled</td><td>5432</td></tr>
+<tr><td>MCP server</td><td>The agent</td><td>8081</td></tr>
+<tr><td>Dashboard renderer</td><td>The agent</td><td>8090</td></tr>
+</tbody></table></div>
+</div>
+</section>
+
+<section class="block" aria-labelledby="install">
+<div class="wrap">
+<h2 id="install">Install</h2>
+<p class="intro">Needs OpenShift 4.12 or later. Installing through OLM puts Pulse in Installed Operators and gives it automatic upgrades.</p>
+<ol class="steps">
+<li><h3>Add the catalog</h3><p>Create the <code>pulse-operator-catalog</code> CatalogSource in <code>openshift-marketplace</code>.</p></li>
+<li><h3>Make a namespace</h3><p><code>oc new-project openshiftpulse</code>, then create the Secret for your Claude backend there.</p></li>
+<li><h3>Subscribe</h3><p>Create an OperatorGroup and a Subscription to the operator.</p></li>
+<li><h3>Create Pulse</h3><p>Apply an OpenShiftPulse resource like the one above, and open the Route it reports.</p></li>
+</ol>
+<ul class="links">
+<li><a href="https://github.com/PulseSRE/pulse-operator#install-via-olm">Step-by-step install</a><span>Every command, in the README</span></li>
+<li><a href="https://github.com/PulseSRE/pulse-operator#upgrading">Upgrading</a><span>Operator upgrades and moving the agent and console together</span></li>
+<li><a href="https://github.com/PulseSRE/pulse-operator/blob/main/docs/CLUSTER_ACCEPTANCE.md">Cluster acceptance</a><span>Check a real installation before you trust it</span></li>
+<li><a href="https://github.com/PulseSRE/pulse-operator/blob/main/SECURITY.md">Security</a><span>What the operator can do, and how to limit it</span></li>
+</ul>
+</div>
+</section>
 </main>
-<footer>Pulse Operator · <a href="https://github.com/PulseSRE/pulse-operator/releases">Release history</a> · <a href="https://pulsesre.github.io/pulse-agent/">Pulse agent</a> <a href="https://pulsesre.github.io/pulse-ui/">Pulse ui</a></footer>
+<footer><div class="wrap">
+<span>Pulse operator v0.11.0. MIT licensed.</span>
+<span><a href="https://github.com/PulseSRE/pulse-operator">Source</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/releases">Releases</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Changelog</a></span>
+</div></footer>
 </body>
 </html>
