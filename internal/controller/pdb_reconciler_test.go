@@ -105,6 +105,24 @@ var _ = Describe("PDBReconciler (reconcileUIPodsDisruptionBudget)", func() {
 			Expect(rootRecon.reconcileUIPodsDisruptionBudget(ctx, cr)).To(Succeed())
 			Expect(rootRecon.reconcileUIPodsDisruptionBudget(ctx, cr)).To(Succeed())
 		})
+
+		It("removes the PDB when the UI is scaled down to one replica", func() {
+			// minAvailable=1 over a single pod can never be satisfied by an
+			// eviction; a PDB left behind blocks node drains and OCP upgrades.
+			Expect(rootRecon.reconcileUIPodsDisruptionBudget(ctx, cr)).To(Succeed())
+			key := types.NamespacedName{Name: crName + "-openshiftpulse", Namespace: namespace}
+			Expect(k8sClient.Get(ctx, key, &policyv1.PodDisruptionBudget{})).To(Succeed())
+
+			cr.Spec.UI.Replicas = 1
+			Expect(rootRecon.reconcileUIPodsDisruptionBudget(ctx, cr)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, key, &policyv1.PodDisruptionBudget{})
+				return apierrors.IsNotFound(err)
+			}).Should(BeTrue(), "scaling to one replica must delete the PDB")
+
+			// Already gone: reconciling again is a no-op, not an error.
+			Expect(rootRecon.reconcileUIPodsDisruptionBudget(ctx, cr)).To(Succeed())
+		})
 	})
 
 	// Regression: reconcileUIDeployment resolves a stored Replicas value of 0 to

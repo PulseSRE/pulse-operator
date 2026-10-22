@@ -36,7 +36,6 @@ func (r *OpenShiftPulseReconciler) reconcileUIPodNetworkPolicy(ctx context.Conte
 
 	tcpProto := corev1.ProtocolTCP
 	port8443 := intstr.FromInt(8443)
-	port8080 := intstr.FromInt(8080)
 
 	ingress := []networkingv1.NetworkPolicyIngressRule{
 		// OCP router ingress namespace.
@@ -61,22 +60,11 @@ func (r *OpenShiftPulseReconciler) reconcileUIPodNetworkPolicy(ctx context.Conte
 		// makes outbound calls to the agent and the Kubernetes API), so it was
 		// removed rather than narrowed. Re-add it scoped to a specific
 		// PodSelector if a real caller shows up.
-		// user-workload-monitoring scrape.
-		{
-			From: []networkingv1.NetworkPolicyPeer{
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "openshift-user-workload-monitoring",
-						},
-					},
-				},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcpProto, Port: &port8080},
-				{Protocol: &tcpProto, Port: &port8443},
-			},
-		},
+		// No user-workload-monitoring rule here. It used to admit that
+		// namespace to nginx on 8080 behind oauth-proxy's back, and nginx adds
+		// the agent's shared credential to /api/agent/ and passes identity
+		// headers through, so a pod there could act as any user. Nothing
+		// scrapes the UI: the ServiceMonitor targets the agent only.
 	}
 	// The render listener, from the render pod only (render_reconciler.go).
 	// The main listener on 8080 stays unreachable from it: that is the one
@@ -119,7 +107,6 @@ func (r *OpenShiftPulseReconciler) reconcileUIPodNetworkPolicy(ctx context.Conte
 
 func (r *OpenShiftPulseReconciler) reconcilePGNetworkPolicy(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
 	name := pulse.Name + "-pg-access"
-	pgApp := pulse.Name + "-openshift-sre-agent-postgresql"
 	agentApp := pulse.Name + "-openshift-sre-agent"
 
 	tcpProto := corev1.ProtocolTCP
@@ -155,8 +142,12 @@ func (r *OpenShiftPulseReconciler) reconcilePGNetworkPolicy(ctx context.Context,
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+		// The PostgreSQL pods carry pgLabels (app.kubernetes.io/*), never an
+		// "app" label. Selecting on "app" matched no pod at all, so the policy
+		// existed and protected nothing: every pod in the cluster could reach
+		// 5432. Select on exactly what the StatefulSet stamps on its pods.
 		np.Spec.PodSelector = metav1.LabelSelector{
-			MatchLabels: map[string]string{"app": pgApp},
+			MatchLabels: pgLabels(pulse.Name),
 		}
 		np.Spec.PolicyTypes = []networkingv1.PolicyType{
 			networkingv1.PolicyTypeIngress,

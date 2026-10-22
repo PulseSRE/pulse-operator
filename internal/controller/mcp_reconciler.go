@@ -368,3 +368,26 @@ func (r *MCPReconciler) reconcileMCPService(ctx context.Context, pulse *pulsev1a
 	existing.Spec.Ports = desired.Spec.Ports
 	return r.Update(ctx, existing)
 }
+
+// removeMCP deletes what reconcileMCP created once spec.agent.mcp.enabled is
+// turned off. Without it, disabling MCP left the server running with its
+// cluster-wide read ClusterRole bound, which is the opposite of what someone
+// switching it off intends. Only objects this CR owns are touched.
+func (r *MCPReconciler) removeMCP(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	name := mcpResourceName(pulse.Name)
+	for _, obj := range []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: name}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name}},
+	} {
+		if err := deleteOwned(ctx, r.Client, obj, pulse); err != nil {
+			return err
+		}
+	}
+	crName := mcpClusterRoleName(pulse.Name, pulse.Namespace)
+	if err := deleteOwnedClusterScoped(ctx, r.Client, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: crName}}, pulse); err != nil {
+		return err
+	}
+	return deleteOwnedClusterScoped(ctx, r.Client, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: crName}}, pulse)
+}

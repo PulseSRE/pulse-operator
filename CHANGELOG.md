@@ -5,6 +5,17 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## Unreleased
+
+### Fixed
+- The PostgreSQL NetworkPolicy selected pods by an `app` label the StatefulSet never sets, so it isolated nothing. It now selects the StatefulSet's own `app.kubernetes.io/*` labels, and a test checks the selector against the pod template the operator actually renders
+- The UI NetworkPolicy no longer admits `openshift-user-workload-monitoring` on 8080/8443; nothing there scrapes the UI
+- Scaling the UI to one replica deletes the PodDisruptionBudget it no longer needs (a one-replica PDB with `minAvailable: 1` blocks node drains)
+- Turning `spec.agent.mcp.enabled` off removes the MCP server's Deployment, Service, NetworkPolicy, ServiceAccount, ClusterRole and ClusterRoleBinding. They previously kept running, with cluster-wide read still bound
+- Turning `spec.temporal.enabled` off removes the Temporal server and Web UI; turning `spec.temporal.ui` off removes the Web UI. History is in PostgreSQL and survives
+- CR deletion no longer hangs on clusters without the OAuthClient API: "no such kind" is treated as already gone instead of holding the finalizer
+- The finalizer no longer deletes a same-named cluster-scoped object whose owner annotation names a different CR
+
 ## v0.10.0 (2026-10-18)
 
 Paired with pulse-agent v2.33.0 and pulse-ui v2.33.0. RBAC-only release: no CRD changes.

@@ -9,6 +9,7 @@ import (
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -253,5 +254,67 @@ var _ = Describe("deleteClusterScopedResources finalizer", func() {
 				types.NamespacedName{Name: uiClusterRoleNameUnqualified(crName)}, stillThere)).To(Succeed(),
 				"a same-named resource owned by a different CR must never be deleted by this CR's finalizer")
 		})
+	})
+})
+
+// noOAuthAPIClient behaves like a cluster without the oauth.openshift.io API
+// (plain Kubernetes): every OAuthClient call fails with NoKindMatchError.
+type noOAuthAPIClient struct{ client.Client }
+
+func (c *noOAuthAPIClient) isOAuth(obj client.Object) bool {
+	u, ok := obj.(*unstructured.Unstructured)
+	return ok && u.GetKind() == "OAuthClient"
+}
+
+func (c *noOAuthAPIClient) noMatch() error {
+	return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "oauth.openshift.io", Kind: "OAuthClient"}, SearchedVersions: []string{"v1"}}
+}
+
+func (c *noOAuthAPIClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if c.isOAuth(obj) {
+		return c.noMatch()
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func (c *noOAuthAPIClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if c.isOAuth(obj) {
+		return c.noMatch()
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
+
+var _ = Describe("deleteClusterScopedResources edge cases", func() {
+	const namespace = "default"
+
+	It("does not hold the finalizer on a cluster without the OAuthClient API", func() {
+		cr := &pulsev1alpha1.OpenShiftPulse{ObjectMeta: metav1.ObjectMeta{Name: "finalizer-no-oauth", Namespace: namespace}}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+		r := &OpenShiftPulseReconciler{Client: &noOAuthAPIClient{Client: k8sClient}, Scheme: testScheme, Recorder: record.NewFakeRecorder(10)}
+		Expect(r.deleteClusterScopedResources(testCtx, cr)).To(Succeed())
+	})
+
+	It("does not delete a same-named cluster-scoped object stamped with another CR's UID", func() {
+		cr := &pulsev1alpha1.OpenShiftPulse{ObjectMeta: metav1.ObjectMeta{Name: "finalizer-foreign", Namespace: namespace}}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, cr) })
+
+		theirs := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
+			Name:        agentClusterRoleName(cr.Name, cr.Namespace),
+			Annotations: map[string]string{annotationOwnerUID: "another-cr-uid"},
+		}}
+		Expect(k8sClient.Create(testCtx, theirs)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(testCtx, theirs) })
+		ours := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
+			Name:        uiClusterRoleName(cr.Name, cr.Namespace),
+			Annotations: map[string]string{annotationOwnerUID: string(cr.UID)},
+		}}
+		Expect(k8sClient.Create(testCtx, ours)).To(Succeed())
+
+		r := &OpenShiftPulseReconciler{Client: k8sClient, Scheme: testScheme, Recorder: record.NewFakeRecorder(10)}
+		Expect(r.deleteClusterScopedResources(testCtx, cr)).To(Succeed())
+		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: theirs.Name}, &rbacv1.ClusterRole{})).To(Succeed())
+		Expect(apierrors.IsNotFound(k8sClient.Get(testCtx, types.NamespacedName{Name: ours.Name}, &rbacv1.ClusterRole{}))).To(BeTrue())
 	})
 })
