@@ -10,6 +10,7 @@ actually contains, taken from its commits.
 ### Fixed
 - The PostgreSQL NetworkPolicy selected pods by an `app` label the StatefulSet never sets, so it isolated nothing. It now selects the StatefulSet's own `app.kubernetes.io/*` labels, and a test checks the selector against the pod template the operator actually renders
 - The UI NetworkPolicy no longer admits `openshift-user-workload-monitoring` on 8080/8443; nothing there scrapes the UI
+- The UI NetworkPolicy admits a router running on the host network (`policy-group.network.openshift.io/host-network`), the default IngressController setup on bare metal, vSphere and single-node clusters. Only the pod-network router namespace was admitted, so on those clusters the Route reached the UI pod and was dropped
 - Scaling the UI to one replica deletes the PodDisruptionBudget it no longer needs (a one-replica PDB with `minAvailable: 1` blocks node drains)
 - Turning `spec.agent.mcp.enabled` off removes the MCP server's Deployment, Service, NetworkPolicy, ServiceAccount, ClusterRole and ClusterRoleBinding. They previously kept running, with cluster-wide read still bound
 - Turning `spec.temporal.enabled` off removes the Temporal server and Web UI; turning `spec.temporal.ui` off removes the Web UI. History is in PostgreSQL and survives
