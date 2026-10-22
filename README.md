@@ -46,8 +46,8 @@ One `OpenShiftPulse` CR drives the full lifecycle:
 | **PostgreSQL** | StatefulSet (pg-data PVC retained on delete), pg-auth Secret (also retained — see below), ClusterIP + headless Services |
 | **UI** | nginx configuration Secret, Deployment with nginx and oauth-proxy (TLS on 8443), Service, Route, OAuthClient |
 | **Monitoring** | ServiceMonitor (agent `/metrics`), PrometheusRule (`PulseAgentDown`, `PulsePostgreSQLDown`) |
-| **MCP** | MCP server ServiceAccount + ClusterRole (read-only) + ClusterRoleBinding, Deployment, Service (optional, `spec.agent.mcp.enabled: true`) |
-| **Network** | Per-component ingress-only NetworkPolicies: UI (OCP ingress + Prometheus), PostgreSQL (agent and enabled Temporal pods), agent (UI pod + Prometheus), MCP server (agent pod only); render service, when enabled (agent pod in, UI render port and DNS out) |
+| **MCP** | MCP server ServiceAccount + ClusterRole (read-only) + ClusterRoleBinding, Deployment, Service, NetworkPolicy (optional, `spec.agent.mcp.enabled: true`; setting it back to `false` removes them all) |
+| **Network** | Per-component ingress-only NetworkPolicies: UI (the OpenShift router on 8443, on the pod or host network), PostgreSQL (agent and enabled Temporal pods), agent (UI pod + Prometheus), MCP server (agent pod only); render service, when enabled (agent pod in, UI render port and DNS out) |
 | **Cluster detect** | Reads ingress domain, oauth-proxy image digest, ACM availability on first reconcile |
 
 A `pulse.ai/cleanup` finalizer ensures ClusterRoles and OAuthClient are removed when the CR is deleted — no orphans on uninstall.
@@ -413,6 +413,8 @@ oc port-forward -n <ns> svc/<name>-temporal-ui 8080:8080
 ```
 
 Front it with an oauth-proxy before exposing it permanently.
+
+**Turning it off:** since v0.11.0, `ui: false` removes the Web UI's Deployment and Service, and `enabled: false` also removes the Temporal server. Workflow history is in PostgreSQL, so re-enabling picks it back up. Earlier versions left both running.
 
 ### Dashboard preview (spec.render)
 
@@ -911,7 +913,7 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - All managed pods run as non-root with `AllowPrivilegeEscalation=false`, `Capabilities.Drop=ALL`, and `SeccompProfile=RuntimeDefault`.
 - PostgreSQL sets `ReadOnlyRootFilesystem=false` (PG requires writable socket and temp paths).
 - The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict `pods/exec` access in `pulse-operator-system` with RBAC. NetworkPolicy controls pod traffic and does not authorize Kubernetes exec requests.
-- The agent, UI, PostgreSQL, and MCP server have ingress NetworkPolicies. Agent ingress permits UI and Prometheus peers; MCP ingress permits the agent; PostgreSQL permits the agent and enabled Temporal peers. This does not imply all optional components are isolated, does not restrict egress, and requires an enforcing network plugin. Use the cluster acceptance packet probes to verify observed connectivity.
+- The agent, UI, PostgreSQL, and MCP server have ingress NetworkPolicies. UI ingress permits only the OpenShift router on 8443 (the `ingress` policy group, plus `policy-group.network.openshift.io/host-network` for routers on the host network, the default on bare metal, vSphere and SNO); agent ingress permits UI and Prometheus peers; MCP ingress permits the agent; PostgreSQL permits the agent and enabled Temporal peers. Before v0.11.0 the PostgreSQL policy selected no pod and so isolated nothing; on upgrade it starts applying. This does not imply all optional components are isolated, does not restrict egress, and requires an enforcing network plugin. Use the cluster acceptance packet probes to verify observed connectivity.
 - Every cluster-scoped resource the operator creates — the agent/UI/MCP ClusterRoles and ClusterRoleBindings, the agent's `-monitoring-view` binding, and the OAuthClient — is named `{namespace}-{name}-…` to prevent collision when multiple CRs coexist on the same cluster. Namespaced resources keep plain `{name}-…` names; Kubernetes already scopes those.
 - The agent's own ClusterRole is read-only unless `allowWriteOperations`/`allowSecretAccess` are set. Besides core workloads, it reads exactly what the monitor's scanners scan: `clusteroperators` and `clusterversions` (degraded operators, upgrades), `customresourcedefinitions` (stuck deletions), `routes` (route errors and certificates), `controllerrevisions` (StatefulSet/DaemonSet rollouts for "what changed"), Argo CD `applications` (GitOps syncs) and `machineconfigpools` (maintenance blockers). All are `get`/`list` only. Before v0.10.0 these reads were missing, and the agent reports the scanners that needed them as degraded ("To fix: …" in the UI); upgrading the operator updates the role on the next reconcile and those warnings clear. The Argo CD rule is harmless on a cluster without Argo CD.
 - The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
