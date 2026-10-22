@@ -4,8 +4,8 @@
 # docker ecosystem) opens a PR whenever these digests move, so this doesn't go stale.
 # Uses the Red Hat UBI9 go-toolset (1.26) instead of the Docker Hub
 # golang image, to match the UBI-based runtime stage below. It doesn't need to be an
-# exact match for go.mod's minimum `go 1.26.9` — with GOTOOLCHAIN=auto
-# (see below), `go mod download`/`go build` transparently fetch and use go1.26.9
+# exact match for go.mod's minimum `go 1.26.10` — with GOTOOLCHAIN=auto
+# (see below), `go mod download`/`go build` transparently fetch and use go1.26.10
 # themselves regardless of the Go version baked into this base image. This image's
 # default WORKDIR is /opt/app-root/src, owned by its non-root default user (uid 1001),
 # so we build there instead of /workspace.
@@ -14,7 +14,7 @@ WORKDIR /opt/app-root/src
 # Unlike Docker Hub's golang images, Red Hat's go-toolset builds Go with
 # GOTOOLCHAIN defaulting to "local" instead of upstream's "auto". Without this,
 # go mod download/go build would fail when the bundled Go is older than
-# go.mod's minimum `go 1.26.9`. Setting it back
+# go.mod's minimum `go 1.26.10`. Setting it back
 # to "auto" restores the standard behavior of downloading/using the toolchain
 # version pinned in go.mod.
 ENV GOTOOLCHAIN=auto
