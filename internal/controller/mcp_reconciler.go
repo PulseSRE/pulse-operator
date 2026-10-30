@@ -3,6 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+
+	"github.com/Masterminds/semver/v3"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -23,8 +26,14 @@ import (
 )
 
 const (
-	defaultMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
-	mcpServerPort         = int32(8081)
+	// legacyMCPServerImage is the mutable tag every MCP build used to push.
+	// It is only the default for an agent image that has no versioned MCP
+	// image (see mcpServerImage).
+	legacyMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
+	// pulseImageRepo is where pulse-agent publishes both its own image and
+	// the MCP server image built with it.
+	pulseImageRepo = "quay.io/amobrem/pulse-agent"
+	mcpServerPort  = int32(8081)
 	// defaultMCPToolsets is the full SRE toolset matching the documented 36-tool count.
 	// Matches: core(default)+config(default)+helm+observability/metrics+observability/logs+
 	// openshift+ossm+netedge+tekton+kubevirt+kcp+cluster-diagnostics
@@ -270,13 +279,9 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil) // OCP assigns UID from namespace range via SCC
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{
 			{
-				Name: "mcp-server",
-				Image: func() string {
-					if pulse.Spec.Agent.MCP.Image != "" {
-						return pulse.Spec.Agent.MCP.Image
-					}
-					return defaultMCPServerImage
-				}(),
+				Name:            "mcp-server",
+				Image:           mcpServerImage(pulse),
+				ImagePullPolicy: mcpServerPullPolicy(mcpServerImage(pulse)),
 				SecurityContext: defaultContainerSecCtx(),
 				Args: func() []string {
 					toolsets := pulse.Spec.Agent.MCP.Toolsets
@@ -390,4 +395,45 @@ func (r *MCPReconciler) removeMCP(ctx context.Context, pulse *pulsev1alpha1.Open
 		return err
 	}
 	return deleteOwnedClusterScoped(ctx, r.Client, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: crName}}, pulse)
+}
+
+// firstVersionedMCPImage is the first agent release with a matching
+// mcp-server-vX.Y.Z image.
+var firstVersionedMCPImage = semver.MustParse("2.36.0")
+
+// mcpServerImage is the MCP server image to run: spec.agent.mcp.image when
+// set, otherwise the one built with the agent release in spec.agent.image.
+//
+// Every agent release used to overwrite one mutable mcp-server tag, built
+// from whatever openshift-mcp-server main held that day, so a cluster's MCP
+// version could be neither identified nor rolled back with the agent. From
+// v2.36.0 each agent release publishes mcp-server-vX.Y.Z from a pinned
+// upstream commit, and rolling spec.agent.image moves the MCP server with
+// it. An agent image that is not a pulse-agent release tag (latest, a
+// digest, an older release, a mirror) keeps the legacy tag; a mirror sets
+// spec.agent.mcp.image.
+func mcpServerImage(cr *pulsev1alpha1.OpenShiftPulse) string {
+	if cr.Spec.Agent.MCP.Image != "" {
+		return cr.Spec.Agent.MCP.Image
+	}
+	agent := resolvedImage(cr)
+	repo, tag, ok := strings.Cut(agent, ":")
+	if !ok || repo != pulseImageRepo || strings.Contains(tag, "@") || !strings.HasPrefix(tag, "v") {
+		return legacyMCPServerImage
+	}
+	v, err := semver.StrictNewVersion(strings.TrimPrefix(tag, "v"))
+	if err != nil || v.Prerelease() != "" || v.LessThan(firstVersionedMCPImage) {
+		return legacyMCPServerImage
+	}
+	return pulseImageRepo + ":mcp-server-" + tag
+}
+
+// mcpServerPullPolicy pulls the legacy mutable tag on every start, so nodes
+// do not keep running whichever build they first cached. A versioned tag is
+// never overwritten, so a cached copy is the right one.
+func mcpServerPullPolicy(image string) corev1.PullPolicy {
+	if image == legacyMCPServerImage {
+		return corev1.PullAlways
+	}
+	return corev1.PullIfNotPresent
 }
