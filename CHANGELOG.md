@@ -5,6 +5,10 @@ All notable changes to the Pulse Operator are documented in this file.
 Reconstructed from the tagged release history; entries describe what each tag
 actually contains, taken from its commits.
 
+## Unreleased
+
+- Docs: v0.11.0 runs pulse-agent and pulse-ui v2.35.0 with no operator change. The agent applies migrations 038–040 on start (forward-only), and `adminUsers` now also gates monitor resume and memory import, correction and deletion.
+
 ## v0.11.0 (2026-10-22)
 
 Paired with pulse-agent v2.34.0 and pulse-ui v2.34.0. No CRD or RBAC changes. **Behaviour changes on upgrade:** the PostgreSQL NetworkPolicy now applies (its selector used to match no pod), admitting only the agent and, when enabled, the Temporal server; and turning off `spec.agent.mcp.enabled`, `spec.temporal.enabled` or `spec.temporal.ui` now removes those components instead of leaving them running. Pull requests #89–#99.

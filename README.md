@@ -340,7 +340,7 @@ spec:
   agent:
     image: quay.io/amobrem/pulse-agent:latest
     trustLevel: 2          # monitor: 0/1=no remediation, 2=propose, 3/4=execute
-    adminUsers: "kube:admin" # restrict administrator endpoints; empty allows any authenticated identity
+    adminUsers: "kube:admin" # restrict administrator endpoints (skill edits, fix approval, monitor resume, memory import and edits); empty allows any authenticated identity
     allowWriteOperations: false   # adds delete(pods), patch/update(deployments,statefulsets) to agent ClusterRole
     allowSecretAccess: false      # adds get/list/watch(secrets) to agent ClusterRole
     resources: {}                 # corev1.ResourceRequirements
