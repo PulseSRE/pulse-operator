@@ -54,7 +54,7 @@ func DetectClusterInfo(ctx context.Context, c client.Client) *ClusterInfo {
 	clusterInfoMu.Unlock()
 
 	info := &ClusterInfo{
-		OAuthProxyImage: DefaultOAuthProxyImage,
+		OAuthProxyImage: imageFromEnv(envOAuthProxyImage, DefaultOAuthProxyImage),
 	}
 	fullyDetected := true
 

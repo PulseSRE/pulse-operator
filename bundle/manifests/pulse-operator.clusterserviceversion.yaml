@@ -274,6 +274,30 @@ spec:
                       - /manager
                     image: quay.io/amobrem/pulse-operator:v0.1.0
                     name: manager
+                    # Operand images, pinned by digest and mirrored into
+                    # spec.relatedImages below. The operator reads these and
+                    # falls back to its compiled defaults only when unset, so
+                    # a bundle install always deploys the exact images this
+                    # release was tested against. scripts/bump-bundle-version.py
+                    # re-resolves them at release time; keep the two lists in
+                    # sync (internal/controller/images_test.go enforces it).
+                    env:
+                      - name: RELATED_IMAGE_AGENT
+                        value: quay.io/amobrem/pulse-agent@sha256:009ee80aef5049a2377175faa4a725608c79a7b80a795b45632d4f847b32954f
+                      - name: RELATED_IMAGE_UI
+                        value: quay.io/amobrem/openshiftpulse@sha256:81d7ecf91119e19983281ee7591e3eece86fe53094341e8eceafacaee98c6d17
+                      - name: RELATED_IMAGE_MCP_SERVER
+                        value: quay.io/amobrem/pulse-agent@sha256:a0a4b9ef4efdc5810250d4ec8641f25c3247a2fa0f2c9852fe1759aca586b165
+                      - name: RELATED_IMAGE_RENDER
+                        value: quay.io/amobrem/openshiftpulse-render@sha256:cec17637e6165c3b354f68438ad6e7ef17cac205ac3001856036a023bad37673
+                      - name: RELATED_IMAGE_POSTGRESQL
+                        value: registry.redhat.io/rhel9/postgresql-15@sha256:cb2b214b470dfb39e19d6d71819844e855c52435c78deea025c1e0650ad175f8
+                      - name: RELATED_IMAGE_OAUTH_PROXY
+                        value: quay.io/openshift/origin-oauth-proxy@sha256:9b058fe1c117a05210dc5bd424d475a74b9a87d1c8b586fd7d7301b6f7bf2de7
+                      - name: RELATED_IMAGE_TEMPORAL
+                        value: docker.io/temporalio/auto-setup@sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5
+                      - name: RELATED_IMAGE_TEMPORAL_UI
+                        value: docker.io/temporalio/ui@sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703
                     ports:
                       - containerPort: 8082
                         name: metrics
@@ -358,22 +382,31 @@ spec:
   provider:
     name: Red Hat CoE
     url: https://github.com/PulseSRE
-  # Best-effort for disconnected/air-gapped mirroring: none of these are
-  # digest-pinned yet (each is a mutable tag in its reconciler's default —
-  # see agent_reconciler.go, ui_reconciler.go, postgresql_reconciler.go,
-  # mcp_reconciler.go, cluster_detect.go), so `oc adm catalog mirror` can
-  # discover and mirror them by tag, but re-mirroring is required whenever
-  # any of these tags move. Digest-pinning the defaults is tracked
-  # separately from this list.
+  # Every operand this operator can deploy, digest-pinned, and matching the
+  # RELATED_IMAGE_* env vars on the manager container above — the operator
+  # reads those, so this list and what actually gets pulled cannot drift.
+  #
+  # Previously these were mutable tags that nothing consumed: the manager had
+  # no corresponding env, so the operator used its compiled defaults and this
+  # list was documentation only. It had already fallen out of date (render and
+  # both Temporal images were missing). Tags also meant a mirrored cluster had
+  # to re-mirror whenever one moved, and `pulse-agent:mcp-server` moving under
+  # a running deployment is what took the MCP server down.
   relatedImages:
     - name: pulse-agent
-      image: quay.io/amobrem/pulse-agent:latest
+      image: quay.io/amobrem/pulse-agent@sha256:009ee80aef5049a2377175faa4a725608c79a7b80a795b45632d4f847b32954f
     - name: pulse-ui
-      image: quay.io/amobrem/openshiftpulse:latest
+      image: quay.io/amobrem/openshiftpulse@sha256:81d7ecf91119e19983281ee7591e3eece86fe53094341e8eceafacaee98c6d17
     - name: pulse-mcp-server
-      image: quay.io/amobrem/pulse-agent:mcp-server
+      image: quay.io/amobrem/pulse-agent@sha256:a0a4b9ef4efdc5810250d4ec8641f25c3247a2fa0f2c9852fe1759aca586b165
+    - name: pulse-render
+      image: quay.io/amobrem/openshiftpulse-render@sha256:cec17637e6165c3b354f68438ad6e7ef17cac205ac3001856036a023bad37673
     - name: postgresql
-      image: registry.redhat.io/rhel9/postgresql-15:latest
+      image: registry.redhat.io/rhel9/postgresql-15@sha256:cb2b214b470dfb39e19d6d71819844e855c52435c78deea025c1e0650ad175f8
     - name: oauth-proxy
-      image: quay.io/openshift/origin-oauth-proxy:4.15
+      image: quay.io/openshift/origin-oauth-proxy@sha256:9b058fe1c117a05210dc5bd424d475a74b9a87d1c8b586fd7d7301b6f7bf2de7
+    - name: temporal
+      image: docker.io/temporalio/auto-setup@sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5
+    - name: temporal-ui
+      image: docker.io/temporalio/ui@sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703
   version: 0.1.0

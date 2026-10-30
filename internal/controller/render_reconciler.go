@@ -77,7 +77,7 @@ func resolvedRenderImage(pulse *pulsev1alpha1.OpenShiftPulse) string {
 	if pulse.Spec.Render.Image != "" {
 		return pulse.Spec.Render.Image
 	}
-	return defaultRenderImage
+	return imageFromEnv(envRenderImage, defaultRenderImage)
 }
 
 func renderResources(pulse *pulsev1alpha1.OpenShiftPulse) corev1.ResourceRequirements {

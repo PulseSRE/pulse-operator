@@ -126,7 +126,7 @@ func resolvedImage(cr *pulsev1alpha1.OpenShiftPulse) string {
 	if cr.Spec.Agent.Image != "" {
 		return cr.Spec.Agent.Image
 	}
-	return defaultAgentImage
+	return imageFromEnv(envAgentImage, defaultAgentImage)
 }
 
 func databaseEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
