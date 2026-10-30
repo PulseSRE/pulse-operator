@@ -14,7 +14,7 @@
 <body>
 <header class="wrap"><nav class="sites" aria-label="Pulse projects">
 <a class="mark" href="https://github.com/PulseSRE"><svg viewBox="0 0 68 36" aria-hidden="true"><path d="M0 20 H18 L22 24 L28 3 L34 32 L38 20 H50 L54 15 L58 20 H68" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Pulse</span></a>
-<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.12.0</span>
+<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.12.1</span>
 </nav></header>
 <main>
 <section class="hero wrap" aria-labelledby="title">
@@ -100,6 +100,14 @@
 <div class="wrap">
 <h2 id="new">What's new</h2>
 <div class="release">
+<p class="when"><strong>v0.12.1</strong>30 October 2026<br>Pairs with agent and UI v2.36.0<br>No CRD schema or RBAC changes. Every component restarts once on upgrade</p>
+<ul>
+<li style="--c:var(--ok)"><b>The MCP server starts again.</b> <span>The MCP server stopped accepting the command-line options the operator passed it. Running pods kept working from a cached copy of the old image until they were moved to another node, as a cluster upgrade does, and then failed at startup. The operator now gives it a config file instead.</span></li>
+<li style="--c:var(--trace)"><b>Each release runs exactly the images it was tested with.</b> <span>The agent, console, MCP server, PostgreSQL and the rest are pinned to exact image digests rather than tags like latest that can change underneath a running cluster. Automatic rollback can now detect a bad upgrade, and an image set in the resource still wins.</span></li>
+<li style="--c:var(--ask)"><b>Disconnected clusters get every image.</b> <span>The bundle lists all eight images the operator deploys, so mirroring it copies everything an install needs.</span></li>
+</ul>
+</div>
+<div class="release">
 <p class="when"><strong>v0.12.0</strong>30 October 2026<br>Pairs with agent and UI v2.36.0<br>No CRD or RBAC changes</p>
 <ul>
 <li style="--c:var(--ok)"><b>Self-heal stops making things worse.</b> <span>Agent and console pods that are crash-looping, failing to pull or still pulling a large image are no longer deleted every 30 seconds. Deleting them never fixed anything, and it threw away the crash logs and restarted slow pulls from scratch.</span></li>
@@ -141,7 +149,7 @@
 </section>
 </main>
 <footer><div class="wrap">
-<span>Pulse operator v0.12.0. MIT licensed.</span>
+<span>Pulse operator v0.12.1. MIT licensed.</span>
 <span><a href="https://github.com/PulseSRE/pulse-operator">Source</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/releases">Releases</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Changelog</a></span>
 </div></footer>
 </body>
