@@ -411,36 +411,52 @@ var _ = Describe("PostgreSQLReconciler", func() {
 	// than a pod's normal startup, deleted every fresh pod-0 before it ever
 	// reached Running, in a continuous, indefinite create-delete loop.
 	Describe("isPGPodStale", func() {
-		newPendingPod := func(age time.Duration, now time.Time) *corev1.Pod {
+		const current = "pg-7d9f"
+		newPendingPod := func(age time.Duration, now time.Time, revision string) *corev1.Pod {
 			return &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-age))},
-				Status:     corev1.PodStatus{Phase: corev1.PodPending},
+				ObjectMeta: metav1.ObjectMeta{
+					CreationTimestamp: metav1.NewTime(now.Add(-age)),
+					Labels:            map[string]string{appsv1.ControllerRevisionHashLabelKey: revision},
+				},
+				Status: corev1.PodStatus{Phase: corev1.PodPending},
 			}
 		}
 
 		It("is false for a Pending pod that just started (normal scheduling/volume-attach/image-pull)", func() {
 			now := time.Now()
-			Expect(isPGPodStale(newPendingPod(5*time.Second, now), now)).To(BeFalse())
+			Expect(isPGPodStale(newPendingPod(5*time.Second, now, "pg-old"), current, now)).To(BeFalse())
 		})
 
 		It("is false for a Pending pod just under the stale threshold", func() {
 			now := time.Now()
-			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold-time.Second, now), now)).To(BeFalse())
+			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold-time.Second, now, "pg-old"), current, now)).To(BeFalse())
 		})
 
-		It("is true for a Pending pod at or beyond the stale threshold", func() {
+		It("is true for a pod Pending past the threshold on an outdated revision", func() {
 			now := time.Now()
-			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold, now), now)).To(BeTrue())
-			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold+time.Minute, now), now)).To(BeTrue())
+			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold, now, "pg-old"), current, now)).To(BeTrue())
+			Expect(isPGPodStale(newPendingPod(pgPendingPodStaleThreshold+time.Minute, now, "pg-old"), current, now)).To(BeTrue())
+		})
+
+		It("is false for a pod Pending on the current revision: recreating it changes nothing", func() {
+			now := time.Now()
+			Expect(isPGPodStale(newPendingPod(time.Hour, now, current), current, now)).To(BeFalse(),
+				"an unschedulable pod with the current spec was deleted every 2 minutes, forever")
+		})
+
+		It("is false when the StatefulSet's update revision is not known yet", func() {
+			now := time.Now()
+			Expect(isPGPodStale(newPendingPod(time.Hour, now, "pg-old"), "", now)).To(BeFalse())
 		})
 
 		It("is false for a Running pod regardless of age", func() {
 			now := time.Now()
-			pod := newPendingPod(time.Hour, now)
+			pod := newPendingPod(time.Hour, now, "pg-old")
 			pod.Status.Phase = corev1.PodRunning
-			Expect(isPGPodStale(pod, now)).To(BeFalse())
+			Expect(isPGPodStale(pod, current, now)).To(BeFalse())
 		})
 	})
+
 })
 
 var _ = Describe("PostgreSQL start scripts", func() {

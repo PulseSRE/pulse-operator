@@ -21,7 +21,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -891,15 +890,8 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 		if err := r.Update(ctx, updated); err != nil {
 			return ctrl.Result{}, err
 		}
-		// Self-heal: a pod stuck Pending too long, or definitively failing
-		// with ImagePullBackOff/CrashLoopBackOff, gets deleted so the
-		// ReplicaSet controller creates a fresh replacement — see
-		// deployment_selfheal.go's doc comment for why this matters
-		// especially for this Deployment's Recreate strategy.
-		if err := deleteStalePodsForDeployment(ctx, r.Client, r.Recorder, cr, name, "agent", "stale_pod_delete"); err != nil {
-			log.FromContext(ctx).Error(err, "failed to delete stale agent pod(s)", "deployment", name)
-			// Non-fatal — next reconcile will retry.
-		}
+		// A stuck pod is diagnosed and reported (reportPodProblems), not
+		// deleted: see deployment_selfheal.go for why deletion never helped.
 		return ctrl.Result{}, nil
 	}
 

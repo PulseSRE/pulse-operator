@@ -1,134 +1,125 @@
 package controller
 
-// Item 1 of the autonomy roadmap: generalizes the PostgreSQL StatefulSet's
-// stale-pod self-heal (postgresql_reconciler.go's isPGPodStale /
-// deletePendingPGPodIfStale) to the agent and UI Deployments. Unlike the
-// StatefulSet's single, deterministically-named pod-0, a Deployment's pods
-// have generated names and (for the UI in particular) there may be more
-// than one — so this looks pods up by the Deployment's own "app" label
-// selector rather than a fixed name, and can delete more than one stale pod
-// per call.
+// Agent and UI pods are no longer deleted when they are stuck. They are
+// diagnosed, and the diagnosis is reported where an operator looks: the
+// AgentReady/UIReady condition's reason and message, and a Warning event.
 //
-// This matters most for the agent, whose Deployment uses the Recreate
-// strategy (see agent_reconciler.go's buildDeploymentSpec and item 4's
-// investigation in this same PR): Recreate tears the old pod down before
-// the new one starts, so if the new pod hits ImagePullBackOff or
-// CrashLoopBackOff there is no old pod left to fall back to — without this,
-// a bad rollout is stuck until a human notices and runs `oc delete pod`
-// by hand.
+// The deletion this replaces (deleteStalePodsForDeployment) removed any pod
+// that was Pending for 2 minutes or in ImagePullBackOff/CrashLoopBackOff, on
+// every reconcile. None of those cases is fixed by recreating the pod:
+//
+//   - A pod still pulling a large image is Pending (ContainerCreating). It
+//     was deleted mid-pull every 2 minutes, so on a slow registry or a cold
+//     node it could never start.
+//   - A crashlooping pod restarts the same image with the same config. The
+//     deletion threw away `oc logs --previous`, reset the kubelet's restart
+//     backoff (so it restarted faster, not slower), and recorded a
+//     "SelfHealed" event every 30 seconds for something that healed nothing.
+//   - ImagePullBackOff from a bad tag or a missing pull secret re-pulled
+//     every 30 seconds instead of backing off, which hits registry rate
+//     limits, and never succeeded.
+//   - An unschedulable pod with the current spec is just as unschedulable
+//     when recreated.
+//
+// The case the deletion was written for, the agent's Recreate rollout
+// stuck on a bad new image with no old pod to fall back to, is handled by
+// automatic rollback (status.go's reconcileAutoRollback), which restores
+// the last healthy image. Deleting the new pod never brought the old one
+// back.
 
 import (
 	"context"
-	goerrors "errors"
-	"time"
+	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
 
-// staleWaitingReasons are the container Waiting.Reason values that mark a
-// Deployment-managed pod as stuck badly enough to self-heal with no grace
-// period. This is deliberately different from the long-Pending case (see
-// pgPendingPodStaleThreshold's doc comment in postgresql_reconciler.go —
-// that grace period exists because every pod is transiently Pending for a
-// few seconds to tens of seconds during entirely normal
-// scheduling/volume-attach/image-pull). ImagePullBackOff and
-// CrashLoopBackOff are different in kind, not just degree: per
-// Pod.Status.ContainerStatuses[].State.Waiting semantics, the kubelet only
-// ever reports one of these *after* it has already made and failed at
-// least one real attempt — a pull attempt for the former, a full
-// start-then-exit cycle for the latter. There is no "might just be
-// mid-startup" ambiguity left to wait out, so reacting immediately (rather
-// than waiting out a grace period the way Pending needs) is safe.
-//
-// This does mean a persistently-broken replacement pod (e.g. a genuinely
-// bad image tag that will never pull) can be deleted and recreated again
-// on a later reconcile. That is bounded, not a repeat of the incident
-// pgPendingPodStaleThreshold exists to prevent: this operator's steady-state
-// reconcile cadence is 30s (OpenShiftPulseReconciler.Reconcile's
-// RequeueAfter), so at worst this repeats once per reconcile interval —
-// the same cadence a human running `oc delete pod` while debugging would
-// produce by hand — not an unbounded, sub-second create-delete loop.
-var staleWaitingReasons = map[string]bool{
-	"ImagePullBackOff": true,
-	"CrashLoopBackOff": true,
+// podProblem is why a pod is not becoming ready, in the kubelet's words.
+type podProblem struct {
+	Pod     string
+	Reason  string
+	Message string
 }
 
-// isDeploymentPodStale reports whether pod is stuck badly enough for
-// deleteStalePodsForDeployment to remove it. now is taken as a parameter
-// (not time.Now() internally) for the same reason as isPGPodStale: it lets
-// the Pending-threshold case be unit tested without depending on a real,
-// server-assigned CreationTimestamp.
-func isDeploymentPodStale(pod *corev1.Pod, now time.Time) bool {
-	if pod.Status.Phase == corev1.PodPending && now.Sub(pod.CreationTimestamp.Time) >= pgPendingPodStaleThreshold {
-		return true
+func (p podProblem) String() string {
+	if p.Message == "" {
+		return fmt.Sprintf("pod %s: %s", p.Pod, p.Reason)
 	}
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Waiting != nil && staleWaitingReasons[cs.State.Waiting.Reason] {
-			return true
+	return fmt.Sprintf("pod %s: %s: %s", p.Pod, p.Reason, p.Message)
+}
+
+// problemWaitingReasons are container Waiting reasons that mean the pod will
+// not become ready without a change to the image, its config or the
+// cluster. Ordinary startup reasons (ContainerCreating, PodInitializing) are
+// deliberately absent: they are progress, not problems.
+var problemWaitingReasons = map[string]bool{
+	"ImagePullBackOff":           true,
+	"ErrImagePull":               true,
+	"InvalidImageName":           true,
+	"CrashLoopBackOff":           true,
+	"CreateContainerConfigError": true,
+	"CreateContainerError":       true,
+	"RunContainerError":          true,
+}
+
+// diagnosePod reports why pod is not becoming ready, or nil when nothing is
+// wrong beyond normal startup.
+func diagnosePod(pod *corev1.Pod) *podProblem {
+	statuses := append(append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...)
+	for _, cs := range statuses {
+		w := cs.State.Waiting
+		if w == nil || !problemWaitingReasons[w.Reason] {
+			continue
+		}
+		msg := strings.TrimSpace(w.Message)
+		if w.Reason == "CrashLoopBackOff" {
+			// The crash itself is in the last terminated state, not in the
+			// back-off message.
+			if t := cs.LastTerminationState.Terminated; t != nil {
+				detail := fmt.Sprintf("container %s exited with code %d", cs.Name, t.ExitCode)
+				if t.Reason != "" {
+					detail += " (" + t.Reason + ")"
+				}
+				if m := strings.TrimSpace(t.Message); m != "" {
+					detail += ": " + m
+				}
+				msg = detail
+			}
+		}
+		return &podProblem{Pod: pod.Name, Reason: w.Reason, Message: truncate(msg, 300)}
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse && c.Reason == corev1.PodReasonUnschedulable {
+			return &podProblem{Pod: pod.Name, Reason: "Unschedulable", Message: truncate(strings.TrimSpace(c.Message), 300)}
 		}
 	}
-	return false
+	return nil
 }
 
-// stalePodReasonDescription renders a short human-readable reason for the
-// SelfHealed event message.
-func stalePodReasonDescription(pod *corev1.Pod) string {
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Waiting != nil && staleWaitingReasons[cs.State.Waiting.Reason] {
-			return cs.State.Waiting.Reason
-		}
-	}
-	return "Pending too long"
-}
-
-// deleteStalePodsForDeployment lists the pods matching a Deployment's own
-// pod-template selector ({"app": deploymentName} — see
-// AgentReconciler.buildDeploymentSpec / UIReconciler.reconcileUIDeployment)
-// in pulse's namespace, and deletes every one isDeploymentPodStale reports
-// stuck, so the Deployment/ReplicaSet controller creates a fresh
-// replacement and retries the pull or start. component/action feed
-// selfHealActionsTotal's labels (see metrics.go), matching the existing
-// self-heal sites' convention.
-//
-// Errors deleting one pod do not stop the rest — best-effort, matching
-// deletePendingPGPodIfStale's "non-fatal, next reconcile retries" contract
-// at its call sites (agent_reconciler.go / ui_reconciler.go).
-func deleteStalePodsForDeployment(
-	ctx context.Context,
-	c client.Client,
-	recorder record.EventRecorder,
-	pulse *pulsev1alpha1.OpenShiftPulse,
-	deploymentName, component, action string,
-) error {
+// diagnoseDeploymentPods returns the first problem among the pods of the
+// Deployment whose pod template carries {"app": deploymentName}, or nil.
+func diagnoseDeploymentPods(ctx context.Context, c client.Client, namespace, deploymentName string) (*podProblem, error) {
 	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(pulse.Namespace),
-		client.MatchingLabels{"app": deploymentName},
-	); err != nil {
-		return err
+	if err := c.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabels{"app": deploymentName}); err != nil {
+		return nil, err
 	}
-
-	now := time.Now()
-	var errs []error
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		if pod.DeletionTimestamp != nil || !isDeploymentPodStale(pod, now) {
+		if pod.DeletionTimestamp != nil {
 			continue
 		}
-		reason := stalePodReasonDescription(pod)
-		if err := c.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
-			errs = append(errs, err)
-			continue
+		if p := diagnosePod(pod); p != nil {
+			return p, nil
 		}
-		recordEvent(recorder, pulse, corev1.EventTypeNormal, "SelfHealed",
-			"%s pod %q was stuck (%s) — deleted it so the Deployment controller can create a fresh one",
-			component, pod.Name, reason)
-		selfHealActionsTotal.WithLabelValues(component, action).Inc()
 	}
-	return goerrors.Join(errs...)
+	return nil, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }

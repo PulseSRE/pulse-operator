@@ -246,6 +246,10 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	reconcileObservedMemoryMetrics(ctx, r.Client, pulse, uiResourceName(pulse.Name), "ui", uiRequestedMemoryBytes(pulse))
 
 	_, _, agentUpgrading, uiUpgrading := r.syncPhaseAndConditions(pulse, agentReady, pgReady)
+	// Why a component is not ready, from its pods: the condition says
+	// "CrashLoopBackOff: container agent exited with code 1", not only
+	// "0 ready replicas".
+	r.reportPodProblems(ctx, pulse, agentReady)
 
 	// Auto-rollback: an agent/UI image change stuck Upgrading past
 	// upgradeHealthTimeout gets reverted here. The spec patch itself

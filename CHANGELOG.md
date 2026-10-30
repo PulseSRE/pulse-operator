@@ -7,6 +7,7 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+- **Self-heal only deletes a pod when that can fix it.** Agent and UI pods were deleted on every reconcile when `Pending` for 2 minutes or in `ImagePullBackOff`/`CrashLoopBackOff`. None of these is fixed by recreating the pod, and the deletion did harm: a large image still pulling was cancelled and restarted every 2 minutes, a crashlooping container lost `oc logs --previous` and its restart backoff, a bad tag re-pulled every 30 seconds, and every pass logged a `SelfHealed` event for nothing healed. These pods are now left alone and diagnosed: the `AgentReady`/`UIReady` condition carries the pod's reason and message (exit code and termination message for a crashloop, the image for a pull failure, the scheduler's message for an unschedulable pod), with a `Warning PodNotHealthy` event. A bad image during an upgrade is still reverted by automatic rollback. The PostgreSQL pod-0 is deleted only when it is `Pending` on an outdated StatefulSet revision (the blocked-rollout case the rule was written for), not when it is unschedulable on the current spec, which deleted it every 2 minutes forever.
 - Docs: v0.11.0 runs pulse-agent and pulse-ui v2.35.0 with no operator change. The agent applies migrations 038–040 on start (forward-only), and `adminUsers` now also gates monitor resume and memory import, correction and deletion.
 
 ## v0.11.0 (2026-10-22)

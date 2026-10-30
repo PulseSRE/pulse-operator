@@ -9,6 +9,8 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
 
@@ -242,4 +244,40 @@ func (r *OpenShiftPulseReconciler) reconcileAutoRollback(
 		return false, fmt.Errorf("auto-rollback spec update: %w", err)
 	}
 	return true, nil
+}
+
+// reportPodProblems puts the reason a not-ready agent or UI is not ready into
+// its AgentReady/UIReady condition (reason and message from the pod, e.g.
+// "ImagePullBackOff") and a Warning PodNotHealthy event. Identical events are
+// aggregated by the event recorder, so a pod stuck for an hour is one event
+// with a count, not one every reconcile. Nothing is deleted.
+func (r *OpenShiftPulseReconciler) reportPodProblems(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, agentReady bool) {
+	components := []struct {
+		condType, component, deployment string
+		ready                           bool
+	}{
+		{"AgentReady", "agent", agentResourceName(pulse.Name), agentReady},
+		{"UIReady", "ui", uiResourceName(pulse.Name), pulse.Status.UIAvailable},
+	}
+	for _, c := range components {
+		if c.ready {
+			continue
+		}
+		problem, err := diagnoseDeploymentPods(ctx, r.Client, pulse.Namespace, c.deployment)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "listing pods to diagnose", "component", c.component)
+			continue
+		}
+		if problem == nil {
+			continue
+		}
+		apimeta.SetStatusCondition(&pulse.Status.Conditions, metav1.Condition{
+			Type:               c.condType,
+			Status:             metav1.ConditionFalse,
+			Reason:             problem.Reason,
+			Message:            problem.String(),
+			ObservedGeneration: pulse.Generation,
+		})
+		recordEvent(r.Recorder, pulse, corev1.EventTypeWarning, "PodNotHealthy", "%s %s", c.component, problem.String())
+	}
 }
