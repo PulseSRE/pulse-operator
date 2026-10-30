@@ -25,9 +25,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # The notes come from the CHANGELOG of the ref that ran this: the tag on
+      # a tag push, the default branch on a manual backfill. Older tags'
+      # own CHANGELOGs mostly lack their sections (it was reconstructed
+      # later), so a backfill reads today's.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Extract this version's changelog section
@@ -59,9 +62,13 @@ jobs:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+          # A backfill must not become "latest": only a pushed tag is the
+          # newest release.
+          latest=true
+          [ "${{ github.event_name }}" = "workflow_dispatch" ] && latest=false
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file notes.md
+            gh release edit "$TAG" --title "$TAG" --notes-file notes.md --latest="$latest"
           else
-            gh release create "$TAG" --title "$TAG" --notes-file notes.md
+            gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag --latest="$latest"
           fi
           echo "- Released \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
