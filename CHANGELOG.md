@@ -7,6 +7,7 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+- Docs: v0.11.0 also runs pulse-agent and pulse-ui v2.36.0 with no operator change. The agent applies migration 041 (`investigations.evidence_detail`, forward-only) on start. Background investigation plans are no longer offered write tools, which the operator's read-only default RBAC already implied.
 - Docs: v0.11.0 runs pulse-agent and pulse-ui v2.35.0 with no operator change. The agent applies migrations 038–040 on start (forward-only), and `adminUsers` now also gates monitor resume and memory import, correction and deletion.
 
 ## v0.11.0 (2026-10-22)

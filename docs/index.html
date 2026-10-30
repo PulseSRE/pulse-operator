@@ -36,11 +36,11 @@
     <span class="k">projectId:</span> my-gcp-project
     <span class="k">region:</span> us-east5
     <span class="k">credentialSecret:</span> gcp-sa-key</code></pre><div class="what"><b>The Claude backend</b><span>Vertex AI by reference to a Secret you create, or an Anthropic API key. The operator never copies the credential into the resource.</span></div></div><div class="row"><pre><code>  <span class="k">agent:</span>
-    <span class="k">image:</span> <span class="v">quay.io/amobrem/pulse-agent:v2.35.0</span>
+    <span class="k">image:</span> <span class="v">quay.io/amobrem/pulse-agent:v2.36.0</span>
     <span class="k">trustLevel:</span> 2
     <span class="k">allowWriteOperations:</span> false
     <span class="k">adminUsers:</span> "kube:admin"</code></pre><div class="what"><b>The agent</b><span>Deployment, Service, token Secret and memory volume, and a read-only ClusterRole. Writes stay off until you allow them. Only the users you list can edit skills, approve or resume monitor fixes, and import, correct or forget what the agent remembers; left empty, any signed-in user can.</span></div></div><div class="row"><pre><code>  <span class="k">ui:</span>
-    <span class="k">image:</span> <span class="v">quay.io/amobrem/openshiftpulse:v2.35.0</span>
+    <span class="k">image:</span> <span class="v">quay.io/amobrem/openshiftpulse:v2.36.0</span>
     <span class="k">replicas:</span> 2</code></pre><div class="what"><b>The console</b><span>nginx and an OpenShift OAuth proxy behind a Route and an OAuthClient. With more than one replica it also gets a disruption budget, removed again if you scale back to one.</span></div></div><div class="row"><pre><code>  <span class="k">database:</span>
     <span class="k">storageSize:</span> 5Gi</code></pre><div class="what"><b>PostgreSQL</b><span>A StatefulSet and its volume. The data volume and password Secret are kept when the resource is deleted, so a reinstall finds its history.</span></div></div><div class="row"><pre><code>  <span class="k">monitoring:</span>
     <span class="k">enabled:</span> true</code></pre><div class="what"><b>Monitoring<span class="opt">optional</span></b><span>A ServiceMonitor for the agent's metrics and alerts for when the agent or the database is down.</span></div></div><div class="row"><pre><code>  <span class="c"># inside agent:</span>
@@ -100,7 +100,7 @@
 <div class="wrap">
 <h2 id="new">What's new</h2>
 <div class="release">
-<p class="when"><strong>v0.11.0</strong>22 October 2026<br>Pairs with agent and UI v2.34.0; runs v2.35.0 unchanged<br>No CRD or RBAC changes</p>
+<p class="when"><strong>v0.11.0</strong>22 October 2026<br>Pairs with agent and UI v2.34.0; runs v2.35.0 and v2.36.0 unchanged<br>No CRD or RBAC changes</p>
 <ul>
 <li style="--c:var(--trace)"><b>The database is actually isolated.</b> <span>The PostgreSQL network policy selected no pods, so any pod could reach it. It now admits only the agent and, when enabled, Temporal. This starts applying when you upgrade.</span></li>
 <li style="--c:var(--ok)"><b>Turning something off removes it.</b> <span>Disabling MCP, Temporal or the Temporal UI deletes what was created for it, instead of leaving it running with its permissions in place.</span></li>
