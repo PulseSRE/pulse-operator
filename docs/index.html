@@ -14,7 +14,7 @@
 <body>
 <header class="wrap"><nav class="sites" aria-label="Pulse projects">
 <a class="mark" href="https://github.com/PulseSRE"><svg viewBox="0 0 68 36" aria-hidden="true"><path d="M0 20 H18 L22 24 L28 3 L34 32 L38 20 H50 L54 15 L58 20 H68" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Pulse</span></a>
-<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.11.0</span>
+<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.12.0</span>
 </nav></header>
 <main>
 <section class="hero wrap" aria-labelledby="title">
@@ -100,6 +100,15 @@
 <div class="wrap">
 <h2 id="new">What's new</h2>
 <div class="release">
+<p class="when"><strong>v0.12.0</strong>30 October 2026<br>Pairs with agent and UI v2.36.0<br>No CRD or RBAC changes</p>
+<ul>
+<li style="--c:var(--ok)"><b>Self-heal stops making things worse.</b> <span>Agent and console pods that are crash-looping, failing to pull or still pulling a large image are no longer deleted every 30 seconds. Deleting them never fixed anything, and it threw away the crash logs and restarted slow pulls from scratch.</span></li>
+<li style="--c:var(--trace)"><b>It tells you why instead.</b> <span>The resource's AgentReady and UIReady conditions carry the real reason: the exit code and message of the last crash, the image that will not pull, or why the scheduler cannot place the pod. A bad image during an upgrade is still rolled back automatically.</span></li>
+<li style="--c:var(--ask)"><b>PostgreSQL is recreated only when that helps.</b> <span>Its pod is replaced when it is stuck on an outdated spec, the case that blocks a rollout, and left alone when it simply cannot be scheduled.</span></li>
+<li style="--c:var(--ink)"><b>Every release gets a release page.</b> <span>Tagging now publishes the GitHub Release with this version's changelog, as the agent and console already do.</span></li>
+</ul>
+</div>
+<div class="release">
 <p class="when"><strong>v0.11.0</strong>22 October 2026<br>Pairs with agent and UI v2.34.0; runs v2.35.0 and v2.36.0 unchanged<br>No CRD or RBAC changes</p>
 <ul>
 <li style="--c:var(--trace)"><b>The database is actually isolated.</b> <span>The PostgreSQL network policy selected no pods, so any pod could reach it. It now admits only the agent and, when enabled, Temporal. This starts applying when you upgrade.</span></li>
@@ -132,7 +141,7 @@
 </section>
 </main>
 <footer><div class="wrap">
-<span>Pulse operator v0.11.0. MIT licensed.</span>
+<span>Pulse operator v0.12.0. MIT licensed.</span>
 <span><a href="https://github.com/PulseSRE/pulse-operator">Source</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/releases">Releases</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Changelog</a></span>
 </div></footer>
 </body>
