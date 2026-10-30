@@ -26,6 +26,8 @@ import (
 )
 
 const (
+	// defaultMCPServerImage is only the `make run` / test fallback; a bundle
+	// install runs RELATED_IMAGE_MCP_SERVER (see images.go).
 	defaultMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
 	mcpServerPort         = int32(8081)
 	// defaultMCPToolsets is the full SRE toolset matching the documented 36-tool count.

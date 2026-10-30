@@ -850,6 +850,14 @@ oc delete secret pulse-nginx -n openshiftpulse
 # Operator recreates it within seconds
 ```
 
+### Which image each component runs
+
+Every image the operator deploys is the digest its release pins: `RELATED_IMAGE_*` on the manager, the same list as the bundle's `relatedImages` (what a disconnected mirror copies). An image set in the CR (`spec.agent.image`, `spec.agent.mcp.image`, ...) wins over the pin.
+
+```bash
+oc get deploy pulse-mcp-server -n openshiftpulse -o jsonpath='{.spec.template.spec.containers[0].image}'   # <cr-name>-mcp-server
+```
+
 ### Agent CrashLoopBackOff — Solr/MCP unreachable
 
 **Symptom:** Agent pod crashes with `MCP not ready (attempt N/36)`

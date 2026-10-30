@@ -89,8 +89,9 @@ spec:
                         type: boolean
                       image:
                         description: |-
-                          Image overrides the MCP server image. Defaults to the OCP fork image
-                          (quay.io/amobrem/pulse-agent:mcp-server, built from github.com/openshift/openshift-mcp-server).
+                          Image overrides the MCP server image. Defaults to the digest this operator
+                          release pins (RELATED_IMAGE_MCP_SERVER), built from a pinned
+                          github.com/openshift/openshift-mcp-server commit.
                         type: string
                       toolsets:
                         description: |-
