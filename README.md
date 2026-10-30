@@ -499,20 +499,31 @@ progress. See **Automatic rollback** below for what happens if an upgrade never 
 
 The operator emits `Normal SelfHealed` Events (`oc get events` / `oc describe openshiftpulse`)
 whenever it takes one of its own corrective actions: deleting a PostgreSQL pod stuck `Pending` for
-over 2 minutes, deleting an **agent or UI Deployment pod** stuck `Pending` too long or definitively
-failing with `ImagePullBackOff`/`CrashLoopBackOff` (no grace period needed for those two — the
-kubelet only ever reports them after a real failed pull or start-then-exit attempt, so there's no
-"might just be mid-startup" ambiguity to wait out), recreating a selector-mismatched
-StatefulSet/Deployment (e.g. adopting a previously Helm-managed instance), correcting Route drift,
-or regenerating a malformed `cookie-secret`. The agent/UI case matters most for the agent
-specifically, whose Deployment uses the `Recreate` strategy (see **Agent / UI image upgrades**
-below): `Recreate` tears the old pod down before the new one starts, so a bad rollout has no old
-pod left to fall back to without this — previously it stayed stuck until a human noticed and ran
-`oc delete pod` by hand.
+over 2 minutes **on an outdated spec** (its `controller-revision-hash` differs from the StatefulSet's
+update revision, so the rolling update is blocked until it is replaced), recreating a
+selector-mismatched StatefulSet/Deployment (e.g. adopting a previously Helm-managed instance),
+correcting Route drift, or regenerating a malformed `cookie-secret`.
+
+It does **not** delete agent or UI pods that are stuck, and it does not delete a PostgreSQL pod
+that is `Pending` on the current spec. Recreating such a pod fixes nothing: an image still pulling
+was cancelled and restarted, a crashlooping container lost its `oc logs --previous` and its restart
+backoff, a bad tag or missing pull secret re-pulled every 30 seconds, and an unschedulable pod came
+back unschedulable. (Before v0.12.0 the operator did delete these, on every reconcile.) Instead,
+the reason is reported where you look first:
+
+- the `AgentReady`/`UIReady` condition carries the pod's reason and message, e.g.
+  `reason: CrashLoopBackOff`, `message: pod pulse-agent-7f9c: CrashLoopBackOff: container agent
+  exited with code 1 (Error): ...`, or `ImagePullBackOff` with the image, or `Unschedulable` with the
+  scheduler's explanation;
+- a `Warning PodNotHealthy` event says the same (repeats are aggregated into one event with a count).
+
+A bad agent or UI image during an upgrade is handled by **Automatic rollback** below, which
+restores the last healthy image: with the agent's `Recreate` strategy that is the only thing that
+brings a working pod back.
 
 It also exposes five Prometheus metrics on the manager's `:8082/metrics` endpoint:
 
-- `pulse_operator_self_heal_actions_total{component,action}` — counts of the actions above.
+- `pulse_operator_self_heal_actions_total{component,action}` — counts of the actions above (`stale_pod_delete` for agent/UI no longer occurs from v0.12.0).
 - `pulse_operator_component_ready{namespace,name,component}` — 1/0 mirror of the AgentReady/DatabaseReady/UIReady conditions.
 - `pulse_operator_reconcile_errors_total{step}` — reconcile failures by step (e.g. `postgres`, `agent`, `ui`, `status_update`).
 - `pulse_operator_observed_memory_bytes{namespace,name,component}` — real memory usage observed via `metrics.k8s.io` (max across replicas), for comparing against the request below. Advisory only — the operator never patches `resources.requests` from this. Absent (not zero) when `metrics.k8s.io` has no sample yet, e.g. no metrics-server, or the pod isn't `Running`; sampled at most once every 5 minutes per component to keep load off the metrics API.

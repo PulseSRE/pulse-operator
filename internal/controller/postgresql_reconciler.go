@@ -557,9 +557,21 @@ const pgPendingPodStaleThreshold = 2 * time.Minute
 // effect (addLogicalPort/FailedMount errors racing a pod that's deleted
 // mid-setup), rather than the one genuinely-stuck-rollout case this was
 // written for.
-func isPGPodStale(pod *corev1.Pod, now time.Time) bool {
+//
+// It must also have been created from an older revision of the StatefulSet
+// (its controller-revision-hash label differs from the StatefulSet's
+// UpdateRevision). That is the case deletion fixes: the StatefulSet's
+// RollingUpdate waits for pod-0 to be Running before replacing it, so a pod
+// stuck on an outdated spec (e.g. resource requests that were since lowered)
+// blocks the rollout forever. A pod Pending on the *current* spec (no
+// capacity, a volume in another zone, a slow image pull) comes back
+// identical, and deleting it every 2 minutes only churned it. With no
+// known update revision nothing is deleted.
+func isPGPodStale(pod *corev1.Pod, updateRevision string, now time.Time) bool {
 	return pod.Status.Phase == corev1.PodPending &&
-		now.Sub(pod.CreationTimestamp.Time) >= pgPendingPodStaleThreshold
+		now.Sub(pod.CreationTimestamp.Time) >= pgPendingPodStaleThreshold &&
+		updateRevision != "" &&
+		pod.Labels[appsv1.ControllerRevisionHashLabelKey] != updateRevision
 }
 
 // deletePendingPGPodIfStale deletes the ordinal-0 PostgreSQL pod when
@@ -581,14 +593,18 @@ func (r *PostgreSQLReconciler) deletePendingPGPodIfStale(
 	if err != nil {
 		return err
 	}
-	if !isPGPodStale(pod, time.Now()) {
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: stsName}, sts); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !isPGPodStale(pod, sts.Status.UpdateRevision, time.Now()) {
 		return nil
 	}
 	if err := r.Delete(ctx, pod); err != nil {
 		return err
 	}
 	recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "SelfHealed",
-		"PostgreSQL pod %q was stuck Pending for over %s — deleted it so the StatefulSet controller can create a fresh one with the current spec", podName, pgPendingPodStaleThreshold)
+		"PostgreSQL pod %q was stuck Pending for over %s on an outdated spec — deleted it so the StatefulSet controller can create it from the current one", podName, pgPendingPodStaleThreshold)
 	selfHealActionsTotal.WithLabelValues("database", "stale_pending_pod_delete").Inc()
 	return nil
 }
