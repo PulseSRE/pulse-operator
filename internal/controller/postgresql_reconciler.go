@@ -261,7 +261,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 ) (ctrl.Result, error) {
 	image := pulse.Spec.Database.Image
 	if image == "" {
-		image = defaultPGImage
+		image = imageFromEnv(envPostgreSQLImage, defaultPGImage)
 	}
 	storageSize := pulse.Spec.Database.StorageSize
 	if storageSize == "" {

@@ -2,10 +2,10 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"strconv"
 	"strings"
-
-	"github.com/Masterminds/semver/v3"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -26,18 +26,22 @@ import (
 )
 
 const (
-	// legacyMCPServerImage is the mutable tag every MCP build used to push.
-	// It is only the default for an agent image that has no versioned MCP
-	// image (see mcpServerImage).
-	legacyMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
-	// pulseImageRepo is where pulse-agent publishes both its own image and
-	// the MCP server image built with it.
-	pulseImageRepo = "quay.io/amobrem/pulse-agent"
-	mcpServerPort  = int32(8081)
+	// defaultMCPServerImage is only the `make run` / test fallback; a bundle
+	// install runs RELATED_IMAGE_MCP_SERVER (see images.go).
+	defaultMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
+	mcpServerPort         = int32(8081)
 	// defaultMCPToolsets is the full SRE toolset matching the documented 36-tool count.
 	// Matches: core(default)+config(default)+helm+observability/metrics+observability/logs+
 	// openshift+ossm+netedge+tekton+kubevirt+kcp+cluster-diagnostics
 	defaultMCPToolsets = "core,config,helm,observability/metrics,observability/logs,openshift,ossm,netedge,tekton,kubevirt,kcp,cluster-diagnostics"
+
+	// Where the generated TOML is mounted and what it is called. The server
+	// resolves a relative --config against its working directory, so this is
+	// kept absolute.
+	mcpConfigMountPath = "/etc/mcp"
+	mcpConfigFileName  = "config.toml"
+
+	mcpConfigHashAnnotation = "pulse.ai/mcp-config-hash"
 )
 
 // MCPServiceURL returns the in-cluster URL of the MCP server for injection into the agent.
@@ -95,7 +99,13 @@ func (r *MCPReconciler) reconcileMCP(ctx context.Context, pulse *pulsev1alpha1.O
 	if err := r.reconcileMCPClusterRoleBinding(ctx, pulse); err != nil {
 		return fmt.Errorf("MCP ClusterRoleBinding: %w", err)
 	}
-	if err := r.reconcileMCPDeployment(ctx, pulse); err != nil {
+	// Config before the Deployment: the pod mounts this ConfigMap, and the
+	// hash it returns goes into the pod template.
+	configHash, err := r.reconcileMCPConfig(ctx, pulse)
+	if err != nil {
+		return fmt.Errorf("MCP ConfigMap: %w", err)
+	}
+	if err := r.reconcileMCPDeployment(ctx, pulse, configHash); err != nil {
 		return fmt.Errorf("MCP Deployment: %w", err)
 	}
 	if err := r.reconcileMCPService(ctx, pulse); err != nil {
@@ -257,7 +267,7 @@ func (r *MCPReconciler) reconcileMCPNetworkPolicy(ctx context.Context, pulse *pu
 // pod labels, container image/args/probes/resources) — anything else a user
 // manually patched on the Deployment (e.g. Spec.Replicas via `kubectl scale`)
 // is left untouched instead of being clobbered by a full spec replace.
-func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, configHash string) error {
 	name := mcpResourceName(pulse.Name)
 
 	deploy := &appsv1.Deployment{
@@ -279,20 +289,31 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil) // OCP assigns UID from namespace range via SCC
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{
 			{
-				Name:            "mcp-server",
-				Image:           mcpServerImage(pulse),
-				ImagePullPolicy: mcpServerPullPolicy(mcpServerImage(pulse)),
-				SecurityContext: defaultContainerSecCtx(),
-				Args: func() []string {
-					toolsets := pulse.Spec.Agent.MCP.Toolsets
-					if toolsets == "" {
-						toolsets = defaultMCPToolsets
+				Name: "mcp-server",
+				Image: func() string {
+					if pulse.Spec.Agent.MCP.Image != "" {
+						return pulse.Spec.Agent.MCP.Image
 					}
-					return []string{
-						fmt.Sprintf("--port=%d", mcpServerPort),
-						fmt.Sprintf("--toolsets=%s", toolsets),
-					}
+					return imageFromEnv(envMCPServerImage, defaultMCPServerImage)
 				}(),
+				SecurityContext: defaultContainerSecCtx(),
+				// kubernetes-mcp-server takes its settings from a TOML file, not
+				// flags: --config and --config-dir are the only knobs it has
+				// besides --help/--version. It previously accepted --port and
+				// --toolsets, and this operator passed those, so when the
+				// published image moved to the config file the server began
+				// exiting immediately with "unknown flag: --port". See
+				// reconcileMCPConfig for the file this points at.
+				Args: []string{
+					fmt.Sprintf("--config=%s/%s", mcpConfigMountPath, mcpConfigFileName),
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "config",
+						MountPath: mcpConfigMountPath,
+						ReadOnly:  true,
+					},
+				},
 				Ports: []corev1.ContainerPort{
 					{
 						Name:          "http",
@@ -330,9 +351,78 @@ func (r *MCPReconciler) reconcileMCPDeployment(ctx context.Context, pulse *pulse
 				},
 			},
 		}
+		deploy.Spec.Template.Spec.Volumes = []corev1.Volume{
+			{
+				Name: "config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: mcpConfigName(pulse.Name)},
+					},
+				},
+			},
+		}
+		// A mounted ConfigMap's contents update in place, but the server only
+		// reads its config at startup, so changing spec.agent.mcp.toolsets
+		// would otherwise leave the running pod on the old toolset list until
+		// something unrelated restarted it. Rolling the hash into the pod
+		// template makes the change itself trigger the rollout.
+		if deploy.Spec.Template.Annotations == nil {
+			deploy.Spec.Template.Annotations = map[string]string{}
+		}
+		deploy.Spec.Template.Annotations[mcpConfigHashAnnotation] = configHash
 		return nil
 	})
 	return err
+}
+
+// mcpConfigName is the ConfigMap holding the server's TOML settings.
+func mcpConfigName(crName string) string {
+	return mcpResourceName(crName) + "-config"
+}
+
+// buildMCPConfigTOML renders the settings that used to be --port and
+// --toolsets. The upstream keys are `port` (a string; empty means stdio) and
+// `toolsets` (an array of strings) — see pkg/config.Config in
+// openshift/openshift-mcp-server.
+//
+// This is written by hand rather than with a TOML library because it is two
+// scalar keys and adding a dependency to emit them is not worth it; the values
+// are a fixed int and a comma-separated list the CRD already constrains.
+func buildMCPConfigTOML(pulse *pulsev1alpha1.OpenShiftPulse) string {
+	toolsets := pulse.Spec.Agent.MCP.Toolsets
+	if toolsets == "" {
+		toolsets = defaultMCPToolsets
+	}
+	quoted := make([]string, 0, strings.Count(toolsets, ",")+1)
+	for _, t := range strings.Split(toolsets, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			quoted = append(quoted, strconv.Quote(t))
+		}
+	}
+	return fmt.Sprintf("# Managed by pulse-operator. Edits are reverted.\nport = %q\ntoolsets = [%s]\n",
+		strconv.Itoa(int(mcpServerPort)), strings.Join(quoted, ", "))
+}
+
+// reconcileMCPConfig writes the TOML the server reads at startup and returns a
+// short hash of it for the Deployment's pod-template annotation.
+func (r *MCPReconciler) reconcileMCPConfig(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
+	toml := buildMCPConfigTOML(pulse)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(toml)))[:8]
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      mcpConfigName(pulse.Name),
+			Namespace: pulse.Namespace,
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		if setErr := controllerutil.SetControllerReference(pulse, cm, r.Scheme); setErr != nil {
+			return setErr
+		}
+		cm.Data = map[string]string{mcpConfigFileName: toml}
+		return nil
+	})
+	return hash, err
 }
 
 // reconcileMCPService creates or updates the ClusterIP Service fronting the MCP server.
@@ -382,6 +472,7 @@ func (r *MCPReconciler) removeMCP(ctx context.Context, pulse *pulsev1alpha1.Open
 	name := mcpResourceName(pulse.Name)
 	for _, obj := range []client.Object{
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: mcpConfigName(pulse.Name)}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name}},
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: name}},
 		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name}},
@@ -395,45 +486,4 @@ func (r *MCPReconciler) removeMCP(ctx context.Context, pulse *pulsev1alpha1.Open
 		return err
 	}
 	return deleteOwnedClusterScoped(ctx, r.Client, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: crName}}, pulse)
-}
-
-// firstVersionedMCPImage is the first agent release with a matching
-// mcp-server-vX.Y.Z image.
-var firstVersionedMCPImage = semver.MustParse("2.36.0")
-
-// mcpServerImage is the MCP server image to run: spec.agent.mcp.image when
-// set, otherwise the one built with the agent release in spec.agent.image.
-//
-// Every agent release used to overwrite one mutable mcp-server tag, built
-// from whatever openshift-mcp-server main held that day, so a cluster's MCP
-// version could be neither identified nor rolled back with the agent. From
-// v2.36.0 each agent release publishes mcp-server-vX.Y.Z from a pinned
-// upstream commit, and rolling spec.agent.image moves the MCP server with
-// it. An agent image that is not a pulse-agent release tag (latest, a
-// digest, an older release, a mirror) keeps the legacy tag; a mirror sets
-// spec.agent.mcp.image.
-func mcpServerImage(cr *pulsev1alpha1.OpenShiftPulse) string {
-	if cr.Spec.Agent.MCP.Image != "" {
-		return cr.Spec.Agent.MCP.Image
-	}
-	agent := resolvedImage(cr)
-	repo, tag, ok := strings.Cut(agent, ":")
-	if !ok || repo != pulseImageRepo || strings.Contains(tag, "@") || !strings.HasPrefix(tag, "v") {
-		return legacyMCPServerImage
-	}
-	v, err := semver.StrictNewVersion(strings.TrimPrefix(tag, "v"))
-	if err != nil || v.Prerelease() != "" || v.LessThan(firstVersionedMCPImage) {
-		return legacyMCPServerImage
-	}
-	return pulseImageRepo + ":mcp-server-" + tag
-}
-
-// mcpServerPullPolicy pulls the legacy mutable tag on every start, so nodes
-// do not keep running whichever build they first cached. A versioned tag is
-// never overwritten, so a cached copy is the right one.
-func mcpServerPullPolicy(image string) corev1.PullPolicy {
-	if image == legacyMCPServerImage {
-		return corev1.PullAlways
-	}
-	return corev1.PullIfNotPresent
 }

@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -142,7 +143,12 @@ var _ = Describe("Controller behavior — AUDIT regression tests", func() {
 			_ = k8sClient.Delete(ctx, cr)
 		})
 
-		It("MCP Deployment args include --toolsets when MCP enabled without explicit toolsets", func() {
+		// The toolset list used to be passed as --toolsets on the command line.
+		// kubernetes-mcp-server now only accepts --config/--config-dir, so the
+		// list lives in the generated TOML and the Deployment just points at
+		// it. The intent of this test is unchanged — the default toolsets must
+		// reach the server — only the mechanism it inspects has moved.
+		It("MCP config contains the default toolsets when MCP enabled without explicit toolsets", func() {
 			cr := &pulsev1alpha1.OpenShiftPulse{
 				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
 				Spec: pulsev1alpha1.OpenShiftPulseSpec{
@@ -158,16 +164,18 @@ var _ = Describe("Controller behavior — AUDIT regression tests", func() {
 
 			deploy := getDeployment(ctx, mcpResourceName(crName), namespace)
 			args := deploy.Spec.Template.Spec.Containers[0].Args
-
-			hasToolsetsArg := false
+			Expect(args).To(ConsistOf("--config=" + mcpConfigMountPath + "/" + mcpConfigFileName))
 			for _, arg := range args {
-				if strings.HasPrefix(arg, "--toolsets=") {
-					hasToolsetsArg = true
-					Expect(arg).To(ContainSubstring("core"), "--toolsets must include core")
-					Expect(arg).To(ContainSubstring("openshift"), "--toolsets must include openshift")
-				}
+				Expect(arg).NotTo(HavePrefix("--port="), "--port was removed from kubernetes-mcp-server; passing it exits the server")
+				Expect(arg).NotTo(HavePrefix("--toolsets="), "--toolsets was removed from kubernetes-mcp-server")
 			}
-			Expect(hasToolsetsArg).To(BeTrue(), "--toolsets arg must be present in MCP Deployment")
+
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpConfigName(crName), Namespace: namespace}, cm)).To(Succeed())
+			toml := cm.Data[mcpConfigFileName]
+			Expect(toml).To(ContainSubstring(`"core"`), "config must include the core toolset")
+			Expect(toml).To(ContainSubstring(`"openshift"`), "config must include the openshift toolset")
+			Expect(toml).To(ContainSubstring(`port = "8081"`))
 		})
 
 		It("MCP Deployment uses spec.agent.mcp.toolsets when explicitly set", func() {

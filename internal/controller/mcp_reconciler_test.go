@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -244,45 +243,5 @@ var _ = Describe("MCPReconciler", func() {
 				HaveKeyWithValue("app", crName+"-openshift-sre-agent"),
 				"only the agent pod (the sole caller of PULSE_MCP_URL) may reach the MCP server")
 		})
-	})
-})
-
-// The MCP image follows the agent release instead of one mutable tag that
-// every release overwrote with whatever upstream main held that day.
-var _ = Describe("mcpServerImage", func() {
-	withAgent := func(agentImage, mcpImage string) *pulsev1alpha1.OpenShiftPulse {
-		cr := &pulsev1alpha1.OpenShiftPulse{}
-		cr.Spec.Agent.Image = agentImage
-		cr.Spec.Agent.MCP.Image = mcpImage
-		return cr
-	}
-
-	DescribeTable("picks the MCP image for the agent image",
-		func(agentImage, want string) {
-			Expect(mcpServerImage(withAgent(agentImage, ""))).To(Equal(want))
-		},
-		Entry("a release gets the MCP image built with it",
-			"quay.io/amobrem/pulse-agent:v2.36.0", "quay.io/amobrem/pulse-agent:mcp-server-v2.36.0"),
-		Entry("a later release too",
-			"quay.io/amobrem/pulse-agent:v2.41.3", "quay.io/amobrem/pulse-agent:mcp-server-v2.41.3"),
-		Entry("a release before versioned MCP images keeps the legacy tag",
-			"quay.io/amobrem/pulse-agent:v2.35.0", legacyMCPServerImage),
-		Entry("latest has no matching MCP image", "quay.io/amobrem/pulse-agent:latest", legacyMCPServerImage),
-		Entry("the default agent image", "", legacyMCPServerImage),
-		Entry("a digest-pinned agent", "quay.io/amobrem/pulse-agent@sha256:"+strings.Repeat("a", 64), legacyMCPServerImage),
-		Entry("a tag plus digest", "quay.io/amobrem/pulse-agent:v2.36.0@sha256:"+strings.Repeat("a", 64), legacyMCPServerImage),
-		Entry("a prerelease", "quay.io/amobrem/pulse-agent:v2.37.0-rc1", legacyMCPServerImage),
-		Entry("a mirrored agent image is not guessed at", "registry.internal:5000/pulse/pulse-agent:v2.36.0", legacyMCPServerImage),
-		Entry("a sha build", "quay.io/amobrem/pulse-agent:sha-1a2b3c4d", legacyMCPServerImage),
-	)
-
-	It("spec.agent.mcp.image always wins", func() {
-		Expect(mcpServerImage(withAgent("quay.io/amobrem/pulse-agent:v2.36.0", "registry.internal/mcp:pinned"))).
-			To(Equal("registry.internal/mcp:pinned"))
-	})
-
-	It("pulls the mutable legacy tag on every start and a versioned tag only when missing", func() {
-		Expect(mcpServerPullPolicy(legacyMCPServerImage)).To(Equal(corev1.PullAlways))
-		Expect(mcpServerPullPolicy("quay.io/amobrem/pulse-agent:mcp-server-v2.36.0")).To(Equal(corev1.PullIfNotPresent))
 	})
 })

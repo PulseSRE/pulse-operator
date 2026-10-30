@@ -166,11 +166,9 @@ type AgentConfig struct {
 type MCPConfig struct {
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
-	// Image overrides the MCP server image. Defaults to the image built with
-	// the agent release in spec.agent.image (quay.io/amobrem/pulse-agent:mcp-server-vX.Y.Z,
-	// from a pinned github.com/openshift/openshift-mcp-server commit), or the legacy
-	// mutable quay.io/amobrem/pulse-agent:mcp-server for an agent image that is not a
-	// v2.36.0+ release tag. Set it when agent images come from a mirror.
+	// Image overrides the MCP server image. Defaults to the digest this operator
+	// release pins (RELATED_IMAGE_MCP_SERVER), built from a pinned
+	// github.com/openshift/openshift-mcp-server commit.
 	// +optional
 	Image string `json:"image,omitempty"`
 	// Toolsets is the comma-separated list of MCP toolsets to enable.

@@ -208,7 +208,7 @@ func resolvedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
 	if cr.Spec.UI.Image != "" {
 		return cr.Spec.UI.Image
 	}
-	return defaultUIImage
+	return imageFromEnv(envUIImage, defaultUIImage)
 }
 
 // resolvedUIReplicas returns the effective UI Deployment replica count, applying
@@ -262,7 +262,7 @@ func resolvedOAuthProxyImage(cr *pulsev1alpha1.OpenShiftPulse, info *ClusterInfo
 		oauthImage = info.OAuthProxyImage
 	}
 	if oauthImage == "" {
-		oauthImage = DefaultOAuthProxyImage
+		oauthImage = imageFromEnv(envOAuthProxyImage, DefaultOAuthProxyImage)
 	}
 	return oauthImage
 }

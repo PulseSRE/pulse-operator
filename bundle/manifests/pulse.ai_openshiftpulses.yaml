@@ -89,11 +89,9 @@ spec:
                         type: boolean
                       image:
                         description: |-
-                          Image overrides the MCP server image. Defaults to the image built with
-                          the agent release in spec.agent.image (quay.io/amobrem/pulse-agent:mcp-server-vX.Y.Z,
-                          from a pinned github.com/openshift/openshift-mcp-server commit), or the legacy
-                          mutable quay.io/amobrem/pulse-agent:mcp-server for an agent image that is not a
-                          v2.36.0+ release tag. Set it when agent images come from a mirror.
+                          Image overrides the MCP server image. Defaults to the digest this operator
+                          release pins (RELATED_IMAGE_MCP_SERVER), built from a pinned
+                          github.com/openshift/openshift-mcp-server commit.
                         type: string
                       toolsets:
                         description: |-

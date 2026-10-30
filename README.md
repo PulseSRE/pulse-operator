@@ -850,9 +850,9 @@ oc delete secret pulse-nginx -n openshiftpulse
 # Operator recreates it within seconds
 ```
 
-### Which MCP server image runs
+### Which image each component runs
 
-With `spec.agent.image` set to a pulse-agent release (v2.36.0 or later), the MCP server runs the image built with it, `quay.io/amobrem/pulse-agent:mcp-server-<version>`, from the upstream openshift-mcp-server commit pinned for that release. Otherwise it runs the legacy `mcp-server` tag, pulled on every start. `spec.agent.mcp.image` overrides either, which a mirrored registry needs.
+Every image the operator deploys is the digest its release pins: `RELATED_IMAGE_*` on the manager, the same list as the bundle's `relatedImages` (what a disconnected mirror copies). An image set in the CR (`spec.agent.image`, `spec.agent.mcp.image`, ...) wins over the pin.
 
 ```bash
 oc get deploy pulse-mcp-server -n openshiftpulse -o jsonpath='{.spec.template.spec.containers[0].image}'   # <cr-name>-mcp-server

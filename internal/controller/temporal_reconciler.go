@@ -107,7 +107,7 @@ func (r *TemporalReconciler) reconcileUI(ctx context.Context, pulse *pulsev1alph
 	name := temporalResourceName(pulse.Name) + "-ui"
 	image := pulse.Spec.Temporal.UIImage
 	if image == "" {
-		image = defaultTemporalUIImage
+		image = imageFromEnv(envTemporalUIImage, defaultTemporalUIImage)
 	}
 
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace}}
@@ -179,7 +179,7 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 	name := temporalResourceName(pulse.Name)
 	image := pulse.Spec.Temporal.Image
 	if image == "" {
-		image = defaultTemporalImage
+		image = imageFromEnv(envTemporalImage, defaultTemporalImage)
 	}
 
 	// Reuses the operator's PostgreSQL: same service, same credentials secret
