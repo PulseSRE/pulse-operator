@@ -7,6 +7,9 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+- **Pulse has an icon in OperatorHub.** The CSV had no `spec.icon`, so the catalog tile showed a generic placeholder; it now carries the Pulse logo (`docs/assets/pulse-icon.svg`, from pulse-ui).
+- **The console's example resource no longer sets `:latest` images.** The OperatorHub "Create OpenShiftPulse" form starts from `alm-examples`, which set `spec.agent.image` and `spec.ui.image` to `:latest`. An image in the CR wins over the digest this release pins, so a resource created from the default example ran `:latest` and lost both the pin and automatic rollback.
+
 ## v0.12.1 (2026-10-30)
 
 Pairs with pulse-agent and pulse-ui v2.36.0. No CRD schema or RBAC changes. Fixes the MCP server, which exits at startup (`unknown flag: --port`) whenever its pod is rescheduled onto a node without a cached copy of the old image, for example during a cluster upgrade (#113). **On upgrade** every component the operator deploys, PostgreSQL included, restarts once: its image changes from a tag to the digest this release pins. Pull requests #112–#113.
