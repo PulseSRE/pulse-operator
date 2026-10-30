@@ -7,6 +7,8 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+- **The MCP server image follows the agent release.** The default was one mutable tag, `quay.io/amobrem/pulse-agent:mcp-server`, which every agent release overwrote with whatever openshift-mcp-server `main` held that day, and with no pull policy each node kept whichever copy it first pulled. With `spec.agent.image` set to a pulse-agent release (v2.36.0 or later), the MCP server now runs `mcp-server-<that version>`, built from a pinned upstream commit (pulse-agent #210), so rolling or rolling back the agent moves the MCP server with it. Any other agent image keeps the legacy tag, now pulled on every start. `spec.agent.mcp.image` still overrides; set it when images come from a mirror. **On upgrade** the MCP Deployment rolls once.
+
 ## v0.12.0 (2026-10-30)
 
 Pairs with pulse-agent and pulse-ui v2.36.0 (and runs v2.34.0–v2.35.0). No CRD or RBAC changes. **Behaviour change on upgrade:** stuck agent and UI pods are no longer deleted; the reason is reported on the `AgentReady`/`UIReady` condition and a `PodNotHealthy` event instead (#109). Pull requests #101–#110. Tagging this release also publishes a GitHub Release from this section (new in the release workflow; tags v0.6.0–v0.11.0 have no Release page).
