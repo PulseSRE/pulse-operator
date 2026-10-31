@@ -73,6 +73,7 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				return ctrl.Result{}, err
 			}
 			r.Recorder.Event(pulse, corev1.EventTypeNormal, "Deleted", "Cluster-scoped resources cleaned up")
+			forgetInstanceMetrics(pulse.Namespace, pulse.Name)
 			controllerutil.RemoveFinalizer(pulse, finalizerName)
 			if err := r.Update(ctx, pulse); err != nil {
 				return ctrl.Result{}, err
@@ -405,9 +406,12 @@ func (r *OpenShiftPulseReconciler) reconcilePostgres(ctx context.Context, pulse 
 // needs a short requeue rather than a failure — see AgentReconciler.reconcileDeployment.
 func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, dbURL string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	_ = dbURL // consumed via K8s Secret by the agent Deployment today; reserved for future direct injection
-
+	// The agent reads dbURL from a Secret; its hash restarts the agent when
+	// the credentials change.
 	ar := &AgentReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
+	if dbURL != "" {
+		ar.DBCredentialHash = hashSecretData(map[string][]byte{"database-url": []byte(dbURL)})
+	}
 
 	type step struct {
 		name string

@@ -7,6 +7,15 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+**Data safety**
+- **PostgreSQL shuts down cleanly.** postgres answers SIGTERM with a shutdown that waits for clients, and the agent and Temporal hold pooled connections, so every restart ended in SIGKILL after 30s and crash recovery. A `preStop` fast shutdown and a 60s grace period now run first. Existing databases restart once to pick it up.
+- **A PostgreSQL major-version change is refused** (`PostgreSQLMajorVersionChangeBlocked` event; the running image is kept). The new server crash-loops on the old data directory, and putting the old image back did not recover it.
+- **Changed database credentials take effect.** PostgreSQL, the agent and Temporal restart when the credentials Secret changes; the database used to keep the old password while the agent used the new one. The agent restarts once on upgrade.
+- **Temporal uses `Recreate`.** Its rolling update ran schema setup from the new pod while the old server was live.
+- **`spec.database.storageSize`**: a typo on an existing install is reported (`InvalidStorageSize`) instead of failing the whole reconcile, and an increase now grows the volume (`StorageResized`, or `StorageResizeFailed` when the storage class cannot expand) instead of being ignored.
+- **A deleted instance stops exporting metrics.** Its `component_ready` and memory series lingered until the operator restarted.
+- **`scripts/olm-uninstall.py`** stops when a CR is still terminating (the operator must stay to finish it; `--force` overrides), waits up to 120s, and treats an `oc` error (an RBAC denial, say) as an error instead of "nothing found".
+
 **Rollback and upgrades**
 - **Automatic rollback works.** An image counted as healthy when any pod was ready, and during a rollout the old pod still is, so every new image was recorded as healthy in the pass that applied it and rollback never fired; the UI's, whose old pods stay up through its rolling update, never could. An image is now healthy only once its Deployment has rolled out (caught up with its spec, every replica updated and ready, no old pod). A UI rollout that never completes shows `Upgrading` and is rolled back like the agent's.
 - **Rollback no longer edits the spec.** It is recorded in `status.agentRollback` / `status.uiRollback` and the operator runs the last healthy image while the CR asks for the bad one. Writing the old image into the spec pinned an operator-defaulted image for good (later operator upgrades stopped moving the agent), and with a GitOps tool re-applying the bad image it rolled back again every five minutes. Changing the image clears the record. An image held back by `spec.agent.minOperatorVersion` is not rolled back.

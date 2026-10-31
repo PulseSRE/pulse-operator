@@ -55,6 +55,9 @@ type AgentReconciler struct {
 	// reconcileDeployment). Optional — see recordEvent's doc comment for why
 	// a nil Recorder is safe.
 	Recorder record.EventRecorder
+	// DBCredentialHash identifies the database credentials the agent should
+	// run with (see pgAuthHashAnnotation). Empty without a database.
+	DBCredentialHash string
 }
 
 // Reconcile runs all agent sub-resource reconcile steps in order.
@@ -749,6 +752,10 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{"app": name},
+				// Restart when the database credentials change: the agent reads
+				// database-url from a Secret at start, and kept the old password
+				// after pg-auth was regenerated.
+				Annotations: map[string]string{pgAuthHashAnnotation: r.DBCredentialHash},
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: name,
