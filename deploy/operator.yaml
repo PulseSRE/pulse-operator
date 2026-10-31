@@ -148,7 +148,7 @@ spec:
         # CI). Not :latest, which moves independently of the operand digests
         # below. To run a dev build: edit this line, or `oc set image` after
         # `make deploy`.
-        image: quay.io/amobrem/pulse-operator:v0.12.1
+        image: quay.io/amobrem/pulse-operator:v0.12.2
         # Operand images, digest-pinned to match the CSV's RELATED_IMAGE_*
         # env and spec.relatedImages. Kept here too so a non-OLM install
         # (kubectl apply -f deploy/) deploys the same operands an OLM install

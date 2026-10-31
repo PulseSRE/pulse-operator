@@ -14,7 +14,7 @@
 <body>
 <header class="wrap"><nav class="sites" aria-label="Pulse projects">
 <a class="mark" href="https://github.com/PulseSRE"><svg viewBox="0 0 68 36" aria-hidden="true"><path d="M0 20 H18 L22 24 L28 3 L34 32 L38 20 H50 L54 15 L58 20 H68" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Pulse</span></a>
-<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.12.1</span>
+<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.12.2</span>
 </nav></header>
 <main>
 <section class="hero wrap" aria-labelledby="title">
@@ -100,6 +100,15 @@
 <div class="wrap">
 <h2 id="new">What's new</h2>
 <div class="release">
+<p class="when"><strong>v0.12.2</strong>30 October 2026<br>Pairs with agent and UI v2.36.0<br>UI users need view on the openshiftpulse namespace. Components restart once on upgrade</p>
+<ul>
+<li style="--c:var(--ask)"><b>One Pulse per cluster, and only people who should can use it.</b> <span>Any OpenShift user could create a Pulse resource in their own project and get the agent's cluster-wide permissions. Now only one, in openshiftpulse, is acted on; signing in to the console needs view access to that namespace; each user approves the sign-in once; and Temporal, which has no login, only accepts the agent.</span></li>
+<li style="--c:var(--ok)"><b>Automatic rollback works.</b> <span>A new image counts as healthy only once it has fully rolled out, so a bad agent or console image is rolled back after five minutes. The rollback is recorded in status rather than written into your resource, so GitOps tools do not fight it.</span></li>
+<li style="--c:var(--trace)"><b>The database is handled with care.</b> <span>PostgreSQL shuts down cleanly instead of being killed, refuses a major-version jump that would crash it, picks up changed credentials, and grows its volume when you raise the size.</span></li>
+<li style="--c:var(--ink)"><b>Releases are safer, and Pulse has an icon.</b> <span>A release can no longer hide newer versions from clusters or drop one from the upgrade path, and the bundle is checked before anything is published. The OperatorHub tile shows the Pulse logo.</span></li>
+</ul>
+</div>
+<div class="release">
 <p class="when"><strong>v0.12.1</strong>30 October 2026<br>Pairs with agent and UI v2.36.0<br>No CRD schema or RBAC changes. Every component restarts once on upgrade</p>
 <ul>
 <li style="--c:var(--ok)"><b>The MCP server starts again.</b> <span>The MCP server stopped accepting the command-line options the operator passed it. Running pods kept working from a cached copy of the old image until they were moved to another node, as a cluster upgrade does, and then failed at startup. The operator now gives it a config file instead.</span></li>
@@ -149,7 +158,7 @@
 </section>
 </main>
 <footer><div class="wrap">
-<span>Pulse operator v0.12.1. MIT licensed.</span>
+<span>Pulse operator v0.12.2. MIT licensed.</span>
 <span><a href="https://github.com/PulseSRE/pulse-operator">Source</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/releases">Releases</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Changelog</a></span>
 </div></footer>
 </body>
