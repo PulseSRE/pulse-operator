@@ -18,12 +18,10 @@ metadata:
               "credentialSecret": "gcp-sa-key"
             },
             "agent": {
-              "image": "quay.io/amobrem/pulse-agent:latest",
               "trustLevel": 2,
               "allowWriteOperations": false
             },
             "ui": {
-              "image": "quay.io/amobrem/openshiftpulse:latest",
               "replicas": 2
             },
             "database": {
@@ -263,7 +261,13 @@ spec:
             selector:
               matchLabels:
                 control-plane: controller-manager
-            strategy: {}
+            # Recreate: one manager at a time. With the default rolling update an
+            # OLM upgrade ran the old and new manager together, each setting the
+            # agent image from its own RELATED_IMAGE_AGENT, and the agent
+            # (Recreate itself) restarted on every flip. Leader election is
+            # deliberately off (see ci.yml), so the strategy is what serializes.
+            strategy:
+              type: Recreate
             template:
               metadata:
                 labels:
@@ -341,6 +345,11 @@ spec:
                 serviceAccountName: pulse-operator-controller-manager
                 terminationGracePeriodSeconds: 10
     strategy: deployment
+  # The tile icon in OperatorHub / the operator catalog: the Pulse logo from
+  # pulse-ui (docs/logo.svg), kept in docs/assets/pulse-icon.svg.
+  icon:
+    - base64data: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InB1bHNlLWJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3R5bGU9InN0b3AtY29sb3I6IzI1NjNlYiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiM3YzNhZWQiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InB1bHNlLWxpbmUiIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3R5bGU9InN0b3AtY29sb3I6IzYwYTVmYSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjUwJSIgc3R5bGU9InN0b3AtY29sb3I6I2ZmZmZmZiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiNhNzhiZmEiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxyZWN0IHg9IjQiIHk9IjQiIHdpZHRoPSI5MiIgaGVpZ2h0PSI5MiIgcng9IjIwIiBmaWxsPSJ1cmwoI3B1bHNlLWJnKSIvPgogIDxyZWN0IHg9IjQiIHk9IjQiIHdpZHRoPSI5MiIgaGVpZ2h0PSI5MiIgcng9IjIwIiBmaWxsPSJub25lIiBzdHJva2U9InJnYmEoMjU1LDI1NSwyNTUsMC4xKSIgc3Ryb2tlLXdpZHRoPSIxIi8+CiAgPHBvbHlsaW5lCiAgICBwb2ludHM9IjE0LDUyIDI4LDUyIDM0LDUyIDQwLDM2IDQ2LDY4IDUyLDIyIDU4LDc4IDY0LDQwIDcwLDUyIDc2LDUyIDg2LDUyIgogICAgZmlsbD0ibm9uZSIKICAgIHN0cm9rZT0idXJsKCNwdWxzZS1saW5lKSIKICAgIHN0cm9rZS13aWR0aD0iNCIKICAgIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIKICAgIHN0cm9rZS1saW5lam9pbj0icm91bmQiCiAgLz4KICA8Y2lyY2xlIGN4PSI1MiIgY3k9IjIyIiByPSI0IiBmaWxsPSJ3aGl0ZSIgb3BhY2l0eT0iMC4zIi8+CiAgPGNpcmNsZSBjeD0iNTIiIGN5PSIyMiIgcj0iMiIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuNiIvPgo8L3N2Zz4K
+      mediatype: image/svg+xml
   installModes:
     - supported: false
       type: OwnNamespace

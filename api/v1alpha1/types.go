@@ -244,6 +244,17 @@ type OpenShiftPulseStatus struct {
 	// LastHealthyUIImage is the UI-container equivalent of LastHealthyAgentImage.
 	// +optional
 	LastHealthyUIImage string `json:"lastHealthyUIImage,omitempty"`
+	// AgentRollback is set while the operator runs the last healthy agent
+	// image instead of the one the spec asks for, because that one did not
+	// become healthy within the upgrade window. The spec is left as the user
+	// wrote it (a GitOps tool would otherwise re-apply the bad image and
+	// loop); changing spec.agent.image, or an operator upgrade changing the
+	// default image, clears it.
+	// +optional
+	AgentRollback *ImageRollback `json:"agentRollback,omitempty"`
+	// UIRollback is the UI equivalent of AgentRollback.
+	// +optional
+	UIRollback *ImageRollback `json:"uiRollback,omitempty"`
 	// UpgradeStartedAt records when the operator first observed the desired
 	// agent or UI image differ from the last known-healthy image. Cleared
 	// once the component is healthy again (the new image succeeded, or an
@@ -274,7 +285,21 @@ type OpenShiftPulseStatus struct {
 	// frequently-changing numeric field would make noisy for no benefit.
 }
 
+// ImageRollback records an image the operator declined to keep running and
+// the image it runs instead.
+type ImageRollback struct {
+	// From is the image the spec (or the operator's default) asks for, which
+	// did not become healthy.
+	From string `json:"from"`
+	// To is the last image observed healthy, which the operator runs instead.
+	To string `json:"to"`
+	// At is when the rollback happened.
+	At metav1.Time `json:"at"`
+}
+
 // +kubebuilder:object:root=true
+
+// OpenShiftPulseList contains a list of OpenShiftPulse.
 type OpenShiftPulseList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`

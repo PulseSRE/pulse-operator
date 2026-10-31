@@ -46,6 +46,16 @@ func expectNoEvent(rec *record.FakeRecorder) {
 	}
 }
 
+// syncStatus runs syncPhaseAndConditions for a spec where "ready" means the
+// component is serving and has rolled out its current image; the UI's
+// readiness is read from cr.Status.UIAvailable, as the controller does.
+func syncStatus(root *OpenShiftPulseReconciler, cr *pulsev1alpha1.OpenShiftPulse, agentReady, pgReady bool) (string, string, bool, bool) {
+	return root.syncPhaseAndConditions(cr, componentHealth{
+		agentServing: agentReady, agentRolledOut: agentReady,
+		uiRolledOut: cr.Status.UIAvailable, pgReady: pgReady,
+	})
+}
+
 var _ = Describe("syncPhaseAndConditions", func() {
 	const (
 		crName    = "autonomy-phase-pulse"
@@ -69,7 +79,7 @@ var _ = Describe("syncPhaseAndConditions", func() {
 	})
 
 	It("first install with nothing ready yet is Installing, not Upgrading", func() {
-		_, _, agentUpgrading, uiUpgrading := root.syncPhaseAndConditions(cr, false, false)
+		_, _, agentUpgrading, uiUpgrading := syncStatus(root, cr, false, false)
 		Expect(cr.Status.Phase).To(Equal("Installing"))
 		Expect(agentUpgrading).To(BeFalse(), "no lastHealthy image recorded yet — nothing to be 'upgrading' from")
 		Expect(uiUpgrading).To(BeFalse())
@@ -78,7 +88,7 @@ var _ = Describe("syncPhaseAndConditions", func() {
 
 	It("all components ready -> Running, records lastHealthy images, Progressing=False/Stable", func() {
 		cr.Status.UIAvailable = true // UIAvailable is read from status by syncPhaseAndConditions's caller convention
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 
 		Expect(cr.Status.Phase).To(Equal("Running"))
 		Expect(cr.Status.LastHealthyAgentImage).To(Equal("quay.io/test/pulse-agent:v1"))
@@ -97,14 +107,14 @@ var _ = Describe("syncPhaseAndConditions", func() {
 	It("a spec image bump while the component isn't ready yet is Upgrading, not Degraded", func() {
 		// Reach Running with v1 first so LastHealthyAgentImage is populated.
 		cr.Status.UIAvailable = true
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		Expect(cr.Status.Phase).To(Equal("Running"))
 
 		// Bump the agent image and simulate the new pod not being ready yet
 		// (Recreate strategy: old pod already torn down, new one still
 		// starting) without touching the UI.
 		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v2"
-		_, _, agentUpgrading, uiUpgrading := root.syncPhaseAndConditions(cr, false, true)
+		_, _, agentUpgrading, uiUpgrading := syncStatus(root, cr, false, true)
 
 		Expect(cr.Status.Phase).To(Equal("Upgrading"))
 		Expect(agentUpgrading).To(BeTrue())
@@ -121,14 +131,14 @@ var _ = Describe("syncPhaseAndConditions", func() {
 
 	It("the new image becoming ready completes the upgrade: Running again, lastHealthy advances, UpgradeStartedAt clears", func() {
 		cr.Status.UIAvailable = true
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 
 		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v2"
-		root.syncPhaseAndConditions(cr, false, true)
+		syncStatus(root, cr, false, true)
 		Expect(cr.Status.Phase).To(Equal("Upgrading"))
 
 		// New image is now ready.
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		Expect(cr.Status.Phase).To(Equal("Running"))
 		Expect(cr.Status.LastHealthyAgentImage).To(Equal("quay.io/test/pulse-agent:v2"))
 		Expect(cr.Status.UpgradeStartedAt).To(BeNil())
@@ -136,11 +146,11 @@ var _ = Describe("syncPhaseAndConditions", func() {
 
 	It("an unplanned failure with no image change is Degraded, not Upgrading", func() {
 		cr.Status.UIAvailable = true
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		Expect(cr.Status.Phase).To(Equal("Running"))
 
 		// Agent goes unhealthy with the SAME image — not an upgrade in flight.
-		_, _, agentUpgrading, _ := root.syncPhaseAndConditions(cr, false, true)
+		_, _, agentUpgrading, _ := syncStatus(root, cr, false, true)
 		Expect(agentUpgrading).To(BeFalse())
 		Expect(cr.Status.Phase).To(Equal("Degraded"))
 		Expect(cr.Status.UpgradeStartedAt).To(BeNil())
@@ -153,17 +163,17 @@ var _ = Describe("syncPhaseAndConditions", func() {
 	// make that unavoidable outage window's size visible instead.
 	It("records LastUpgradeDurationSeconds once an in-progress upgrade completes", func() {
 		cr.Status.UIAvailable = true
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		Expect(cr.Status.Phase).To(Equal("Running"))
 		Expect(cr.Status.LastUpgradeDurationSeconds).To(BeZero(), "no upgrade has happened yet")
 
 		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v2"
 		started := metav1.NewTime(time.Now().Add(-90 * time.Second))
-		root.syncPhaseAndConditions(cr, false, true)
+		syncStatus(root, cr, false, true)
 		cr.Status.UpgradeStartedAt = &started // simulate the upgrade having been in flight for a known duration
 		Expect(cr.Status.Phase).To(Equal("Upgrading"))
 
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		Expect(cr.Status.Phase).To(Equal("Running"))
 		Expect(cr.Status.LastUpgradeDurationSeconds).To(BeNumerically(">=", 90),
 			"must reflect the time the upgrade actually spent in Upgrading, not zero")
@@ -172,32 +182,32 @@ var _ = Describe("syncPhaseAndConditions", func() {
 
 	It("does not touch LastUpgradeDurationSeconds when reaching Running was not the completion of an upgrade", func() {
 		cr.Status.UIAvailable = true
-		root.syncPhaseAndConditions(cr, true, true) // first install -> Running directly, never Upgrading
+		syncStatus(root, cr, true, true) // first install -> Running directly, never Upgrading
 		Expect(cr.Status.Phase).To(Equal("Running"))
 		Expect(cr.Status.LastUpgradeDurationSeconds).To(BeZero())
 	})
 
 	It("mentions the upgrade duration in the Running event only when an upgrade just completed", func() {
 		cr.Status.UIAvailable = true
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		firstInstallEvent := drainEvent(root.Recorder.(*record.FakeRecorder))
 		Expect(firstInstallEvent).NotTo(ContainSubstring("upgrade completed"), "a first install is not an upgrade")
 
 		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v2"
-		root.syncPhaseAndConditions(cr, false, true)
+		syncStatus(root, cr, false, true)
 		Expect(drainEvent(root.Recorder.(*record.FakeRecorder))).To(ContainSubstring("Upgrading"))
 
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		Expect(drainEvent(root.Recorder.(*record.FakeRecorder))).To(ContainSubstring("upgrade completed in"))
 	})
 
 	It("emits Running/Upgrading/Degraded events only on phase transitions, not every reconcile", func() {
 		cr.Status.UIAvailable = true
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		Expect(drainEvent(root.Recorder.(*record.FakeRecorder))).To(ContainSubstring("Running"))
 
 		// Second call, still healthy — must NOT re-emit "Running".
-		root.syncPhaseAndConditions(cr, true, true)
+		syncStatus(root, cr, true, true)
 		expectNoEvent(root.Recorder.(*record.FakeRecorder))
 	})
 })
@@ -240,11 +250,11 @@ var _ = Describe("reconcileAutoRollback", func() {
 		rolledBack, err := root.reconcileAutoRollback(ctx, cr, true, false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rolledBack).To(BeFalse())
-		Expect(cr.Spec.Agent.Image).To(Equal("quay.io/test/pulse-agent:bad"), "must not touch spec before the timeout")
+		Expect(cr.Status.AgentRollback).To(BeNil(), "must not roll back before the timeout")
 		expectNoEvent(root.Recorder.(*record.FakeRecorder))
 	})
 
-	It("reverts spec.agent.image to lastHealthy once past upgradeHealthTimeout, and emits AutoRolledBack", func() {
+	It("runs lastHealthy instead once past upgradeHealthTimeout, leaves the spec alone, and emits AutoRolledBack", func() {
 		started := metav1.NewTime(time.Now().Add(-upgradeHealthTimeout - time.Minute))
 		cr.Status.Phase = "Upgrading"
 		cr.Status.LastHealthyAgentImage = "quay.io/test/pulse-agent:good"
@@ -253,16 +263,44 @@ var _ = Describe("reconcileAutoRollback", func() {
 		rolledBack, err := root.reconcileAutoRollback(ctx, cr, true, false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rolledBack).To(BeTrue())
-		Expect(cr.Spec.Agent.Image).To(Equal("quay.io/test/pulse-agent:good"))
+		// The spec is the user's (or their GitOps tool's): writing the good
+		// image into it pinned it for good, and a re-applied bad image
+		// rolled back again every five minutes.
+		Expect(cr.Spec.Agent.Image).To(Equal("quay.io/test/pulse-agent:bad"))
+		Expect(cr.Status.AgentRollback).NotTo(BeNil())
+		Expect(cr.Status.AgentRollback.From).To(Equal("quay.io/test/pulse-agent:bad"))
+		Expect(cr.Status.AgentRollback.To).To(Equal("quay.io/test/pulse-agent:good"))
+		Expect(resolvedImage(cr)).To(Equal("quay.io/test/pulse-agent:good"))
 
 		event := drainEvent(root.Recorder.(*record.FakeRecorder))
 		Expect(event).To(ContainSubstring("AutoRolledBack"))
 		Expect(event).To(ContainSubstring("pulse-agent:bad"))
 
-		// Persisted, not just mutated in-memory.
 		fresh := &pulsev1alpha1.OpenShiftPulse{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName, Namespace: namespace}, fresh)).To(Succeed())
-		Expect(fresh.Spec.Agent.Image).To(Equal("quay.io/test/pulse-agent:good"))
+		Expect(fresh.Spec.Agent.Image).To(Equal("quay.io/test/pulse-agent:bad"), "spec untouched on the server too")
+	})
+
+	It("stops applying a rollback once the spec asks for a different image", func() {
+		cr.Status.AgentRollback = &pulsev1alpha1.ImageRollback{From: "quay.io/test/pulse-agent:bad", To: "quay.io/test/pulse-agent:good"}
+		Expect(resolvedImage(cr)).To(Equal("quay.io/test/pulse-agent:good"))
+		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v3"
+		Expect(resolvedImage(cr)).To(Equal("quay.io/test/pulse-agent:v3"))
+		cr.Status.LastHealthyAgentImage = "quay.io/test/pulse-agent:good"
+		syncStatus(root, cr, false, true)
+		Expect(cr.Status.AgentRollback).To(BeNil(), "a stale record is cleared")
+	})
+
+	It("does not roll back an image held back by spec.agent.minOperatorVersion", func() {
+		started := metav1.NewTime(time.Now().Add(-upgradeHealthTimeout - time.Minute))
+		cr.Status.Phase = "Upgrading"
+		cr.Status.LastHealthyAgentImage = "quay.io/test/pulse-agent:good"
+		cr.Status.UpgradeStartedAt = &started
+		cr.Status.Conditions = []metav1.Condition{{Type: "AgentVersionCompatible", Status: metav1.ConditionFalse, Reason: "x", LastTransitionTime: metav1.Now()}}
+
+		rolledBack, err := root.reconcileAutoRollback(ctx, cr, true, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rolledBack).To(BeFalse(), "it never ran, so it has not failed")
 	})
 
 	It("rolls back agent and UI independently in the same call when both are stuck", func() {
@@ -275,22 +313,19 @@ var _ = Describe("reconcileAutoRollback", func() {
 		rolledBack, err := root.reconcileAutoRollback(ctx, cr, true, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rolledBack).To(BeTrue())
-		Expect(cr.Spec.Agent.Image).To(Equal("quay.io/test/pulse-agent:good"))
-		Expect(cr.Spec.UI.Image).To(Equal("quay.io/test/openshiftpulse:good"))
+		Expect(resolvedImage(cr)).To(Equal("quay.io/test/pulse-agent:good"))
+		Expect(resolvedUIImage(cr)).To(Equal("quay.io/test/openshiftpulse:good"))
 
 		rec := root.Recorder.(*record.FakeRecorder)
 		Expect(drainEvent(rec)).To(ContainSubstring("AutoRolledBack"))
 		Expect(drainEvent(rec)).To(ContainSubstring("AutoRolledBack"))
 	})
 
-	// Anti-loop guard: once spec already matches lastHealthy (e.g. this
-	// function's own previous patch already landed), there is nothing left
-	// to roll back to — reconcileAutoRollback must not keep firing on every
-	// subsequent call just because the caller still passes upgrading=true.
-	It("anti-loop guard: does not re-patch or re-emit once spec already equals lastHealthy", func() {
-		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:good" // already at the rollback target
-		Expect(k8sClient.Update(ctx, cr)).To(Succeed())
-
+	// Anti-loop guard: one rollback per bad image. Once a record exists,
+	// reconcileAutoRollback must not keep firing just because the caller
+	// still passes upgrading=true.
+	It("anti-loop guard: does not roll back again while a rollback is in effect", func() {
+		cr.Status.AgentRollback = &pulsev1alpha1.ImageRollback{From: "quay.io/test/pulse-agent:bad", To: "quay.io/test/pulse-agent:good"}
 		started := metav1.NewTime(time.Now().Add(-upgradeHealthTimeout - time.Minute))
 		cr.Status.Phase = "Upgrading"
 		cr.Status.LastHealthyAgentImage = "quay.io/test/pulse-agent:good"
@@ -298,7 +333,7 @@ var _ = Describe("reconcileAutoRollback", func() {
 
 		rolledBack, err := root.reconcileAutoRollback(ctx, cr, true, false)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(rolledBack).To(BeFalse(), "nothing to roll back to — spec already matches lastHealthy")
+		Expect(rolledBack).To(BeFalse())
 		expectNoEvent(root.Recorder.(*record.FakeRecorder))
 	})
 
@@ -414,3 +449,87 @@ var _ = Describe("self-heal Events (Recorder wiring)", func() {
 		Expect(string(after.Data["client-secret"])).To(Equal("fine"), "client-secret must be left untouched")
 	})
 })
+
+// Last-healthy used to be recorded whenever some pod was ready. In the pass
+// that applied a new image the old pod still was, so every new image was
+// "healthy" at once and rollback never fired; the UI's rolling update keeps
+// old pods ready throughout, so its rollback could not fire at all.
+var _ = Describe("Rollout-based upgrade detection", func() {
+	var (
+		root *OpenShiftPulseReconciler
+		cr   *pulsev1alpha1.OpenShiftPulse
+	)
+	BeforeEach(func() {
+		root = &OpenShiftPulseReconciler{Recorder: record.NewFakeRecorder(20)}
+		cr = &pulsev1alpha1.OpenShiftPulse{Spec: pulsev1alpha1.OpenShiftPulseSpec{
+			Agent: pulsev1alpha1.AgentConfig{Image: "quay.io/test/pulse-agent:v1"},
+			UI:    pulsev1alpha1.UIConfig{Image: "quay.io/test/openshiftpulse:v1"},
+		}}
+		cr.Status.UIAvailable = true
+		syncStatus(root, cr, true, true)
+		Expect(cr.Status.Phase).To(Equal("Running"))
+	})
+
+	It("does not record a new agent image as healthy while the old pod still serves", func() {
+		cr.Spec.Agent.Image = "quay.io/test/pulse-agent:v2"
+		_, _, agentUpgrading, _ := root.syncPhaseAndConditions(cr, componentHealth{
+			agentServing: true, agentRolledOut: false, uiRolledOut: true, pgReady: true,
+		})
+		Expect(agentUpgrading).To(BeTrue())
+		Expect(cr.Status.Phase).To(Equal("Upgrading"))
+		Expect(cr.Status.LastHealthyAgentImage).To(Equal("quay.io/test/pulse-agent:v1"))
+		Expect(cr.Status.UpgradeStartedAt).NotTo(BeNil())
+	})
+
+	It("treats a UI image whose rollout never completes as upgrading, while old pods keep serving", func() {
+		cr.Spec.UI.Image = "quay.io/test/openshiftpulse:v2"
+		_, _, _, uiUpgrading := root.syncPhaseAndConditions(cr, componentHealth{
+			agentServing: true, agentRolledOut: true, uiRolledOut: false, pgReady: true,
+		})
+		Expect(uiUpgrading).To(BeTrue())
+		Expect(cr.Status.Phase).To(Equal("Upgrading"))
+		Expect(cr.Status.LastHealthyUIImage).To(Equal("quay.io/test/openshiftpulse:v1"))
+	})
+})
+
+var _ = DescribeTable("deploymentRolledOut",
+	func(mutate func(d *appsv1.Deployment), want bool) {
+		two := int32(2)
+		d := &appsv1.Deployment{}
+		d.Generation = 3
+		d.Spec.Replicas = &two
+		d.Spec.Template.Spec.Containers = []corev1.Container{{Name: "c", Image: "img:v2"}}
+		d.Status = appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: 2}
+		mutate(d)
+		Expect(deploymentRolledOut(d, "img:v2")).To(Equal(want))
+	},
+	Entry("caught up, every pod new and ready", func(d *appsv1.Deployment) {}, true),
+	Entry("controller has not seen the new spec yet", func(d *appsv1.Deployment) { d.Status.ObservedGeneration = 2 }, false),
+	Entry("template runs another image", func(d *appsv1.Deployment) { d.Spec.Template.Spec.Containers[0].Image = "img:v1" }, false),
+	Entry("an old pod is still there", func(d *appsv1.Deployment) { d.Status.Replicas = 3 }, false),
+	Entry("a new pod is not ready", func(d *appsv1.Deployment) { d.Status.ReadyReplicas = 1 }, false),
+	Entry("scaled to zero", func(d *appsv1.Deployment) { zero := int32(0); d.Spec.Replicas = &zero }, false),
+)
+
+var _ = Describe("keepRestartedAt", func() {
+	It("carries `oc rollout restart`'s annotation into the rebuilt template", func() {
+		previous := corev1.PodTemplateSpec{}
+		previous.Annotations = map[string]string{restartedAtAnnotation: "2026-10-30T17:00:00Z", "other": "x"}
+		desired := corev1.PodTemplateSpec{}
+		keepRestartedAt(&previous, &desired)
+		Expect(desired.Annotations).To(Equal(map[string]string{restartedAtAnnotation: "2026-10-30T17:00:00Z"}))
+	})
+	It("adds nothing when there was no restart", func() {
+		desired := corev1.PodTemplateSpec{}
+		keepRestartedAt(&corev1.PodTemplateSpec{}, &desired)
+		Expect(desired.Annotations).To(BeNil())
+	})
+})
+
+var _ = DescribeTable("imageVersionLabel",
+	func(image, want string) { Expect(imageVersionLabel(image)).To(Equal(want)) },
+	Entry("tag", "quay.io/amobrem/pulse-agent:v2.36.0", "v2.36.0"),
+	Entry("digest", "quay.io/amobrem/pulse-agent@sha256:009ee80aef5049a2377175faa4a725608c79a7b80a795b45632d4f847b32954f", "sha256:009ee80aef50"),
+	Entry("registry port, no tag", "registry.local:5000/pulse-agent", ""),
+	Entry("registry port and tag", "registry.local:5000/pulse-agent:v1", "v1"),
+)

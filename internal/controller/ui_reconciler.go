@@ -29,6 +29,17 @@ import (
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
 
+// uiAccessCheckArg is the oauth-proxy SubjectAccessReview a user must pass to
+// sign in to the UI: get services in the Pulse namespace, which the
+// namespace's view role grants.
+func uiAccessCheckArg(namespace string) string {
+	return fmt.Sprintf(`--openshift-sar={"namespace":%q,"resource":"services","verb":"get"}`, namespace)
+}
+
+// oauthGrantMethod makes OpenShift ask each user to approve the grant once;
+// see reconcileOAuthClient.
+const oauthGrantMethod = "prompt"
+
 const (
 	defaultUIImage = "quay.io/amobrem/openshiftpulse:latest"
 	uiHTTPPort     = int32(8080)
@@ -204,11 +215,17 @@ func uiTLSSecretName(crName string) string {
 	return crName + "-openshiftpulse-tls"
 }
 
-func resolvedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
+// requestedUIImage is the UI image the CR asks for.
+func requestedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
 	if cr.Spec.UI.Image != "" {
 		return cr.Spec.UI.Image
 	}
 	return imageFromEnv(envUIImage, defaultUIImage)
+}
+
+// resolvedUIImage is the UI image to run, after any rollback.
+func resolvedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
+	return applyRollback(requestedUIImage(cr), cr.Status.UIRollback)
 }
 
 // resolvedUIReplicas returns the effective UI Deployment replica count, applying
@@ -704,7 +721,12 @@ http {
     index index.html;
 
 %s
-%s    # Agent WebSocket — appends the shared token as a query param.
+%s    # X-Forwarded-User is cleared on both agent routes. oauth-proxy runs
+    # without --pass-user-headers, so a value here can only have come from the
+    # browser, and the agent trusts it ahead of TokenReview: anyone signed in
+    # could claim to be an admin. The agent resolves the caller from
+    # X-Forwarded-Access-Token, which oauth-proxy does set.
+    # Agent WebSocket — appends the shared token as a query param.
     # SECURITY NOTE: unlike the REST proxy below (Authorization: Bearer header),
     # this passes the token via the upstream URL, which risks it appearing in
     # the agent's own request logs. It is NOT switched to a header here because
@@ -718,7 +740,7 @@ http {
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection $connection_upgrade;
       proxy_set_header X-Forwarded-Access-Token $http_x_forwarded_access_token;
-      proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+      proxy_set_header X-Forwarded-User "";
       proxy_http_version 1.1;
       proxy_read_timeout 3600s;
     }
@@ -728,7 +750,7 @@ http {
       proxy_pass http://%s:8080/;
       proxy_set_header Authorization "Bearer %s";
       proxy_set_header X-Forwarded-Access-Token $http_x_forwarded_access_token;
-      proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+      proxy_set_header X-Forwarded-User "";
       proxy_read_timeout 60s;
     }
 
@@ -817,6 +839,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 		deploy.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{"app": name},
 		}
+		previous := *deploy.Spec.Template.DeepCopy()
 		deploy.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:      map[string]string{"app": name},
@@ -910,6 +933,13 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 							// clients to user:info/user:check-access/role:*), so this was not
 							// safely addable until the explicit-OAuthClient switch above.
 							"--scope=user:full",
+							// Only users who can view the Pulse namespace get in. Without
+							// this any OpenShift user could sign in, and every session gets
+							// the agent's shared token, so a user with no access to a
+							// namespace could approve a fix there that the agent's
+							// ServiceAccount then applies. Grant access with
+							// `oc adm policy add-role-to-user view <user> -n <namespace>`.
+							uiAccessCheckArg(pulse.Namespace),
 							"--cookie-expire=168h",
 							// MUST stay false. oauth-proxy's LoggingHandler wraps every
 							// ResponseWriter in a *responseLogger that implements only
@@ -1000,6 +1030,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 				},
 			},
 		}
+		keepRestartedAt(&previous, &deploy.Spec.Template)
 		return nil
 	})
 	if err != nil {
@@ -1211,13 +1242,11 @@ func (r *UIReconciler) reconcileOAuthClient(ctx context.Context, pulse *pulsev1a
 			[]string{redirectURI}, "redirectURIs"); setErr != nil {
 			return fmt.Errorf("set oauthclient redirectURIs: %w", setErr)
 		}
-		// grantMethod=auto skips the OCP consent screen. This is safe here because:
-		// (a) redirectURIs is locked to the operator-controlled Route hostname — no
-		//     third-party redirect target can be injected via the CR, and
-		// (b) the OAuthClient name is CR-scoped (namespace+name) so two CRs cannot
-		//     race to own the same client. Change to "prompt" if this operator is ever
-		//     deployed in a multi-tenant environment where users are not fully trusted.
-		if setErr := unstructured.SetNestedField(desired.Object, "auto", "grantMethod"); setErr != nil {
+		// grantMethod=prompt: each user approves, once, the user:full grant the
+		// proxy requests. With "auto" the grant was silent, so whoever could
+		// choose the proxy image (spec.ui.oauthProxyImage) could send an admin a
+		// link and receive their full-scope token without a consent screen.
+		if setErr := unstructured.SetNestedField(desired.Object, oauthGrantMethod, "grantMethod"); setErr != nil {
 			return fmt.Errorf("set oauthclient grantMethod: %w", setErr)
 		}
 		return r.Create(ctx, desired)
@@ -1234,7 +1263,7 @@ func (r *UIReconciler) reconcileOAuthClient(ctx context.Context, pulse *pulsev1a
 		[]string{redirectURI}, "redirectURIs"); setErr != nil {
 		return fmt.Errorf("update oauthclient redirectURIs: %w", setErr)
 	}
-	if setErr := unstructured.SetNestedField(existing.Object, "auto", "grantMethod"); setErr != nil {
+	if setErr := unstructured.SetNestedField(existing.Object, oauthGrantMethod, "grantMethod"); setErr != nil {
 		return fmt.Errorf("update oauthclient grantMethod: %w", setErr)
 	}
 	return r.Update(ctx, existing)

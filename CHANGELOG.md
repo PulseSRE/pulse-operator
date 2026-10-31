@@ -16,6 +16,24 @@ actually contains, taken from its commits.
 - **A deleted instance stops exporting metrics.** Its `component_ready` and memory series lingered until the operator restarted.
 - **`scripts/olm-uninstall.py`** stops when a CR is still terminating (the operator must stay to finish it; `--force` overrides), waits up to 120s, and treats an `oc` error (an RBAC denial, say) as an error instead of "nothing found".
 
+**Rollback and upgrades**
+- **Automatic rollback works.** An image counted as healthy when any pod was ready, and during a rollout the old pod still is, so every new image was recorded as healthy in the pass that applied it and rollback never fired; the UI's, whose old pods stay up through its rolling update, never could. An image is now healthy only once its Deployment has rolled out (caught up with its spec, every replica updated and ready, no old pod). A UI rollout that never completes shows `Upgrading` and is rolled back like the agent's.
+- **Rollback no longer edits the spec.** It is recorded in `status.agentRollback` / `status.uiRollback` and the operator runs the last healthy image while the CR asks for the bad one. Writing the old image into the spec pinned an operator-defaulted image for good (later operator upgrades stopped moving the agent), and with a GitOps tool re-applying the bad image it rolled back again every five minutes. Changing the image clears the record. An image held back by `spec.agent.minOperatorVersion` is not rolled back.
+- **The operator's own Deployment uses `Recreate`.** An OLM upgrade ran the old and new manager together, each setting the agent image from its own pins, restarting the agent on every flip.
+- **`oc rollout restart` sticks.** The agent and UI pod templates are rebuilt each reconcile, which dropped the restart annotation: a second agent outage, or a UI restart undone part way.
+- **`AgentVersion` is readable again**: a tag, or `sha256:` and 12 hex digits for a digest-pinned image, instead of the 64-character hash.
+
+**Security.** Upgrading changes who can use Pulse; read these first.
+- **One OpenShiftPulse per cluster, in `openshiftpulse`.** Any OpenShift user can create a project, and OLM lets project admins create this operator's resources there. The operator acted on every `OpenShiftPulse`, and with `allowSecretAccess`/`allowWriteOperations` bound the agent's ServiceAccount in that user's project to cluster-wide Secret read and Deployment patch: a path to cluster-admin. Only the oldest `OpenShiftPulse` in `PULSE_NAMESPACE` (default `openshiftpulse`, set on the operator through the Subscription) is now reconciled. Any other is rejected (`Phase: Rejected`, an `Accepted=False` condition and a Warning event), and the cluster-scoped roles, bindings and OAuthClient it holds are removed; its namespaced objects and data are left alone.
+- **Signing in to the UI requires view access to the Pulse namespace** (`--openshift-sar`, `get services`). Every session carries the agent's shared token, so any OpenShift user could sign in and approve a fix in a namespace they cannot touch. Grant access with `oc adm policy add-role-to-user view <user> -n openshiftpulse`.
+- **The OAuth grant is no longer silent** (`grantMethod: prompt`). Each user approves it once. With `auto`, whoever could set the proxy image could collect an admin's full-scope token from a link.
+- **nginx no longer forwards a browser-supplied `X-Forwarded-User`.** The agent trusts that header ahead of the token, and oauth-proxy does not set it, so any signed-in user could claim to be an admin.
+- **Temporal accepts connections only from the agent.** It has no authentication; any pod could approve a pending fix or start one with approval off.
+- **Turning render off deletes only render objects this resource created.** It deleted anything with those names, every reconcile.
+
+- **Pulse has an icon in OperatorHub.** The CSV had no `spec.icon`, so the catalog tile showed a generic placeholder; it now carries the Pulse logo (`docs/assets/pulse-icon.svg`, from pulse-ui).
+- **The console's example resource no longer sets `:latest` images.** The OperatorHub "Create OpenShiftPulse" form starts from `alm-examples`, which set `spec.agent.image` and `spec.ui.image` to `:latest`. An image in the CR wins over the digest this release pins, so a resource created from the default example ran `:latest` and lost both the pin and automatic rollback.
+
 ## v0.12.1 (2026-10-30)
 
 Pairs with pulse-agent and pulse-ui v2.36.0. No CRD schema or RBAC changes. Fixes the MCP server, which exits at startup (`unknown flag: --port`) whenever its pod is rescheduled onto a node without a cached copy of the old image, for example during a cluster upgrade (#113). **On upgrade** every component the operator deploys, PostgreSQL included, restarts once: its image changes from a tag to the digest this release pins. Pull requests #112–#113.
