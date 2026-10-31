@@ -995,6 +995,8 @@ Use the [explicit-context acceptance runner](docs/CLUSTER_ACCEPTANCE.md) against
 
 Pull requests are welcome. For substantial changes, open an issue first to discuss the approach.
 
+`main` merges only through a merge queue: [`ci.yml`](.github/workflows/ci.yml) runs on the pull request, then again (`merge_group`) on the queue's merge commit, and all eight CI jobs must pass both times.
+
 ### Development workflow
 
 ```bash
