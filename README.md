@@ -734,33 +734,48 @@ make bundle-validate
 
 ### Releasing a new version
 
-Tag to trigger CI publishing:
+Before tagging, in one commit on `main`:
+
+1. Set `OperatorVersion` in `internal/controller/compat.go` to the version
+   without `v`; the release workflow rejects a tag that does not match.
+2. Set the manager `image:` in `deploy/operator.yaml` to
+   `quay.io/amobrem/pulse-operator:vX.Y.Z` (the same version). CI
+   (`scripts/check-deploy-sync.py`) fails until it matches `OperatorVersion`.
+   Until the tag's images are published, `oc apply` of `main` points at an
+   image that does not exist yet, so tag promptly.
+3. If this release ships different operand images, update their digests by
+   hand. **Nothing resolves them at release time**: the release builds the
+   bundle with exactly the digests committed. Change each one in all three
+   places: the manager's `RELATED_IMAGE_*` env and `spec.relatedImages` in
+   `bundle/manifests/pulse-operator.clusterserviceversion.yaml`, and the
+   `RELATED_IMAGE_*` env in `deploy/operator.yaml`. Resolve a digest with
+   `skopeo inspect --format '{{.Digest}}' docker://<image>:<tag>` (for a
+   multi-arch image, use the index digest). `go test ./internal/controller/`
+   checks the CSV's two lists agree and are digests;
+   `scripts/check-deploy-sync.py` checks `deploy/operator.yaml` against the CSV.
+
+Then tag to trigger CI publishing:
 
 ```bash
-# Set an approved, unused version and update OperatorVersion first.
-VERSION=vX.Y.Z
-# Replace the placeholder before executing either command.
+VERSION=vX.Y.Z   # an approved, unused version; replace the placeholder first
 git tag -a "$VERSION" -m "$VERSION"
 git push origin "$VERSION"
 ```
 
-CI ([`.github/workflows/release.yml`](.github/workflows/release.yml)) builds and pushes:
-- `quay.io/amobrem/pulse-operator:<tag>` + `:latest` (the operator image, from `Dockerfile`)
-- `quay.io/amobrem/pulse-operator-bundle:<tag>` + `:latest` (the OLM bundle, from `Dockerfile.bundle`)
-- `quay.io/amobrem/pulse-operator-catalog:<tag>` + `:latest` (the file-based OLM catalog, from `Dockerfile.catalog`)
+CI ([`.github/workflows/release.yml`](.github/workflows/release.yml)), in this order:
 
-Before the bundle image is built, CI runs [`scripts/bump-bundle-version.py`](scripts/bump-bundle-version.py) against the pushed tag, which updates the CSV's `metadata.name`, `spec.version`, `metadata.annotations.containerImage`, and the manager Deployment's `image` to match — and sets `spec.replaces` to whatever CSV name was current before the bump, extending the upgrade graph by one step. This runs in CI only; the version bump is never committed back to `main`, so the checked-in CSV may lag the release; verify the published bundle rather than inferring its version from `main`.
+1. Checks `OperatorVersion` against the tag.
+2. Runs [`scripts/bump-bundle-version.py`](scripts/bump-bundle-version.py) against the tag, which sets the CSV's `metadata.name`, `spec.version`, `metadata.annotations.containerImage` and the manager Deployment's `image` to the release, and `spec.replaces` to the highest released tag below it. This runs in CI only; the bump is never committed back to `main`, so the checked-in CSV stays at v0.1.0. Verify the published bundle rather than inferring its version from `main`. (PR CI runs the same bump on a scratch copy so a CSV edit that breaks it fails before a release does.)
+3. Validates the bumped bundle (`make bundle-validate`) and `deploy/operator.yaml`. Nothing has been pushed yet, so a failure here publishes nothing.
+4. Pushes `quay.io/amobrem/pulse-operator:<tag>` (from `Dockerfile`) and `quay.io/amobrem/pulse-operator-bundle:<tag>` (from `Dockerfile.bundle`).
+5. Renders every released bundle into `quay.io/amobrem/pulse-operator-catalog:<tag>` (from `Dockerfile.catalog`; the image the CatalogSource in [Install via OLM](#install-via-olm) uses). The current bundle must render. A historical version is skipped only when its bundle image does not exist; any other render error is retried and then fails the release, rather than silently dropping that version from the upgrade graph.
+6. Moves `:latest` on all three images to this release, **only if this tag is the newest released version**. A hotfix on an older line, a re-run of an old tag, or a run that finishes after a newer tag's publishes its version tags and leaves `:latest` alone, because its catalog does not contain the newer releases.
 
-The workflow renders available released bundles into the **catalog** image
-(`pulse-operator-catalog`, used by the CatalogSource in [Install via OLM](#install-via-olm)),
-and publishes it with the operator and bundle. The current bundle
-must render successfully; unavailable historical bundles are skipped and
-`replaces` is rewired to available predecessors. Verify the resulting upgrade
-graph and all three published image digests before deployment.
-
-Before tagging, update `internal/controller/compat.go`
-`OperatorVersion` to the tag without `v`; the release workflow rejects a mismatch.
-These image publications do not themselves create a GitHub Release.
+Release runs are serialized. GitHub keeps only one waiting run per group, so if
+several tags are pushed at once a waiting run can be cancelled; re-run it.
+Verify the resulting upgrade graph and all three published image digests before
+deployment. These image publications do not themselves create a GitHub Release
+([github-release.yml](.github/workflows/github-release.yml) does).
 
 Requires `QUAY_USERNAME` and `QUAY_TOKEN` as GitHub repository secrets.
 

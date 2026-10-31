@@ -278,9 +278,12 @@ spec:
                     # spec.relatedImages below. The operator reads these and
                     # falls back to its compiled defaults only when unset, so
                     # a bundle install always deploys the exact images this
-                    # release was tested against. scripts/bump-bundle-version.py
-                    # re-resolves them at release time; keep the two lists in
-                    # sync (internal/controller/images_test.go enforces it).
+                    # release was tested against. Nothing re-resolves these at
+                    # release time: they are edited by hand, per release (see
+                    # README "Releasing a new version"). Keep this list,
+                    # spec.relatedImages (internal/controller/images_test.go)
+                    # and deploy/operator.yaml (scripts/check-deploy-sync.py)
+                    # in sync.
                     env:
                       - name: RELATED_IMAGE_AGENT
                         value: quay.io/amobrem/pulse-agent@sha256:009ee80aef5049a2377175faa4a725608c79a7b80a795b45632d4f847b32954f
