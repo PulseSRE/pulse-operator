@@ -163,6 +163,15 @@ func monitoringEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
 	return cr.Spec.Monitoring.Enabled == nil || *cr.Spec.Monitoring.Enabled
 }
 
+// secretAccessEnabled reports whether the agent may read Secrets. nil means the
+// CRD default (true) has not been stamped on yet — a CR built in Go and passed
+// straight to a reconciler never round-trips through the API server — so nil
+// has to resolve the same way the default does, or the behaviour differs
+// between a stored CR and an identical one in a test.
+func secretAccessEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
+	return cr.Spec.Agent.AllowSecretAccess == nil || *cr.Spec.Agent.AllowSecretAccess
+}
+
 // hasAIBackend reports whether the CR configures a usable AI backend. The CRD
 // does not require one (see the mutual-exclusion XValidation on OpenShiftPulseSpec
 // for why it isn't a hard "at least one" requirement), so callers that need to
@@ -417,9 +426,10 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 		},
 	}
 
-	// AllowSecretAccess lets the agent read Secrets (e.g. to surface misconfigurations).
-	// Disabled by default — cluster admins opt in via spec.agent.allowSecretAccess=true.
-	if cr.Spec.Agent.AllowSecretAccess {
+	// AllowSecretAccess lets the agent read Secrets, which the Security Posture
+	// and Certificate Expiry scanners require. Enabled by default; opt out with
+	// spec.agent.allowSecretAccess=false.
+	if secretAccessEnabled(cr) {
 		desired.Rules = append(desired.Rules, rbacv1.PolicyRule{
 			APIGroups: []string{""},
 			Resources: []string{"secrets"},
