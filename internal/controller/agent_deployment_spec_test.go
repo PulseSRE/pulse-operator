@@ -354,6 +354,54 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 				"patch verb must be present when AllowWriteOperations=true")
 		})
 
+		// The agent reads its own CR to report how it is configured. Without
+		// this it gets 403, cannot distinguish that from "no operator
+		// installed", and falls back to a Deployment lookup that cannot match
+		// an operator-created Deployment — surfacing as "MCP server deployment
+		// not found in cluster" on a cluster where it exists.
+		It("ClusterRole can read OpenShiftPulse resources", func() {
+			pulseCR := &pulsev1alpha1.OpenShiftPulse{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+				Spec:       pulsev1alpha1.OpenShiftPulseSpec{},
+			}
+			Expect(k8sClient.Create(ctx, pulseCR)).To(Succeed())
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			clusterRole := &rbacv1.ClusterRole{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
+			Expect(hasVerb(clusterRole, "openshiftpulses", "get")).To(BeTrue())
+			Expect(hasVerb(clusterRole, "openshiftpulses", "list")).To(BeTrue())
+		})
+
+		// Privilege-escalation guard, not a style preference. The CR carries
+		// allowWriteOperations, trustLevel, adminUsers and allowSecretAccess,
+		// so an agent that could patch it could grant itself cluster write
+		// access and raise its own trust level. RBAC cannot restrict a patch to
+		// a single field, so the only safe answer is no write verb at all —
+		// including when allowWriteOperations is on, which is exactly when
+		// getting this wrong would matter most.
+		It("ClusterRole never grants write access to OpenShiftPulse resources", func() {
+			pulseCR := &pulsev1alpha1.OpenShiftPulse{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+				Spec: pulsev1alpha1.OpenShiftPulseSpec{
+					Agent: pulsev1alpha1.AgentConfig{AllowWriteOperations: true},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pulseCR)).To(Succeed())
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			clusterRole := &rbacv1.ClusterRole{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
+			for _, verb := range []string{"patch", "update", "create", "delete"} {
+				Expect(hasVerb(clusterRole, "openshiftpulses", verb)).To(BeFalse(),
+					"agent must never hold %s on openshiftpulses — it could raise its own trustLevel", verb)
+			}
+		})
+
 		It("ClusterRole includes secrets read when AllowSecretAccess is true", func() {
 			pulseCR := &pulsev1alpha1.OpenShiftPulse{
 				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},

@@ -7,6 +7,8 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+- **The agent can read its own `OpenShiftPulse`.** The agent reports how it is configured — most visibly which MCP toolsets are enabled — by reading its CR, but had no RBAC for it. The lookup returned 403, the agent could not tell "forbidden" from "no operator installed", and fell through to a Deployment-name path that cannot match an operator-created Deployment (it requires a name ending `-mcp`; the operator creates `<cr>-mcp-server`). The result was "MCP server deployment not found in cluster" on a cluster where it plainly exists, and a toolset list in the UI that disagreed with the CR. The agent's ClusterRole now carries `get`/`list`/`watch` on `openshiftpulses`. **Read-only, deliberately:** that CR carries `allowWriteOperations`, `trustLevel`, `adminUsers` and `allowSecretAccess`, so an agent able to patch it could raise its own privileges, and RBAC cannot restrict a patch to one field. A test asserts no write verb is ever granted, including when `allowWriteOperations` is on.
+
 ## v0.12.2 (2026-10-30)
 
 Pairs with pulse-agent and pulse-ui v2.36.0. Fixes from a full review of the operator. **Read the security changes before upgrading:** only one `OpenShiftPulse`, in `openshiftpulse`, is reconciled; UI users need `view` on that namespace and approve an OAuth consent screen once. **On upgrade** PostgreSQL, the agent, the UI and (if enabled) Temporal restart once. New optional status fields (`agentRollback`, `uiRollback`); no RBAC changes. Pull requests #115–#119.
