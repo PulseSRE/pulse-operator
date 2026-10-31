@@ -261,7 +261,13 @@ spec:
             selector:
               matchLabels:
                 control-plane: controller-manager
-            strategy: {}
+            # Recreate: one manager at a time. With the default rolling update an
+            # OLM upgrade ran the old and new manager together, each setting the
+            # agent image from its own RELATED_IMAGE_AGENT, and the agent
+            # (Recreate itself) restarted on every flip. Leader election is
+            # deliberately off (see ci.yml), so the strategy is what serializes.
+            strategy:
+              type: Recreate
             template:
               metadata:
                 labels:

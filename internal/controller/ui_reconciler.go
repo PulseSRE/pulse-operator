@@ -215,11 +215,17 @@ func uiTLSSecretName(crName string) string {
 	return crName + "-openshiftpulse-tls"
 }
 
-func resolvedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
+// requestedUIImage is the UI image the CR asks for.
+func requestedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
 	if cr.Spec.UI.Image != "" {
 		return cr.Spec.UI.Image
 	}
 	return imageFromEnv(envUIImage, defaultUIImage)
+}
+
+// resolvedUIImage is the UI image to run, after any rollback.
+func resolvedUIImage(cr *pulsev1alpha1.OpenShiftPulse) string {
+	return applyRollback(requestedUIImage(cr), cr.Status.UIRollback)
 }
 
 // resolvedUIReplicas returns the effective UI Deployment replica count, applying
@@ -833,6 +839,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 		deploy.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{"app": name},
 		}
+		previous := *deploy.Spec.Template.DeepCopy()
 		deploy.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:      map[string]string{"app": name},
@@ -1023,6 +1030,7 @@ func (r *UIReconciler) reconcileUIDeployment(ctx context.Context, pulse *pulsev1
 				},
 			},
 		}
+		keepRestartedAt(&previous, &deploy.Spec.Template)
 		return nil
 	})
 	if err != nil {
