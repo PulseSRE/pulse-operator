@@ -55,6 +55,9 @@ type AgentReconciler struct {
 	// reconcileDeployment). Optional — see recordEvent's doc comment for why
 	// a nil Recorder is safe.
 	Recorder record.EventRecorder
+	// DBCredentialHash identifies the database credentials the agent should
+	// run with (see pgAuthHashAnnotation). Empty without a database.
+	DBCredentialHash string
 }
 
 // Reconcile runs all agent sub-resource reconcile steps in order.
@@ -122,11 +125,29 @@ func wsTokenSecretName(crName string) string {
 	return crName + "-ws-token"
 }
 
-func resolvedImage(cr *pulsev1alpha1.OpenShiftPulse) string {
+// requestedImage is the agent image the CR asks for: spec.agent.image, or
+// the image this operator release pins.
+func requestedImage(cr *pulsev1alpha1.OpenShiftPulse) string {
 	if cr.Spec.Agent.Image != "" {
 		return cr.Spec.Agent.Image
 	}
 	return imageFromEnv(envAgentImage, defaultAgentImage)
+}
+
+// resolvedImage is the agent image to run: the requested one, unless it was
+// rolled back (status.agentRollback), in which case the last healthy image.
+func resolvedImage(cr *pulsev1alpha1.OpenShiftPulse) string {
+	return applyRollback(requestedImage(cr), cr.Status.AgentRollback)
+}
+
+// applyRollback returns the image to run for requested, given a rollback
+// record. A record only applies to the image it rolled back from: once the
+// spec (or the operator's default) asks for anything else, it is stale.
+func applyRollback(requested string, rb *pulsev1alpha1.ImageRollback) string {
+	if rb != nil && rb.From == requested && rb.To != "" {
+		return rb.To
+	}
+	return requested
 }
 
 func databaseEnabled(cr *pulsev1alpha1.OpenShiftPulse) bool {
@@ -731,6 +752,10 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{"app": name},
+				// Restart when the database credentials change: the agent reads
+				// database-url from a Secret at start, and kept the old password
+				// after pg-auth was regenerated.
+				Annotations: map[string]string{pgAuthHashAnnotation: r.DBCredentialHash},
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: name,
@@ -884,6 +909,7 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, cr *pulsev1al
 			spec.Template.Spec.Containers[0].Image = existing.Spec.Template.Spec.Containers[0].Image
 		}
 		updated.Spec = spec
+		keepRestartedAt(&existing.Spec.Template, &updated.Spec.Template)
 		if err := controllerutil.SetControllerReference(cr, updated, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}

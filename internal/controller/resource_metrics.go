@@ -33,6 +33,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,6 +188,25 @@ func agentRequestedMemoryBytes(cr *pulsev1alpha1.OpenShiftPulse) int64 {
 func uiRequestedMemoryBytes(cr *pulsev1alpha1.OpenShiftPulse) int64 {
 	qty := uiResources(cr).Requests[corev1.ResourceMemory]
 	return qty.Value()
+}
+
+// forgetInstanceMetrics drops every per-instance series and throttle entry
+// for a deleted OpenShiftPulse. Without it a deleted instance kept exporting
+// its last values (component_ready=0 among them, which looks like an outage)
+// until the operator restarted.
+func forgetInstanceMetrics(namespace, name string) {
+	labels := map[string]string{"namespace": namespace, "name": name}
+	componentReady.DeletePartialMatch(labels)
+	observedMemoryBytes.DeletePartialMatch(labels)
+	requestedMemoryBytes.DeletePartialMatch(labels)
+	lastMemCheckMu.Lock()
+	defer lastMemCheckMu.Unlock()
+	prefix := namespace + "/" + name + "/"
+	for key := range lastMemCheckAt {
+		if strings.HasPrefix(key, prefix) {
+			delete(lastMemCheckAt, key)
+		}
+	}
 }
 
 // resetObservedMemoryCheckCache clears the throttle cache — for testing

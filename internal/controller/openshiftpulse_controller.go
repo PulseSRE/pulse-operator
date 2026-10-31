@@ -73,12 +73,23 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				return ctrl.Result{}, err
 			}
 			r.Recorder.Event(pulse, corev1.EventTypeNormal, "Deleted", "Cluster-scoped resources cleaned up")
+			forgetInstanceMetrics(pulse.Namespace, pulse.Name)
 			controllerutil.RemoveFinalizer(pulse, finalizerName)
 			if err := r.Update(ctx, pulse); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 		return ctrl.Result{}, nil
+	}
+	// One instance per cluster, in the Pulse namespace (admission.go). Checked
+	// before the finalizer is added: a rejected CR owns nothing to clean up.
+	if reason, err := r.rejectionReason(ctx, pulse); err != nil {
+		return ctrl.Result{}, err
+	} else if reason != "" {
+		logger.Info("ignoring OpenShiftPulse", "name", pulse.Name, "namespace", pulse.Namespace, "reason", reason)
+		// Re-checked periodically: if the accepted instance is deleted, the
+		// next CR in the namespace takes over.
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, r.reject(ctx, pulse, reason)
 	}
 	if !controllerutil.ContainsFinalizer(pulse, finalizerName) {
 		controllerutil.AddFinalizer(pulse, finalizerName)
@@ -221,20 +232,17 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// 4. Determine health of each component and sync CR status.
 	agentReady := r.isDeploymentReady(ctx, agentResourceName(pulse.Name), pulse.Namespace)
+	agentRolledOut := r.isRolledOut(ctx, agentResourceName(pulse.Name), pulse.Namespace, resolvedImage(pulse))
+	uiRolledOut := r.isRolledOut(ctx, uiResourceName(pulse.Name), pulse.Namespace, resolvedUIImage(pulse))
 	pgReady := r.isStatefulSetReady(ctx, pulse.Name+"-openshift-sre-agent-postgresql", pulse.Namespace)
 
 	pulse.Status.AgentHealthy = agentReady
 	pulse.Status.DatabaseReady = pgReady
 
-	// Populate agentVersion from the Deployment image tag.
+	// Populate agentVersion from the Deployment image.
 	if deploy := r.agentDeployment(ctx, agentResourceName(pulse.Name), pulse.Namespace); deploy != nil {
 		if len(deploy.Spec.Template.Spec.Containers) > 0 {
-			img := deploy.Spec.Template.Spec.Containers[0].Image
-			if idx := strings.LastIndex(img, ":"); idx >= 0 {
-				pulse.Status.AgentVersion = img[idx+1:]
-			} else {
-				pulse.Status.AgentVersion = img
-			}
+			pulse.Status.AgentVersion = imageVersionLabel(deploy.Spec.Template.Spec.Containers[0].Image)
 		}
 	}
 
@@ -245,23 +253,21 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	reconcileObservedMemoryMetrics(ctx, r.Client, pulse, agentResourceName(pulse.Name), "agent", agentRequestedMemoryBytes(pulse))
 	reconcileObservedMemoryMetrics(ctx, r.Client, pulse, uiResourceName(pulse.Name), "ui", uiRequestedMemoryBytes(pulse))
 
-	_, _, agentUpgrading, uiUpgrading := r.syncPhaseAndConditions(pulse, agentReady, pgReady)
+	_, _, agentUpgrading, uiUpgrading := r.syncPhaseAndConditions(pulse, componentHealth{
+		agentServing: agentReady, agentRolledOut: agentRolledOut, uiRolledOut: uiRolledOut, pgReady: pgReady,
+	})
 	// Why a component is not ready, from its pods: the condition says
 	// "CrashLoopBackOff: container agent exited with code 1", not only
 	// "0 ready replicas".
 	r.reportPodProblems(ctx, pulse, agentReady)
 
 	// Auto-rollback: an agent/UI image change stuck Upgrading past
-	// upgradeHealthTimeout gets reverted here. The spec patch itself
-	// triggers a fresh reconcile (this reconciler watches OpenShiftPulse
-	// directly), so return immediately rather than also writing status in
-	// this same pass — the next pass recomputes everything from the
-	// reverted spec.
-	if rolledBack, err := r.reconcileAutoRollback(ctx, pulse, agentUpgrading, uiUpgrading); err != nil {
+	// upgradeHealthTimeout is recorded in status; the next pass, requeued
+	// immediately, deploys the last healthy image.
+	rolledBack, err := r.reconcileAutoRollback(ctx, pulse, agentUpgrading, uiUpgrading)
+	if err != nil {
 		reconcileErrorsTotal.WithLabelValues("auto_rollback").Inc()
 		return ctrl.Result{}, fmt.Errorf("reconcileAutoRollback: %w", err)
-	} else if rolledBack {
-		return ctrl.Result{}, nil
 	}
 
 	pulse.Status.ObservedGeneration = pulse.Generation
@@ -269,6 +275,9 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Status().Update(ctx, pulse); err != nil {
 		reconcileErrorsTotal.WithLabelValues("status_update").Inc()
 		return ctrl.Result{}, fmt.Errorf("status update: %w", err)
+	}
+	if rolledBack {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -397,9 +406,12 @@ func (r *OpenShiftPulseReconciler) reconcilePostgres(ctx context.Context, pulse 
 // needs a short requeue rather than a failure — see AgentReconciler.reconcileDeployment.
 func (r *OpenShiftPulseReconciler) reconcileAgent(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse, dbURL string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	_ = dbURL // consumed via K8s Secret by the agent Deployment today; reserved for future direct injection
-
+	// The agent reads dbURL from a Secret; its hash restarts the agent when
+	// the credentials change.
 	ar := &AgentReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder}
+	if dbURL != "" {
+		ar.DBCredentialHash = hashSecretData(map[string][]byte{"database-url": []byte(dbURL)})
+	}
 
 	type step struct {
 		name string
@@ -444,6 +456,52 @@ func (r *OpenShiftPulseReconciler) isDeploymentReady(ctx context.Context, name, 
 		return false
 	}
 	return deploy.Status.ReadyReplicas > 0
+}
+
+// imageVersionLabel is a short, readable version for an image reference: its
+// tag, or for a digest-pinned image "sha256:" and the first 12 hex digits.
+// Everything after the last ":" was a 64-character hash for digest-pinned
+// images, and a port for a registry with one and no tag.
+func imageVersionLabel(image string) string {
+	if at := strings.Index(image, "@"); at >= 0 {
+		digest := image[at+1:]
+		if algo, hex, ok := strings.Cut(digest, ":"); ok && len(hex) > 12 {
+			return algo + ":" + hex[:12]
+		}
+		return digest
+	}
+	return imageTag(image)
+}
+
+// isRolledOut reports whether the Deployment has caught up with its current
+// spec, runs image in its first container, and has every desired replica
+// updated and ready with no pod of an older ReplicaSet left. That is what it
+// takes to say an image works; isDeploymentReady (some pod ready) is true
+// throughout a rollout that is failing, because the old pod still serves.
+func (r *OpenShiftPulseReconciler) isRolledOut(ctx context.Context, name, ns, image string) bool {
+	deploy := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, deploy); err != nil {
+		return false
+	}
+	return deploymentRolledOut(deploy, image)
+}
+
+func deploymentRolledOut(d *appsv1.Deployment, image string) bool {
+	if d.Status.ObservedGeneration < d.Generation {
+		return false
+	}
+	if len(d.Spec.Template.Spec.Containers) == 0 || d.Spec.Template.Spec.Containers[0].Image != image {
+		return false
+	}
+	want := int32(1)
+	if d.Spec.Replicas != nil {
+		want = *d.Spec.Replicas
+	}
+	if want == 0 {
+		return false
+	}
+	s := d.Status
+	return s.UpdatedReplicas >= want && s.ReadyReplicas >= want && s.Replicas == s.UpdatedReplicas
 }
 
 // agentDeployment returns the agent Deployment object, or nil if not found.

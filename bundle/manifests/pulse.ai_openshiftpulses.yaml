@@ -434,6 +434,33 @@ spec:
             properties:
               agentHealthy:
                 type: boolean
+              agentRollback:
+                description: |-
+                  AgentRollback is set while the operator runs the last healthy agent
+                  image instead of the one the spec asks for, because that one did not
+                  become healthy within the upgrade window. The spec is left as the user
+                  wrote it (a GitOps tool would otherwise re-apply the bad image and
+                  loop); changing spec.agent.image, or an operator upgrade changing the
+                  default image, clears it.
+                properties:
+                  at:
+                    description: At is when the rollback happened.
+                    format: date-time
+                    type: string
+                  from:
+                    description: |-
+                      From is the image the spec (or the operator's default) asks for, which
+                      did not become healthy.
+                    type: string
+                  to:
+                    description: To is the last image observed healthy, which the
+                      operator runs instead.
+                    type: string
+                required:
+                - at
+                - from
+                - to
+                type: object
               agentVersion:
                 type: string
               conditions:
@@ -529,6 +556,27 @@ spec:
                 type: string
               uiAvailable:
                 type: boolean
+              uiRollback:
+                description: UIRollback is the UI equivalent of AgentRollback.
+                properties:
+                  at:
+                    description: At is when the rollback happened.
+                    format: date-time
+                    type: string
+                  from:
+                    description: |-
+                      From is the image the spec (or the operator's default) asks for, which
+                      did not become healthy.
+                    type: string
+                  to:
+                    description: To is the last image observed healthy, which the
+                      operator runs instead.
+                    type: string
+                required:
+                - at
+                - from
+                - to
+                type: object
               upgradeStartedAt:
                 description: |-
                   UpgradeStartedAt records when the operator first observed the desired

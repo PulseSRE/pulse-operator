@@ -26,8 +26,10 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,6 +87,9 @@ func (r *TemporalReconciler) reconcileTemporal(ctx context.Context, pulse *pulse
 	}
 	if err := r.reconcileService(ctx, pulse); err != nil {
 		return fmt.Errorf("temporal service: %w", err)
+	}
+	if err := r.reconcileNetworkPolicy(ctx, pulse); err != nil {
+		return fmt.Errorf("temporal network policy: %w", err)
 	}
 	if pulse.Spec.Temporal.UI != nil && *pulse.Spec.Temporal.UI {
 		if err := r.reconcileUI(ctx, pulse); err != nil {
@@ -186,6 +191,10 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 	// the agent's database wiring already depends on.
 	pgService := pulse.Name + "-openshift-sre-agent-postgresql"
 	pgAuthSecret := pulse.Name + "-pg-auth"
+	pgCredHash := ""
+	if secret := (&corev1.Secret{}); r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: pgAuthSecret}, secret) == nil {
+		pgCredHash = hashSecretData(secret.Data)
+	}
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace},
@@ -196,8 +205,15 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 		}
 		one := int32(1)
 		deploy.Spec.Replicas = &one
+		// Recreate, like the agent: auto-setup runs schema setup and updates
+		// at start, and a rolling update ran the new pod's against the shared
+		// PostgreSQL while the old server was still live.
+		deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}}
 		deploy.Spec.Template.Labels = map[string]string{"app": name}
+		// Restart when the database credentials change; Temporal reads them
+		// from pg-auth at start.
+		deploy.Spec.Template.Annotations = map[string]string{pgAuthHashAnnotation: pgCredHash}
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil)
 		// auto-setup renders its config into /etc/temporal/config at startup.
 		// In the image that directory is owned by UID 1000; OpenShift runs the
@@ -304,6 +320,44 @@ func (r *TemporalReconciler) reconcileService(ctx context.Context, pulse *pulsev
 	return err
 }
 
+// temporalNetworkPolicyName is the policy fencing the Temporal pods.
+func temporalNetworkPolicyName(crName string) string {
+	return temporalResourceName(crName) + "-access"
+}
+
+// reconcileNetworkPolicy lets only the agent (and the Temporal pods
+// themselves) reach the Temporal frontend, and nothing reach the Web UI.
+//
+// Temporal has no authentication here. Without this policy any pod in any
+// namespace could connect to port 7233 and signal "approve" to a pending
+// incident workflow, or start one with approval turned off, and the agent's
+// worker would apply the fix with the agent's ServiceAccount. The Web UI,
+// which can terminate workflows, has no Route; `oc port-forward` still
+// reaches it, because port-forwarded traffic is not subject to the policy.
+func (r *TemporalReconciler) reconcileNetworkPolicy(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	server := temporalResourceName(pulse.Name)
+	ui := server + "-ui"
+	tcp := corev1.ProtocolTCP
+	frontend := intstr.FromInt32(temporalFrontendPort)
+	np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: temporalNetworkPolicyName(pulse.Name), Namespace: pulse.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+		np.Spec.PodSelector = metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+			Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{server, ui},
+		}}}
+		np.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
+		np.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{
+			From: []networkingv1.NetworkPolicyPeer{
+				{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": agentResourceName(pulse.Name)}}},
+				{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": server}}},
+				{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": ui}}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &frontend}},
+		}}
+		return controllerutil.SetControllerReference(pulse, np, r.Scheme)
+	})
+	return err
+}
+
 // removeTemporal deletes the Temporal server when spec.temporal.enabled is off,
 // and the Web UI when either Temporal or spec.temporal.ui is off. Previously
 // both kept running after being disabled. Workflow history lives in the
@@ -317,6 +371,10 @@ func (r *TemporalReconciler) removeTemporal(ctx context.Context, pulse *pulsev1a
 		}
 	} else {
 		names = append(names, temporalResourceName(pulse.Name))
+		np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: temporalNetworkPolicyName(pulse.Name)}}
+		if err := deleteOwned(ctx, r.Client, np, pulse); err != nil {
+			return err
+		}
 	}
 	for _, name := range names {
 		for _, obj := range []client.Object{

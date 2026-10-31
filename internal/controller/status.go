@@ -24,6 +24,22 @@ import (
 // incident-response cycle instead of paging a human first.
 const upgradeHealthTimeout = 5 * time.Minute
 
+// componentHealth is what the status sync needs to know about the agent,
+// UI and database.
+//
+// Serving and rolled out are different questions. A component is serving
+// when some pod is ready; it is rolled out when the Deployment has caught up
+// with its current spec and every pod runs it. Only "rolled out" says the
+// image asked for works. Recording last-healthy from "serving" recorded
+// every new image as healthy in the same pass that applied it (the old pod
+// was still ready), so rollback never fired for the agent, and never could
+// for the UI, whose old pods stay up through a rolling update.
+type componentHealth struct {
+	agentServing, agentRolledOut bool
+	uiRolledOut                  bool
+	pgReady                      bool
+}
+
 // syncPhaseAndConditions computes pulse.Status.Phase and the AgentReady /
 // DatabaseReady / UIReady / Progressing / Ready conditions from the current
 // component-health booleans. It distinguishes an in-progress image upgrade
@@ -40,9 +56,18 @@ const upgradeHealthTimeout = 5 * time.Minute
 // anything, to roll back once upgradeHealthTimeout is exceeded.
 func (r *OpenShiftPulseReconciler) syncPhaseAndConditions(
 	pulse *pulsev1alpha1.OpenShiftPulse,
-	agentReady, pgReady bool,
+	h componentHealth,
 ) (agentImage, uiImage string, agentUpgrading, uiUpgrading bool) {
+	agentReady, pgReady := h.agentServing, h.pgReady
 	uiReady := pulse.Status.UIAvailable
+	// A rollback record stops applying once the spec asks for a different
+	// image; drop it so status says what is running and why.
+	if rb := pulse.Status.AgentRollback; rb != nil && rb.From != requestedImage(pulse) {
+		pulse.Status.AgentRollback = nil
+	}
+	if rb := pulse.Status.UIRollback; rb != nil && rb.From != requestedUIImage(pulse) {
+		pulse.Status.UIRollback = nil
+	}
 	agentImage = resolvedImage(pulse)
 	uiImage = resolvedUIImage(pulse)
 
@@ -52,19 +77,19 @@ func (r *OpenShiftPulseReconciler) syncPhaseAndConditions(
 	// though the live field gets cleared to nil in the same pass.
 	previousUpgradeStartedAt := pulse.Status.UpgradeStartedAt
 
-	agentUpgrading = !agentReady && pulse.Status.LastHealthyAgentImage != "" &&
+	agentUpgrading = !h.agentRolledOut && pulse.Status.LastHealthyAgentImage != "" &&
 		agentImage != pulse.Status.LastHealthyAgentImage
-	uiUpgrading = !uiReady && pulse.Status.LastHealthyUIImage != "" &&
+	uiUpgrading = !h.uiRolledOut && pulse.Status.LastHealthyUIImage != "" &&
 		uiImage != pulse.Status.LastHealthyUIImage
 
-	// Only record an image as "known healthy" once its component is
-	// actually ready with it — this is what makes the comparison above mean
-	// "differs from the last image that worked", not just "differs from
-	// whatever was there before".
-	if agentReady && agentImage != "" {
+	// Only record an image as "known healthy" once its Deployment has rolled
+	// out with it — this is what makes the comparison above mean "differs
+	// from the last image that worked", not just "differs from whatever was
+	// there before".
+	if h.agentRolledOut && agentImage != "" {
 		pulse.Status.LastHealthyAgentImage = agentImage
 	}
-	if uiReady && uiImage != "" {
+	if h.uiRolledOut && uiImage != "" {
 		pulse.Status.LastHealthyUIImage = uiImage
 	}
 
@@ -80,6 +105,15 @@ func (r *OpenShiftPulseReconciler) syncPhaseAndConditions(
 
 	prevPhase := pulse.Status.Phase
 	switch {
+	case upgrading && allReady:
+		// Still serving from the old pods (the UI's rolling update keeps
+		// them) while the new image has not rolled out: an upgrade in
+		// progress, which reconcileAutoRollback times out like any other.
+		pulse.Status.Phase = "Upgrading"
+		if prevPhase != "Upgrading" {
+			recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "Upgrading",
+				"Detected an in-progress image change: agentImage=%q uiImage=%q", agentImage, uiImage)
+		}
 	case allReady:
 		pulse.Status.Phase = "Running"
 		// An upgrade that was in progress a moment ago just became healthy
@@ -192,20 +226,21 @@ func setReadyCondition(pulse *pulsev1alpha1.OpenShiftPulse, condType string, rea
 	apimeta.SetStatusCondition(&pulse.Status.Conditions, cond)
 }
 
-// reconcileAutoRollback reverts spec.agent.image and/or spec.ui.image back
-// to the last known-healthy image when an in-progress upgrade
-// (Phase=Upgrading, tracked via status.upgradeStartedAt) has not become
-// healthy within upgradeHealthTimeout. Scope is deliberately limited to the
-// agent and UI images — an operator-CSV-level rollback would need a
-// separate pre-upgrade gate outside this binary, since the operator cannot
-// roll back its own running version from inside itself.
+// reconcileAutoRollback records a rollback (status.agentRollback /
+// status.uiRollback) when an in-progress upgrade (Phase=Upgrading, tracked
+// via status.upgradeStartedAt) has not rolled out within
+// upgradeHealthTimeout. From then on resolvedImage / resolvedUIImage return
+// the last known-healthy image for as long as the CR keeps asking for the
+// bad one. Scope is deliberately limited to the agent and UI images — an
+// operator-CSV-level rollback would need a separate pre-upgrade gate outside
+// this binary, since the operator cannot roll back its own running version
+// from inside itself.
 //
-// Anti-loop guard: only patches when spec still differs from lastHealthy.
-// If spec already equals lastHealthy (e.g. this function's own previous
-// patch already landed, or an admin already reverted it by hand) there is
-// nothing left to roll back — a rollback target that itself never becomes
-// healthy surfaces as Degraded on the next syncPhaseAndConditions call
-// instead of this function retriggering the same patch forever.
+// Anti-loop guard: one rollback per bad image. While a record exists the
+// component runs the last healthy image, so it is no longer upgrading; if
+// that image itself fails, the component shows Degraded rather than
+// triggering another rollback. Returns true when it recorded one; the caller
+// writes status and requeues so the next pass deploys the healthy image.
 func (r *OpenShiftPulseReconciler) reconcileAutoRollback(
 	ctx context.Context,
 	pulse *pulsev1alpha1.OpenShiftPulse,
@@ -219,20 +254,24 @@ func (r *OpenShiftPulseReconciler) reconcileAutoRollback(
 	}
 
 	rolledBack := false
+	now := metav1.Now()
 
-	if agentUpgrading && pulse.Spec.Agent.Image != pulse.Status.LastHealthyAgentImage {
-		badImage := pulse.Spec.Agent.Image
-		pulse.Spec.Agent.Image = pulse.Status.LastHealthyAgentImage
+	// An agent image held back by spec.agent.minOperatorVersion never ran, so
+	// it has not failed; the compatibility condition already says why.
+	gated := apimeta.IsStatusConditionFalse(pulse.Status.Conditions, "AgentVersionCompatible")
+	if agentUpgrading && !gated && pulse.Status.AgentRollback == nil && pulse.Status.LastHealthyAgentImage != "" {
+		badImage := requestedImage(pulse)
+		pulse.Status.AgentRollback = &pulsev1alpha1.ImageRollback{From: badImage, To: pulse.Status.LastHealthyAgentImage, At: now}
 		recordEvent(r.Recorder, pulse, corev1.EventTypeWarning, "AutoRolledBack",
-			"Agent image %q did not become healthy within %s — reverted spec.agent.image to last known-healthy %q",
+			"Agent image %q did not become healthy within %s — running last known-healthy %q instead. spec.agent.image is unchanged; set it to another image to try again.",
 			badImage, upgradeHealthTimeout, pulse.Status.LastHealthyAgentImage)
 		rolledBack = true
 	}
-	if uiUpgrading && pulse.Spec.UI.Image != pulse.Status.LastHealthyUIImage {
-		badImage := pulse.Spec.UI.Image
-		pulse.Spec.UI.Image = pulse.Status.LastHealthyUIImage
+	if uiUpgrading && pulse.Status.UIRollback == nil && pulse.Status.LastHealthyUIImage != "" {
+		badImage := requestedUIImage(pulse)
+		pulse.Status.UIRollback = &pulsev1alpha1.ImageRollback{From: badImage, To: pulse.Status.LastHealthyUIImage, At: now}
 		recordEvent(r.Recorder, pulse, corev1.EventTypeWarning, "AutoRolledBack",
-			"UI image %q did not become healthy within %s — reverted spec.ui.image to last known-healthy %q",
+			"UI image %q did not become healthy within %s — running last known-healthy %q instead. spec.ui.image is unchanged; set it to another image to try again.",
 			badImage, upgradeHealthTimeout, pulse.Status.LastHealthyUIImage)
 		rolledBack = true
 	}
@@ -240,9 +279,12 @@ func (r *OpenShiftPulseReconciler) reconcileAutoRollback(
 	if !rolledBack {
 		return false, nil
 	}
-	if err := r.Update(ctx, pulse); err != nil {
-		return false, fmt.Errorf("auto-rollback spec update: %w", err)
-	}
+	// The rollback lives in status, not spec: the caller writes status and
+	// requeues, and the next pass deploys resolvedImage, which now returns
+	// the last healthy image. Writing the spec pinned an operator-defaulted
+	// image into the CR for good, and a GitOps tool re-applying the bad image
+	// made it roll back again every five minutes.
+	pulse.Status.UpgradeStartedAt = nil
 	return true, nil
 }
 
