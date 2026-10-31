@@ -299,6 +299,10 @@ var _ = Describe("UIReconciler", func() {
 
 		Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
 		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement("--scope=user:full"))
+		// Only users who can view the Pulse namespace may sign in; every
+		// session carries the agent's shared token.
+		Expect(deploy.Spec.Template.Spec.Containers[1].Args).To(ContainElement(
+			`--openshift-sar={"namespace":"` + namespace + `","resource":"services","verb":"get"}`))
 	})
 
 	It("never enables oauth-proxy request logging (its LoggingHandler breaks every WebSocket upgrade)", func() {
@@ -385,6 +389,10 @@ var _ = Describe("UIReconciler", func() {
 
 		redirectURIs, _, _ := unstructured.NestedStringSlice(oauthClient.Object, "redirectURIs")
 		Expect(redirectURIs).To(ContainElement("https://" + testRouteHost))
+		// A silent (auto) grant of user:full let whoever chose the proxy image
+		// collect an admin's token without a consent screen.
+		grant, _, _ := unstructured.NestedString(oauthClient.Object, "grantMethod")
+		Expect(grant).To(Equal("prompt"))
 	})
 
 	It("Route is created", func() {

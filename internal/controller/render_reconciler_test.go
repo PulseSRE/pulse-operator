@@ -68,6 +68,21 @@ var _ = Describe("RenderReconciler", func() {
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	})
 
+	It("leaves a user's own object with a render name alone while render is off", func() {
+		cr := newCR("render-user-obj", nil)
+		mine := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: renderTokenSecretName(cr.Name), Namespace: namespace},
+			StringData: map[string]string{"k": "v"},
+		}
+		Expect(k8sClient.Create(ctx, mine)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, mine) })
+
+		Expect(rr.reconcileRender(ctx, cr)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mine.Name, Namespace: namespace}, &corev1.Secret{})).To(Succeed(),
+			"render removal must delete only what this CR created")
+	})
+
 	It("deploys a credential-free render pod that only the agent can reach", func() {
 		on := true
 		cr := newCR("render-on", &on)
