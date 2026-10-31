@@ -3,9 +3,13 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	goerrors "errors"
 	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -267,10 +271,12 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 	if storageSize == "" {
 		storageSize = defaultPGStorageSize
 	}
-	storageQty, err := resource.ParseQuantity(storageSize)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("parse storageSize %q: %w", storageSize, err)
-	}
+	// storageSize only shapes the volume when the StatefulSet is created, or
+	// grows it after (expandPGVolume). A typo added later used to fail this
+	// whole reconcile, and with it the agent, MCP, Temporal and UI.
+	storageQty, qtyErr := resource.ParseQuantity(storageSize)
+	credHash := r.pgCredentialHash(ctx, pulse.Namespace, secretName)
+	var err error
 
 	replicas := int32(1)
 
@@ -319,6 +325,9 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 				return ctrl.Result{RequeueAfter: pgRequeueDelay}, nil
 			}
 		}
+		if len(sts.Spec.Template.Spec.Containers) > 0 {
+			image = r.guardPGMajorVersion(pulse, sts.Spec.Template.Spec.Containers[0].Image, image)
+		}
 		sts = &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: pulse.Namespace}}
 	}
 
@@ -330,6 +339,9 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 
 		// VolumeClaimTemplates is immutable — only populate on creation.
 		if sts.CreationTimestamp.IsZero() {
+			if qtyErr != nil {
+				return fmt.Errorf("parse spec.database.storageSize %q: %w", storageSize, qtyErr)
+			}
 			sts.Spec.Replicas = &replicas
 			sts.Spec.ServiceName = stsName + "-headless"
 			sts.Spec.Selector = &metav1.LabelSelector{
@@ -376,12 +388,25 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 		if len(sts.Spec.Template.Spec.Containers) > 0 {
 			existingImage = sts.Spec.Template.Spec.Containers[0].Image
 		}
-		if sts.CreationTimestamp.IsZero() || existingImage != image {
+		wantAnnotations := map[string]string{
+			pgTemplateVersionAnnotation: pgTemplateVersion,
+			pgCredentialHashAnnotation:  credHash,
+		}
+		drifted := false
+		for k, v := range wantAnnotations {
+			if sts.Spec.Template.Annotations[k] != v {
+				drifted = true
+			}
+		}
+		if sts.CreationTimestamp.IsZero() || existingImage != image || drifted {
+			grace := int64(pgTerminationGraceSeconds)
 			sts.Spec.Template = corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: pgLabels(pulse.Name),
+					Labels:      pgLabels(pulse.Name),
+					Annotations: wantAnnotations,
 				},
 				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: &grace,
 					// OCP assigns UIDs from the namespace range via the restricted SCC.
 					// Do not set RunAsUser — hardcoding 26 (postgres uid) is rejected by
 					// restricted-v2 SCC which enforces namespace-allocated UID ranges.
@@ -426,6 +451,17 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 								InitialDelaySeconds: 30,
 								PeriodSeconds:       30,
 							},
+							// A fast shutdown before the kubelet's SIGTERM. postgres
+							// answers SIGTERM with a "smart" shutdown that waits for
+							// every client to disconnect; the agent and Temporal keep
+							// pooled connections open, so the pod was SIGKILLed after
+							// the grace period and started with crash recovery.
+							Lifecycle: &corev1.Lifecycle{
+								PreStop: &corev1.LifecycleHandler{
+									Exec: &corev1.ExecAction{Command: []string{"/bin/sh", "-c",
+										fmt.Sprintf(`pg_ctl -D "${PGDATA:-/var/lib/pgsql/data/userdata}" stop -m fast -w -t %d`, pgTerminationGraceSeconds-10)}},
+								},
+							},
 							SecurityContext: writableContainerSecCtx(),
 						},
 					},
@@ -434,7 +470,121 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 		}
 		return nil
 	})
-	return ctrl.Result{}, err
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if qtyErr != nil {
+		recordEvent(r.Recorder, pulse, corev1.EventTypeWarning, "InvalidStorageSize",
+			"spec.database.storageSize %q is not a valid quantity (%v); the database volume is unchanged", storageSize, qtyErr)
+		return ctrl.Result{}, nil
+	}
+	return ctrl.Result{}, r.expandPGVolume(ctx, pulse, stsName, storageQty)
+}
+
+const (
+	// pgTemplateVersion is bumped when the PostgreSQL pod template changes
+	// in a way an existing StatefulSet must pick up (the template is only
+	// rebuilt when something it records changes). 2: preStop fast shutdown
+	// and a longer grace period.
+	pgTemplateVersion           = "2"
+	pgTemplateVersionAnnotation = "pulse.ai/pg-template-version"
+	// pgCredentialHashAnnotation restarts PostgreSQL when its credentials
+	// Secret changes. The UBI image applies POSTGRESQL_PASSWORD at start, so
+	// a regenerated password otherwise left the server on the old one while
+	// the agent's database-url carried the new one.
+	pgCredentialHashAnnotation = "pulse.ai/pg-credentials-hash"
+	pgTerminationGraceSeconds  = 60
+)
+
+// pgCredentialHash is a short hash of the pg-auth Secret's data, or "" when
+// it cannot be read.
+func (r *PostgreSQLReconciler) pgCredentialHash(ctx context.Context, namespace, secretName string) string {
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: secretName}, secret); err != nil {
+		return ""
+	}
+	return hashSecretData(secret.Data)
+}
+
+// hashSecretData hashes a Secret's data in key order.
+func hashSecretData(data map[string][]byte) string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		h.Write(data[k])
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// pgMajorVersionPattern finds PostgreSQL's major version in an image
+// reference: rhel9/postgresql-15, sclorg/postgresql-16-c9s, postgres:16.
+var pgMajorVersionPattern = regexp.MustCompile(`postgres(?:ql)?[-:](\d+)`)
+
+func pgMajorVersion(image string) int {
+	m := pgMajorVersionPattern.FindStringSubmatch(image)
+	if m == nil {
+		return 0
+	}
+	v, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// guardPGMajorVersion keeps the running image when the new one is a
+// different PostgreSQL major version. A newer server refuses the old data
+// directory and crash-loops, and putting the old image back did not recover
+// it: the StatefulSet waited on the crashing pod. A major upgrade needs a
+// planned migration (pg_upgrade or dump and restore), not an image change.
+func (r *PostgreSQLReconciler) guardPGMajorVersion(pulse *v1alpha1.OpenShiftPulse, current, desired string) string {
+	from, to := pgMajorVersion(current), pgMajorVersion(desired)
+	if current == "" || from == 0 || to == 0 || from == to {
+		return desired
+	}
+	recordEvent(r.Recorder, pulse, corev1.EventTypeWarning, "PostgreSQLMajorVersionChangeBlocked",
+		"Not changing PostgreSQL from %s (major %d) to %s (major %d): the data directory needs a planned migration. The database keeps running %s.",
+		current, from, desired, to, current)
+	return current
+}
+
+// expandPGVolume grows the database volume when spec.database.storageSize
+// asks for more than it has. The size was only used when the StatefulSet
+// was created, so an increase was silently ignored and a full disk stayed
+// full. Shrinking is not possible and is ignored. The storage class must
+// allow expansion; if it does not, the API server's refusal is reported.
+func (r *PostgreSQLReconciler) expandPGVolume(ctx context.Context, pulse *v1alpha1.OpenShiftPulse, stsName string, want resource.Quantity) error {
+	pvc := &corev1.PersistentVolumeClaim{}
+	key := types.NamespacedName{Namespace: pulse.Namespace, Name: "pg-data-" + stsName + "-0"}
+	if err := r.Get(ctx, key, pvc); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	have := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if want.Cmp(have) <= 0 {
+		return nil
+	}
+	if pvc.Spec.Resources.Requests == nil {
+		pvc.Spec.Resources.Requests = corev1.ResourceList{}
+	}
+	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = want
+	if err := r.Update(ctx, pvc); err != nil {
+		recordEvent(r.Recorder, pulse, corev1.EventTypeWarning, "StorageResizeFailed",
+			"Could not grow the database volume %s from %s to %s: %v", key.Name, have.String(), want.String(), err)
+		return nil
+	}
+	recordEvent(r.Recorder, pulse, corev1.EventTypeNormal, "StorageResized",
+		"Growing the database volume %s from %s to %s", key.Name, have.String(), want.String())
+	return nil
 }
 
 // reconcilePGService creates or updates either a ClusterIP or headless Service for PostgreSQL.

@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -186,6 +187,10 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 	// the agent's database wiring already depends on.
 	pgService := pulse.Name + "-openshift-sre-agent-postgresql"
 	pgAuthSecret := pulse.Name + "-pg-auth"
+	pgCredHash := ""
+	if secret := (&corev1.Secret{}); r.Get(ctx, types.NamespacedName{Namespace: pulse.Namespace, Name: pgAuthSecret}, secret) == nil {
+		pgCredHash = hashSecretData(secret.Data)
+	}
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pulse.Namespace},
@@ -196,8 +201,15 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 		}
 		one := int32(1)
 		deploy.Spec.Replicas = &one
+		// Recreate, like the agent: auto-setup runs schema setup and updates
+		// at start, and a rolling update ran the new pod's against the shared
+		// PostgreSQL while the old server was still live.
+		deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}}
 		deploy.Spec.Template.Labels = map[string]string{"app": name}
+		// Restart when the database credentials change; Temporal reads them
+		// from pg-auth at start.
+		deploy.Spec.Template.Annotations = map[string]string{pgCredentialHashAnnotation: pgCredHash}
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil)
 		// auto-setup renders its config into /etc/temporal/config at startup.
 		// In the image that directory is owned by UID 1000; OpenShift runs the

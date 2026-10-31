@@ -357,7 +357,7 @@ spec:
 
   # ── Database ─────────────────────────────────────────────────────────────────
   database:
-    storageSize: 5Gi       # PVC size; cannot shrink after creation
+    storageSize: 5Gi       # PVC size; increasing it grows the volume (storage class must allow expansion); cannot shrink
     storageClass: ""       # cluster default if empty
     image: ""              # RHEL9 postgresql-15 if empty
 
@@ -907,7 +907,7 @@ If it's missing, the operator image predates this fix — upgrade and restart th
 
 ### Migrating from Helm install
 
-The operator cannot adopt Helm-managed Deployments/StatefulSets because their label selectors are immutable. The operator detects selector mismatches and replaces the resources automatically (StatefulSet with orphan cascade to preserve the PVC). If the agent Deployment is stuck:
+The operator cannot adopt Helm-managed Deployments/StatefulSets because their label selectors are immutable. The operator detects selector mismatches and replaces the resources automatically (the StatefulSet is deleted with background propagation; its PVC is kept and reused). If the agent Deployment is stuck:
 
 ```bash
 # Manually delete the Helm-managed deployment; operator recreates it cleanly
@@ -944,7 +944,8 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
 - The UI's nginx proxies both `/api/prometheus/` (Thanos-querier — firing alerts, rules, CPU/memory charts) and `/api/alertmanager/` (Alertmanager — silences: list/create/expire) to `openshift-monitoring`, forwarding the logged-in user's own OAuth token. Reading/writing silences requires the user to additionally hold `monitoring-alertmanager-view` (read) or `monitoring-alertmanager-edit` (read+write) in the `openshift-monitoring` project — a narrower grant than `cluster-monitoring-view`, which only covers the Thanos path.
 - Secrets are generated once and never rotated automatically. `{name}-ws-token` and `{name}-oauth-secrets` can be rotated by deleting the Secret — the operator regenerates it on the next reconcile.
-- **Do not rotate `{name}-pg-auth` this way.** Deleting it makes the operator generate a fresh random password, but postgres only bakes a password into `PGDATA` during `initdb` on an empty data directory — the retained pg-data PVC still holds the old one, so the agent is left permanently unable to authenticate ([see above](#postgresql-data-survives-cr-deletion-by-design)). Rotating the PostgreSQL password means changing it inside the running database and in the Secret together, or tearing both down with `pulse.ai/delete-data=true` and letting the stack reinitialise.
+- **`{name}-pg-auth`.** The PostgreSQL, agent and Temporal pod templates carry a hash of the database credentials, so when this Secret changes all three restart with it, and the UBI PostgreSQL image applies `POSTGRESQL_PASSWORD` at every start. Before v0.12.2 nothing restarted, and the database kept the old password while the agent's `database-url` carried the new one. Deleting the Secret still generates a new password; prefer setting the one you want in it.
+- **PostgreSQL** stops with a fast shutdown (`preStop`, 60s grace) instead of waiting on pooled client connections until it is killed. A change of major version (e.g. `postgresql-15` to `-16`) is refused with a `PostgreSQLMajorVersionChangeBlocked` event; it needs `pg_upgrade` or a dump and restore.
 - Container images (`Dockerfile`, `Dockerfile.bundle`) are pinned by digest, not just tag, for reproducible builds; Dependabot (`.github/dependabot.yml`) opens a PR when a pinned digest moves.
 
 ---

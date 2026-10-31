@@ -7,6 +7,15 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+**Data safety**
+- **PostgreSQL shuts down cleanly.** postgres answers SIGTERM with a shutdown that waits for clients, and the agent and Temporal hold pooled connections, so every restart ended in SIGKILL after 30s and crash recovery. A `preStop` fast shutdown and a 60s grace period now run first. Existing databases restart once to pick it up.
+- **A PostgreSQL major-version change is refused** (`PostgreSQLMajorVersionChangeBlocked` event; the running image is kept). The new server crash-loops on the old data directory, and putting the old image back did not recover it.
+- **Changed database credentials take effect.** PostgreSQL, the agent and Temporal restart when the credentials Secret changes; the database used to keep the old password while the agent used the new one. The agent restarts once on upgrade.
+- **Temporal uses `Recreate`.** Its rolling update ran schema setup from the new pod while the old server was live.
+- **`spec.database.storageSize`**: a typo on an existing install is reported (`InvalidStorageSize`) instead of failing the whole reconcile, and an increase now grows the volume (`StorageResized`, or `StorageResizeFailed` when the storage class cannot expand) instead of being ignored.
+- **A deleted instance stops exporting metrics.** Its `component_ready` and memory series lingered until the operator restarted.
+- **`scripts/olm-uninstall.py`** stops when a CR is still terminating (the operator must stay to finish it; `--force` overrides), waits up to 120s, and treats an `oc` error (an RBAC denial, say) as an error instead of "nothing found".
+
 ## v0.12.1 (2026-10-30)
 
 Pairs with pulse-agent and pulse-ui v2.36.0. No CRD schema or RBAC changes. Fixes the MCP server, which exits at startup (`unknown flag: --port`) whenever its pod is rescheduled onto a node without a cached copy of the old image, for example during a cluster upgrade (#113). **On upgrade** every component the operator deploys, PostgreSQL included, restarts once: its image changes from a tag to the digest this release pins. Pull requests #112–#113.

@@ -37,14 +37,26 @@ import sys
 import time
 
 
+def _absent(stderr):
+    """True when oc failed because the object or resource type does not exist."""
+    return "NotFound" in stderr or "doesn't have a resource type" in stderr
+
+
 def oc_json(*args):
+    """Run `oc ... -o json`. None means "not there"; any other failure stops.
+
+    Every failure used to read as "nothing found", so an RBAC denial on
+    listing CRs planned an uninstall with no CRs to clean up and went ahead.
+    """
     result = subprocess.run(["oc", *args, "-o", "json"], capture_output=True, text=True)
     if result.returncode != 0:
-        return None
+        if _absent(result.stderr):
+            return None
+        raise SystemExit(f"oc {' '.join(args)} failed: {result.stderr.strip()}")
     try:
         return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"oc {' '.join(args)} returned invalid JSON: {exc}")
 
 
 def oc(*args, check=True):
@@ -106,14 +118,15 @@ def find_cr_instances(crd_full_name):
     return data.get("items", [])
 
 
-def wait_for_gone(resource_type, namespace, name, timeout=30):
+def wait_for_gone(resource_type, namespace, name, timeout=120):
+    """True once `oc get` says the object is gone; any other error keeps waiting."""
     get_args = ["oc", "get", resource_type, name]
     if namespace:
         get_args += ["-n", namespace]
     deadline = time.time() + timeout
     while time.time() < deadline:
-        result = subprocess.run(get_args, capture_output=True)
-        if result.returncode != 0:
+        result = subprocess.run(get_args, capture_output=True, text=True)
+        if result.returncode != 0 and _absent(result.stderr):
             return True
         time.sleep(2)
     return False
@@ -125,6 +138,8 @@ def main():
     ap.add_argument("--yes", action="store_true", help="actually perform deletions (default: dry run / plan only)")
     ap.add_argument("--keep-crs", action="store_true", help="don't delete CR instances — only remove Subscription/CSV/InstallPlans")
     ap.add_argument("--delete-crds", action="store_true", help="also delete the owned CRDs themselves (more destructive — off by default)")
+    ap.add_argument("--force", action="store_true",
+                    help="remove the operator even if a CR is still terminating (its finalizer will then never run)")
     args = ap.parse_args()
 
     csvs = find_csvs(args.match)
@@ -172,14 +187,22 @@ def main():
 
         print(f"\n--- Deleting resources for {csv_name} ---")
 
+        stuck = []
         for crd_name, ns, name in cr_plan:
             del_args = ["delete", crd_name, name]
             if ns:
                 del_args += ["-n", ns]
             oc(*del_args, check=False)
             if not wait_for_gone(crd_name, ns, name):
-                print(f"  WARNING: {crd_name}/{name} did not disappear within 30s — "
-                      "it may have a finalizer stuck waiting on something else. Check it manually.")
+                stuck.append(f"{crd_name}/{name}")
+        # The operator runs the CRs' finalizers (cluster-scoped cleanup). With
+        # the operator gone a terminating CR stays stuck, and --delete-crds
+        # then hangs behind it, so stop here unless told otherwise.
+        if stuck and not args.force:
+            raise SystemExit(
+                f"These CRs are still terminating after 120s: {stuck}. The operator must stay installed "
+                "to finish them. Check why (`oc describe` them, and the operator's logs), then re-run; "
+                "--force removes the operator anyway.")
 
         for sub in subs:
             oc("delete", "subscription", sub["metadata"]["name"], "-n", sub["metadata"]["namespace"], check=False)
