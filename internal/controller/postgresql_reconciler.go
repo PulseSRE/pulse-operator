@@ -390,7 +390,7 @@ func (r *PostgreSQLReconciler) reconcilePGStatefulSet(
 		}
 		wantAnnotations := map[string]string{
 			pgTemplateVersionAnnotation: pgTemplateVersion,
-			pgCredentialHashAnnotation:  credHash,
+			pgAuthHashAnnotation:        credHash,
 		}
 		drifted := false
 		for k, v := range wantAnnotations {
@@ -488,12 +488,12 @@ const (
 	// and a longer grace period.
 	pgTemplateVersion           = "2"
 	pgTemplateVersionAnnotation = "pulse.ai/pg-template-version"
-	// pgCredentialHashAnnotation restarts PostgreSQL when its credentials
+	// pgAuthHashAnnotation restarts PostgreSQL when its credentials
 	// Secret changes. The UBI image applies POSTGRESQL_PASSWORD at start, so
 	// a regenerated password otherwise left the server on the old one while
 	// the agent's database-url carried the new one.
-	pgCredentialHashAnnotation = "pulse.ai/pg-credentials-hash"
-	pgTerminationGraceSeconds  = 60
+	pgAuthHashAnnotation      = "pulse.ai/pg-auth-hash"
+	pgTerminationGraceSeconds = 60
 )
 
 // pgCredentialHash is a short hash of the pg-auth Secret's data, or "" when

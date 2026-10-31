@@ -56,7 +56,7 @@ type AgentReconciler struct {
 	// a nil Recorder is safe.
 	Recorder record.EventRecorder
 	// DBCredentialHash identifies the database credentials the agent should
-	// run with (see pgCredentialHashAnnotation). Empty without a database.
+	// run with (see pgAuthHashAnnotation). Empty without a database.
 	DBCredentialHash string
 }
 
@@ -737,7 +737,7 @@ func (r *AgentReconciler) buildDeploymentSpec(cr *pulsev1alpha1.OpenShiftPulse, 
 				// Restart when the database credentials change: the agent reads
 				// database-url from a Secret at start, and kept the old password
 				// after pg-auth was regenerated.
-				Annotations: map[string]string{pgCredentialHashAnnotation: r.DBCredentialHash},
+				Annotations: map[string]string{pgAuthHashAnnotation: r.DBCredentialHash},
 			},
 			Spec: corev1.PodSpec{
 				ServiceAccountName: name,

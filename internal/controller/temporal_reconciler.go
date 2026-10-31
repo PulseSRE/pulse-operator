@@ -209,7 +209,7 @@ func (r *TemporalReconciler) reconcileDeployment(ctx context.Context, pulse *pul
 		deploy.Spec.Template.Labels = map[string]string{"app": name}
 		// Restart when the database credentials change; Temporal reads them
 		// from pg-auth at start.
-		deploy.Spec.Template.Annotations = map[string]string{pgCredentialHashAnnotation: pgCredHash}
+		deploy.Spec.Template.Annotations = map[string]string{pgAuthHashAnnotation: pgCredHash}
 		deploy.Spec.Template.Spec.SecurityContext = defaultPodSecCtx(nil)
 		// auto-setup renders its config into /etc/temporal/config at startup.
 		// In the image that directory is owned by UID 1000; OpenShift runs the

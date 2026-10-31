@@ -79,7 +79,7 @@ var _ = Describe("PostgreSQL data safety", func() {
 		spec := sts.Spec.Template.Spec
 		Expect(*spec.TerminationGracePeriodSeconds).To(BeEquivalentTo(pgTerminationGraceSeconds))
 		Expect(spec.Containers[0].Lifecycle.PreStop.Exec.Command[2]).To(ContainSubstring("stop -m fast"))
-		before := sts.Spec.Template.Annotations[pgCredentialHashAnnotation]
+		before := sts.Spec.Template.Annotations[pgAuthHashAnnotation]
 		Expect(before).NotTo(BeEmpty())
 
 		secret := &corev1.Secret{}
@@ -88,7 +88,7 @@ var _ = Describe("PostgreSQL data safety", func() {
 		Expect(k8sClient.Update(testCtx, secret)).To(Succeed())
 		_, err = pg.reconcilePGStatefulSet(testCtx, cr, stsName, secretName)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(getSTS(stsName).Spec.Template.Annotations[pgCredentialHashAnnotation]).NotTo(Equal(before))
+		Expect(getSTS(stsName).Spec.Template.Annotations[pgAuthHashAnnotation]).NotTo(Equal(before))
 	})
 
 	It("reports an invalid storageSize on an existing database instead of failing the reconcile", func() {
@@ -141,7 +141,7 @@ var _ = Describe("Temporal rollout", func() {
 		deploy := &appsv1.Deployment{}
 		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: "temporal-recreate-temporal", Namespace: "default"}, deploy)).To(Succeed())
 		Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
-		Expect(deploy.Spec.Template.Annotations).To(HaveKey(pgCredentialHashAnnotation))
+		Expect(deploy.Spec.Template.Annotations).To(HaveKey(pgAuthHashAnnotation))
 	})
 })
 
