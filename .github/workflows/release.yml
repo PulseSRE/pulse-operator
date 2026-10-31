@@ -5,6 +5,25 @@ on:
     tags:
       - 'v*'
 
+# Least privilege: this workflow only reads the repository (checkout, tags) and
+# pushes to Quay with its own secrets. Creating the GitHub Release needs
+# contents: write, and lives in github-release.yml so that is the only
+# workflow holding it.
+permissions:
+  contents: read
+
+# Serialize release runs. Two tags pushed together used to race: each rendered
+# the catalog from whatever bundles existed at that moment, and whichever run
+# finished last won :latest. Runs in progress are never cancelled (a
+# half-published release is worse than a slow one). Note that GitHub keeps at
+# most ONE pending run per group: if three tags are pushed at once, the middle
+# run is cancelled while waiting and must be re-run from the Actions tab. That
+# is safe, because a run for an older tag never moves :latest (see "Is this
+# the newest release?").
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   OPERATOR_IMG: quay.io/amobrem/pulse-operator
   BUNDLE_IMG: quay.io/amobrem/pulse-operator-bundle
@@ -15,15 +34,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-python@v7
         with:
-          go-version-file: go.mod
-      - name: Log in to Quay
-        uses: docker/login-action@v4
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_TOKEN }}
+          python-version: '3.x'
       - name: OperatorVersion constant must match the tag
         # This has now drifted twice (v0.4.0 and v0.8.0): the tag ships an
         # image whose compat.go constant still names the previous release,
@@ -42,15 +55,6 @@ jobs:
             exit 1
           fi
           echo "OperatorVersion $have matches $RELEASE_TAG"
-      - name: Build and push operator image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          push: true
-          tags: |
-            ${{ env.OPERATOR_IMG }}:${{ github.ref_name }}
-            ${{ env.OPERATOR_IMG }}:latest
       - name: Bump bundle CSV to this release's version
         # Dockerfile.bundle copies bundle/manifests verbatim - without this,
         # the CSV's name/version/containerImage/deployment-image stay
@@ -64,15 +68,45 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: python3 scripts/bump-bundle-version.py "$RELEASE_TAG"
+
+      # Everything above only edits the checkout. Validate what will actually
+      # ship before anything is pushed: CI's bundle-validate job only ever
+      # sees the committed v0.1.0 CSV, never the bumped one built here.
+      - name: Install operator-sdk
+        run: |
+          OSDK_VERSION=v1.42.3
+          curl -sSLo /usr/local/bin/operator-sdk \
+            "https://github.com/operator-framework/operator-sdk/releases/download/${OSDK_VERSION}/operator-sdk_linux_amd64"
+          chmod +x /usr/local/bin/operator-sdk
+      - name: Validate the bumped bundle
+        run: make bundle-validate
+      - name: deploy/operator.yaml must match the bundle and this release
+        run: |
+          pip install pyyaml
+          python3 scripts/check-deploy-sync.py
+
+      - name: Log in to Quay
+        uses: docker/login-action@v4
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+      # Version tags only. :latest moves in the last step, once every image of
+      # this release exists, and only if this is the newest release.
+      - name: Build and push operator image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ env.OPERATOR_IMG }}:${{ github.ref_name }}
       - name: Build and push bundle image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.bundle
           push: true
-          tags: |
-            ${{ env.BUNDLE_IMG }}:${{ github.ref_name }}
-            ${{ env.BUNDLE_IMG }}:latest
+          tags: ${{ env.BUNDLE_IMG }}:${{ github.ref_name }}
 
       # The catalog is what OLM actually reads. Until now it was a manual
       # podman+opm step (Dockerfile.catalog's header and README's "Build the
@@ -107,20 +141,60 @@ jobs:
           test -n "$OPM_IMAGE"  # a rename or unpinning there must fail here, not silently use :latest
           printf '{"default":[{"type":"insecureAcceptAnything"}]}' > /tmp/policy.json
 
+          # Pull opm up front (with retries) so a failure below is about the
+          # bundle being rendered, not about fetching opm itself.
+          for attempt in 1 2 3 4; do
+            docker pull -q "$OPM_IMAGE" && break
+            if [ "$attempt" = 4 ]; then echo "::error::could not pull $OPM_IMAGE"; exit 1; fi
+            sleep $((attempt * 15))
+          done
+
+          # A version is left out of the chain ONLY when its bundle image does
+          # not exist (releases from before bundles were published). Any other
+          # failure (registry 5xx, 429, auth, network) is retried and then
+          # fails the release: dropping a version that does exist would remove
+          # it from the upgrade graph and strand every cluster running it.
+          # This release's own bundle was pushed moments ago, so for it even
+          # "not found" is retried (registry propagation) and then fatal.
+          # Returns 0 rendered, 2 no such bundle, 1 failed.
+          render() {
+            local ver="$1" attempt
+            for attempt in 1 2 3 4; do
+              if docker run --rm \
+                -v /tmp/policy.json:/etc/containers/policy.json:ro \
+                -v "${HOME}/.docker/config.json:/tmp/auth.json:ro" \
+                -e REGISTRY_AUTH_FILE=/tmp/auth.json \
+                "$OPM_IMAGE" \
+                render "${BUNDLE_IMG}:v${ver}" -o yaml > "/tmp/bundle-${ver}.yaml" 2>/tmp/render-err.log; then
+                return 0
+              fi
+              if [ "v${ver}" != "$RELEASE_TAG" ] && grep -qiE 'manifest unknown|name unknown|: not found' /tmp/render-err.log; then
+                return 2
+              fi
+              echo "::warning::opm render v${ver} failed (attempt ${attempt}/4): $(tail -1 /tmp/render-err.log || true)"
+              if [ "$attempt" != 4 ]; then sleep $((attempt * 15)); fi
+            done
+            return 1
+          }
+
           : > /tmp/rendered.yaml
           rendered=()
           while read -r ver; do
-            if docker run --rm \
-              -v /tmp/policy.json:/etc/containers/policy.json:ro \
-              -v "${HOME}/.docker/config.json:/tmp/auth.json:ro" \
-              -e REGISTRY_AUTH_FILE=/tmp/auth.json \
-              "$OPM_IMAGE" \
-              render "${BUNDLE_IMG}:v${ver}" -o yaml >> /tmp/rendered.yaml 2>/tmp/render-err.log; then
-              rendered+=("$ver")
-              echo "rendered bundle v${ver}"
-            else
-              echo "::notice::no bundle image for v${ver} — the upgrade chain starts after it. $(tail -1 /tmp/render-err.log || true)"
-            fi
+            rc=0
+            render "$ver" || rc=$?
+            case "$rc" in
+              0)
+                # Appended only on success, so a failed attempt's partial
+                # output can never end up in the catalog.
+                cat "/tmp/bundle-${ver}.yaml" >> /tmp/rendered.yaml
+                rendered+=("$ver")
+                echo "rendered bundle v${ver}" ;;
+              2)
+                echo "::notice::no bundle image for v${ver}, the upgrade chain skips it. $(tail -1 /tmp/render-err.log || true)" ;;
+              *)
+                echo "::error::could not render the v${ver} bundle after 4 attempts; refusing to publish a catalog without it. $(tail -1 /tmp/render-err.log || true)"
+                exit 1 ;;
+            esac
           done < <(python3 scripts/bump-bundle-version.py "$RELEASE_TAG" --print-chain)
 
           # This release's own bundle was pushed one step ago; failing to
@@ -157,6 +231,37 @@ jobs:
           # linux/amd64 explicitly: cluster nodes are x86, and a runner-native
           # arm64 build would produce a catalog pod that will not start.
           platforms: linux/amd64
-          tags: |
-            ${{ env.CATALOG_IMG }}:${{ github.ref_name }}
-            ${{ env.CATALOG_IMG }}:latest
+          tags: ${{ env.CATALOG_IMG }}:${{ github.ref_name }}
+
+      # The catalog above holds only versions up to this tag. A run for an
+      # older tag (a hotfix on an older line, a re-run, or a run that finished
+      # after a newer tag's) must not publish it as :latest: every cluster
+      # whose CatalogSource polls catalog:latest would lose the newer
+      # releases. bump-bundle-version.py fetches tags again here, at the end,
+      # so a tag pushed while this run was in flight counts.
+      - name: Is this the newest release?
+        id: newest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          newest="$(python3 scripts/bump-bundle-version.py "$RELEASE_TAG" --is-highest)"
+          echo "newest=${newest}" >> "$GITHUB_OUTPUT"
+          if [ "$newest" != "true" ]; then
+            echo "::notice::${RELEASE_TAG} is older than the newest release tag; leaving the :latest tags where they are."
+          fi
+      - name: Move the :latest tags to this release
+        # Last step: reached only when every image above was pushed. Retags
+        # the already-pushed images in the registry (no rebuild), so :latest
+        # is the version-tagged image.
+        if: steps.newest.outputs.newest == 'true'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for img in "$OPERATOR_IMG" "$BUNDLE_IMG" "$CATALOG_IMG"; do
+            docker buildx imagetools create --tag "${img}:latest" "${img}:${RELEASE_TAG}"
+            src="$(docker buildx imagetools inspect --raw "${img}:${RELEASE_TAG}" | sha256sum | cut -d' ' -f1)"
+            dst="$(docker buildx imagetools inspect --raw "${img}:latest" | sha256sum | cut -d' ' -f1)"
+            echo "${img}:latest is sha256:${dst} (${RELEASE_TAG} is sha256:${src})"
+          done

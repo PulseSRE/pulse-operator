@@ -52,6 +52,12 @@ jobs:
       - run: pip install pyyaml
       - name: RBAC must not have drifted from config/rbac/role.yaml
         run: python3 scripts/sync-rbac.py --check
+      - name: deploy/operator.yaml must match the CSV's operand pins and OperatorVersion
+        # The manifest install and the OLM install each carry their own
+        # RELATED_IMAGE_* digests; this fails when one is edited without the
+        # other, or when the operator image tag in deploy/operator.yaml does
+        # not name the release in compat.go.
+        run: python3 scripts/check-deploy-sync.py
       - name: bundle CRD copy must match config/crd/bases
         run: diff config/crd/bases/pulse.ai_openshiftpulses.yaml bundle/manifests/pulse.ai_openshiftpulses.yaml
       - name: generated CRD/deepcopy must match api/v1alpha1 markers
@@ -96,6 +102,29 @@ jobs:
         # e.g. a probe nested at the wrong level in the CSV, which this repo
         # shipped for a while because nothing ever ran this validator in CI.
         run: make bundle-validate
+      - name: The release bump script still applies, and its output validates
+        # release.yml rewrites the CSV with scripts/bump-bundle-version.py
+        # before building the bundle. Its regexes are anchored to exact lines
+        # of the CSV, so an innocent-looking CSV edit (re-indenting, moving
+        # the image line) used to surface only when a tag was pushed. Run the
+        # same bump on a scratch copy here, with a version no real release
+        # uses, and validate the result.
+        run: |
+          set -euo pipefail
+          scratch="${RUNNER_TEMP}/bump-check"
+          mkdir -p "$scratch"
+          cp -r scripts bundle "$scratch/"
+          python3 "$scratch/scripts/bump-bundle-version.py" 9.9.9 --replaces 0.0.1
+          csv="$scratch/bundle/manifests/pulse-operator.clusterserviceversion.yaml"
+          grep -qx '  name: pulse-operator.v9.9.9' "$csv"
+          grep -qx '  version: 9.9.9' "$csv"
+          grep -qx '  replaces: pulse-operator.v0.0.1' "$csv"
+          grep -qx '    containerImage: quay.io/amobrem/pulse-operator:v9.9.9' "$csv"
+          grep -qE '^ +image: quay\.io/amobrem/pulse-operator:v9\.9\.9$' "$csv"
+          if grep -qE 'quay\.io/amobrem/pulse-operator:v0\.1\.0' "$csv"; then
+            echo "::error::the bump left a v0.1.0 operator image reference behind"; exit 1
+          fi
+          operator-sdk bundle validate "$scratch/bundle" --select-optional suite=operatorframework
 
   scorecard:
     # `bundle-validate` above only checks bundle *structure* — it never
@@ -173,7 +202,9 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
       - name: gosec (static security analysis)
-        uses: securego/gosec@master
+        # Pinned to a release commit, not @master: a moving branch runs
+        # whatever was pushed to it most recently, with this job's token.
+        uses: securego/gosec@5eb1d104ef85ff2c905c877eb600e8c1dee33a22 # v2.30.0
         with:
           args: '-exclude-generated ./...'
 
@@ -277,7 +308,9 @@ jobs:
       - name: Build operator image (not pushed)
         run: docker build -t pulse-operator:ci -f Dockerfile .
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        # Pinned to a release commit (not @master or a tag, which can be
+        # re-pointed); Dependabot's github-actions ecosystem can bump it.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: pulse-operator:ci
           severity: 'CRITICAL,HIGH'
@@ -304,9 +337,14 @@ jobs:
         # so Dockerfile.catalog's cache-populate RUN step has something to
         # index and opm serve has something to load.
         run: |
+          set -euo pipefail
           mkdir -p catalog
+          # The same digest-pinned opm that Dockerfile.catalog and release.yml
+          # use, not :latest, so this job tests the opm a release runs.
+          OPM_IMAGE="$(grep -oE 'quay\.io/operator-framework/opm@sha256:[0-9a-f]{64}' Dockerfile.catalog | head -1)"
+          test -n "$OPM_IMAGE"
           docker run --rm -v "$(pwd)/bundle:/bundle:z" \
-            quay.io/operator-framework/opm:latest render /bundle -o yaml > /tmp/rendered.yaml
+            "$OPM_IMAGE" render /bundle -o yaml > /tmp/rendered.yaml
           cat - /tmp/rendered.yaml > catalog/full-catalog.yaml <<'HEADER'
           ---
           defaultChannel: alpha

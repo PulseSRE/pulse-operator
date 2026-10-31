@@ -32,6 +32,7 @@ Usage:
     scripts/bump-bundle-version.py v0.2.0          # "v" prefix optional
     scripts/bump-bundle-version.py 0.2.0 --replaces 0.1.5   # explicit override
     scripts/bump-bundle-version.py 0.2.0 --replaces ""      # force no replaces
+    scripts/bump-bundle-version.py 0.2.0 --is-highest       # "true" if no tag is newer
 
 Intended to run from release.yml, invoked with the pushed tag, before
 Dockerfile.bundle is built.
@@ -120,6 +121,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--is-highest",
+        action="store_true",
+        help=(
+            "print 'true' if VERSION is at least every released vX.Y.Z tag, else "
+            "'false', and exit. release.yml moves the :latest tags only when this "
+            "is true: a run for an older tag (a hotfix on an older line, a re-run, "
+            "or a run that finished after a newer tag's) renders a catalog without "
+            "the newer releases, and publishing that as :latest would drop them "
+            "from every cluster polling the CatalogSource."
+        ),
+    )
+    parser.add_argument(
         "--print-replaces",
         action="store_true",
         help="print the derived previous version and exit, changing nothing. Used by "
@@ -138,6 +151,11 @@ def main() -> None:
 
     if previous == version:
         raise SystemExit(f"--replaces {args.replaces!r} is the version being released — refusing to self-replace")
+
+    if args.is_highest:
+        target = version_key(version)
+        print("true" if all(version_key(v) <= target for v in released_versions()) else "false")
+        return
 
     if args.print_chain:
         target = version_key(version)
