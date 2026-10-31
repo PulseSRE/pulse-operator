@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -68,6 +69,25 @@ var _ = Describe("TemporalReconciler", func() {
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 			Expect(tr.reconcileTemporal(ctx, cr)).To(Succeed())
+		})
+
+		It("lets only the agent and Temporal's own pods reach the frontend", func() {
+			// Temporal has no authentication: without this policy any pod
+			// could approve a pending fix or start one with approval off.
+			np := &networkingv1.NetworkPolicy{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: temporalNetworkPolicyName(crName), Namespace: namespace}, np)).To(Succeed())
+			Expect(np.Spec.PolicyTypes).To(ConsistOf(networkingv1.PolicyTypeIngress))
+			Expect(np.Spec.PodSelector.MatchExpressions).To(HaveLen(1))
+			Expect(np.Spec.PodSelector.MatchExpressions[0].Values).To(ConsistOf(crName+"-temporal", crName+"-temporal-ui"))
+			Expect(np.Spec.Ingress).To(HaveLen(1))
+			var from []string
+			for _, peer := range np.Spec.Ingress[0].From {
+				Expect(peer.NamespaceSelector).To(BeNil(), "no other namespace may reach Temporal")
+				from = append(from, peer.PodSelector.MatchLabels["app"])
+			}
+			Expect(from).To(ConsistOf(agentResourceName(crName), crName+"-temporal", crName+"-temporal-ui"))
+			Expect(np.Spec.Ingress[0].Ports).To(HaveLen(1))
+			Expect(np.Spec.Ingress[0].Ports[0].Port.IntValue()).To(Equal(temporalFrontendPort))
 		})
 
 		It("creates the Deployment against the operator's own PostgreSQL", func() {

@@ -7,6 +7,14 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+**Security.** Upgrading changes who can use Pulse; read these first.
+- **One OpenShiftPulse per cluster, in `openshiftpulse`.** Any OpenShift user can create a project, and OLM lets project admins create this operator's resources there. The operator acted on every `OpenShiftPulse`, and with `allowSecretAccess`/`allowWriteOperations` bound the agent's ServiceAccount in that user's project to cluster-wide Secret read and Deployment patch: a path to cluster-admin. Only the oldest `OpenShiftPulse` in `PULSE_NAMESPACE` (default `openshiftpulse`, set on the operator through the Subscription) is now reconciled. Any other is rejected (`Phase: Rejected`, an `Accepted=False` condition and a Warning event), and the cluster-scoped roles, bindings and OAuthClient it holds are removed; its namespaced objects and data are left alone.
+- **Signing in to the UI requires view access to the Pulse namespace** (`--openshift-sar`, `get services`). Every session carries the agent's shared token, so any OpenShift user could sign in and approve a fix in a namespace they cannot touch. Grant access with `oc adm policy add-role-to-user view <user> -n openshiftpulse`.
+- **The OAuth grant is no longer silent** (`grantMethod: prompt`). Each user approves it once. With `auto`, whoever could set the proxy image could collect an admin's full-scope token from a link.
+- **nginx no longer forwards a browser-supplied `X-Forwarded-User`.** The agent trusts that header ahead of the token, and oauth-proxy does not set it, so any signed-in user could claim to be an admin.
+- **Temporal accepts connections only from the agent.** It has no authentication; any pod could approve a pending fix or start one with approval off.
+- **Turning render off deletes only render objects this resource created.** It deleted anything with those names, every reconcile.
+
 - **Pulse has an icon in OperatorHub.** The CSV had no `spec.icon`, so the catalog tile showed a generic placeholder; it now carries the Pulse logo (`docs/assets/pulse-icon.svg`, from pulse-ui).
 - **The console's example resource no longer sets `:latest` images.** The OperatorHub "Create OpenShiftPulse" form starts from `alm-examples`, which set `spec.agent.image` and `spec.ui.image` to `:latest`. An image in the CR wins over the digest this release pins, so a resource created from the default example ran `:latest` and lost both the pin and automatic rollback.
 

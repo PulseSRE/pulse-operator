@@ -116,17 +116,22 @@ func (r *RenderReconciler) reconcileRender(ctx context.Context, pulse *pulsev1al
 	return nil
 }
 
+// removeRender deletes the render objects this CR created. Render is off by
+// default, so this runs on every reconcile of most installs: it deleted
+// anything with these names, including a user's own Deployment, Service,
+// NetworkPolicy or Secret, every 30 seconds. Only objects this CR controls
+// are deleted now, as the MCP and Temporal removal already did.
 func (r *RenderReconciler) removeRender(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
-	meta := metav1.ObjectMeta{Name: renderResourceName(pulse.Name), Namespace: pulse.Namespace}
+	meta := metav1.ObjectMeta{Name: renderResourceName(pulse.Name)}
 	for _, obj := range []client.Object{
 		&appsv1.Deployment{ObjectMeta: meta},
 		&corev1.Service{ObjectMeta: meta},
 		&networkingv1.NetworkPolicy{ObjectMeta: meta},
 		// Nothing else reads it once render is off; a later enable mints a new one.
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: renderTokenSecretName(pulse.Name), Namespace: pulse.Namespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: renderTokenSecretName(pulse.Name)}},
 	} {
-		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("remove render %T: %w", obj, err)
+		if err := deleteOwned(ctx, r.Client, obj, pulse); err != nil {
+			return fmt.Errorf("remove render: %w", err)
 		}
 	}
 	return nil

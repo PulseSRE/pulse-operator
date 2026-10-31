@@ -273,6 +273,22 @@ make deploy
 
 ## Create your first Pulse instance
 
+Pulse runs **one instance per cluster, in the `openshiftpulse` namespace**. An `OpenShiftPulse` anywhere else, or a second one there, is ignored: its status shows `Phase: Rejected` with the reason, and the operator creates nothing for it. (Any OpenShift user can create a project and an `OpenShiftPulse` in it, so honouring one anywhere would let them grant themselves the agent's cluster-wide permissions.) To use a different namespace, set `PULSE_NAMESPACE` on the operator, through the Subscription:
+
+```yaml
+spec:
+  config:
+    env:
+      - name: PULSE_NAMESPACE
+        value: my-pulse-namespace
+```
+
+Users sign in to the UI only if they can view that namespace, and approve the OAuth grant once on first sign-in:
+
+```bash
+oc adm policy add-role-to-user view <user> -n openshiftpulse
+```
+
 ```bash
 cat <<EOF | oc apply -f -
 apiVersion: pulse.ai/v1alpha1
@@ -939,7 +955,10 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - PostgreSQL sets `ReadOnlyRootFilesystem=false` (PG requires writable socket and temp paths).
 - The operator's own ClusterRole ([`config/rbac/role.yaml`](config/rbac/role.yaml)) does **not** include `escalate`/`bind` on RBAC resources — every rule it ever writes into a generated agent/UI/MCP ClusterRole is already a permission it holds itself, so Kubernetes' RBAC "you already have this" rule lets `create`/`update` succeed without those verbs. It's still a privilege-concentration point (it *creates* ClusterRoles/ClusterRoleBindings for every managed instance): restrict `pods/exec` access in `pulse-operator-system` with RBAC. NetworkPolicy controls pod traffic and does not authorize Kubernetes exec requests.
 - The agent, UI, PostgreSQL, and MCP server have ingress NetworkPolicies. UI ingress permits only the OpenShift router on 8443 (the `ingress` policy group, plus `policy-group.network.openshift.io/host-network` for routers on the host network, the default on bare metal, vSphere and SNO); agent ingress permits UI and Prometheus peers; MCP ingress permits the agent; PostgreSQL permits the agent and enabled Temporal peers. Before v0.11.0 the PostgreSQL policy selected no pod and so isolated nothing; on upgrade it starts applying. This does not imply all optional components are isolated, does not restrict egress, and requires an enforcing network plugin. Use the cluster acceptance packet probes to verify observed connectivity.
-- Every cluster-scoped resource the operator creates — the agent/UI/MCP ClusterRoles and ClusterRoleBindings, the agent's `-monitoring-view` binding, and the OAuthClient — is named `{namespace}-{name}-…` to prevent collision when multiple CRs coexist on the same cluster. Namespaced resources keep plain `{name}-…` names; Kubernetes already scopes those.
+- **One instance per cluster.** Only the oldest `OpenShiftPulse` in `PULSE_NAMESPACE` (default `openshiftpulse`) is reconciled. Others are rejected and any cluster-scoped grants they hold from an earlier operator are removed; their namespaced objects are left in place. Before v0.12.2 a CR in any project got the agent's cluster-wide role, including Secret read and Deployment patch when it set `allowSecretAccess`/`allowWriteOperations`.
+- **UI sign-in.** oauth-proxy admits only users who can `get services` in the Pulse namespace (`--openshift-sar`), the OAuthClient asks each user to approve the grant once (`grantMethod: prompt`), and nginx never forwards a browser-supplied `X-Forwarded-User` to the agent.
+- **Temporal** (when enabled) accepts connections only from the agent and its own pods; it has no authentication of its own.
+- Every cluster-scoped resource the operator creates — the agent/UI/MCP ClusterRoles and ClusterRoleBindings, the agent's `-monitoring-view` binding, and the OAuthClient — is named `{namespace}-{name}-…`. Namespaced resources keep plain `{name}-…` names; Kubernetes already scopes those.
 - The agent's own ClusterRole is read-only unless `allowWriteOperations`/`allowSecretAccess` are set. Besides core workloads, it reads exactly what the monitor's scanners scan: `clusteroperators` and `clusterversions` (degraded operators, upgrades), `customresourcedefinitions` (stuck deletions), `routes` (route errors and certificates), `controllerrevisions` (StatefulSet/DaemonSet rollouts for "what changed"), Argo CD `applications` (GitOps syncs) and `machineconfigpools` (maintenance blockers). All are `get`/`list` only. Before v0.10.0 these reads were missing, and the agent reports the scanners that needed them as degraded ("To fix: …" in the UI); upgrading the operator updates the role on the next reconcile and those warnings clear. The Argo CD rule is harmless on a cluster without Argo CD.
 - The agent's ServiceAccount is bound to OpenShift's built-in `cluster-monitoring-view` ClusterRole (read-only) so its own alert-scanning/trend-monitoring features can query `thanos-querier` — this is separate from, and in addition to, the agent's own scoped-down ClusterRole.
 - The UI's nginx proxies both `/api/prometheus/` (Thanos-querier — firing alerts, rules, CPU/memory charts) and `/api/alertmanager/` (Alertmanager — silences: list/create/expire) to `openshift-monitoring`, forwarding the logged-in user's own OAuth token. Reading/writing silences requires the user to additionally hold `monitoring-alertmanager-view` (read) or `monitoring-alertmanager-edit` (read+write) in the `openshift-monitoring` project — a narrower grant than `cluster-monitoring-view`, which only covers the Thanos path.
