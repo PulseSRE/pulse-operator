@@ -125,6 +125,9 @@ metadata:
   namespace: pulse-operator-system
 spec:
   replicas: 1
+  # One manager at a time; see the bundle CSV's strategy comment.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: pulse-operator-manager

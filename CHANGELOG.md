@@ -7,6 +7,13 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+**Rollback and upgrades**
+- **Automatic rollback works.** An image counted as healthy when any pod was ready, and during a rollout the old pod still is, so every new image was recorded as healthy in the pass that applied it and rollback never fired; the UI's, whose old pods stay up through its rolling update, never could. An image is now healthy only once its Deployment has rolled out (caught up with its spec, every replica updated and ready, no old pod). A UI rollout that never completes shows `Upgrading` and is rolled back like the agent's.
+- **Rollback no longer edits the spec.** It is recorded in `status.agentRollback` / `status.uiRollback` and the operator runs the last healthy image while the CR asks for the bad one. Writing the old image into the spec pinned an operator-defaulted image for good (later operator upgrades stopped moving the agent), and with a GitOps tool re-applying the bad image it rolled back again every five minutes. Changing the image clears the record. An image held back by `spec.agent.minOperatorVersion` is not rolled back.
+- **The operator's own Deployment uses `Recreate`.** An OLM upgrade ran the old and new manager together, each setting the agent image from its own pins, restarting the agent on every flip.
+- **`oc rollout restart` sticks.** The agent and UI pod templates are rebuilt each reconcile, which dropped the restart annotation: a second agent outage, or a UI restart undone part way.
+- **`AgentVersion` is readable again**: a tag, or `sha256:` and 12 hex digits for a digest-pinned image, instead of the 64-character hash.
+
 ## v0.12.1 (2026-10-30)
 
 Pairs with pulse-agent and pulse-ui v2.36.0. No CRD schema or RBAC changes. Fixes the MCP server, which exits at startup (`unknown flag: --port`) whenever its pod is rescheduled onto a node without a cached copy of the old image, for example during a cluster upgrade (#113). **On upgrade** every component the operator deploys, PostgreSQL included, restarts once: its image changes from a tag to the digest this release pins. Pull requests #112–#113.

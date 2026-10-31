@@ -587,10 +587,13 @@ pod gets stuck instead of just taking a while.
 
 #### Automatic rollback
 
-If the new agent/UI image doesn't become healthy within 5 minutes of `Phase` turning `Upgrading`,
-the operator automatically reverts `spec.agent.image`/`spec.ui.image` back to
-`status.lastHealthy{Agent,UI}Image` — the last image that was actually observed ready — and emits
-a `Warning AutoRolledBack` Event explaining what happened. This only covers the agent/UI images
+If the new agent/UI image hasn't rolled out within 5 minutes of `Phase` turning `Upgrading` (every
+replica updated and ready, no old pod left), the operator runs `status.lastHealthy{Agent,UI}Image`
+— the last image that fully rolled out — instead, records it in `status.agentRollback` /
+`status.uiRollback` (`from`, `to`, `at`), and emits a `Warning AutoRolledBack` Event. The spec is
+left as written, so a GitOps tool does not fight the rollback; set the image to something else
+(or upgrade the operator, if you use its default) to try again, which clears the record. An image
+held back by `spec.agent.minOperatorVersion` is not rolled back: it never ran. This only covers the agent/UI images
 managed directly by this CR; it does **not** cover an operator upgrade via OLM (rolling back the
 operator's own running binary needs a separate pre-upgrade gate outside this process, which isn't
 implemented yet).

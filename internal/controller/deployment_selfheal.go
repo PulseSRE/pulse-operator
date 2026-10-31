@@ -117,6 +117,25 @@ func diagnoseDeploymentPods(ctx context.Context, c client.Client, namespace, dep
 	return nil, nil
 }
 
+// restartedAtAnnotation is what `oc rollout restart` sets on a pod template.
+const restartedAtAnnotation = "kubectl.kubernetes.io/restartedAt"
+
+// keepRestartedAt carries `oc rollout restart`'s annotation from the
+// Deployment's current pod template into the one the operator writes. The
+// agent and UI reconcilers rebuild the template from scratch, which dropped
+// it on the next reconcile: a second rollout for the agent (Recreate, so a
+// second outage) and a restart undone part way through for the UI.
+func keepRestartedAt(previous, desired *corev1.PodTemplateSpec) {
+	v, ok := previous.Annotations[restartedAtAnnotation]
+	if !ok {
+		return
+	}
+	if desired.Annotations == nil {
+		desired.Annotations = map[string]string{}
+	}
+	desired.Annotations[restartedAtAnnotation] = v
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
