@@ -71,6 +71,15 @@ var _ = Describe("UIReconciler nginx config", func() {
 		Expect(conf).To(ContainSubstring("proxy_http_version 1.1"))
 	})
 
+	It("never forwards a browser-supplied X-Forwarded-User to the agent", func() {
+		// The agent trusts this header ahead of TokenReview, and oauth-proxy
+		// does not set it, so passing it through let any signed-in user claim
+		// to be an admin.
+		conf := reconcileNginxAndRead(ctx, ui, cr)
+		Expect(conf).NotTo(ContainSubstring("$http_x_forwarded_user"))
+		Expect(strings.Count(conf, `proxy_set_header X-Forwarded-User "";`)).To(Equal(2))
+	})
+
 	It("proxies /api/agent/ to the agent service REST endpoint", func() {
 		conf := reconcileNginxAndRead(ctx, ui, cr)
 		agentSvc := agentResourceName(crName) // e.g. "nginx-test-pulse-openshift-sre-agent"

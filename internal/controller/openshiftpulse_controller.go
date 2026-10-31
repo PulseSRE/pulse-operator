@@ -80,6 +80,16 @@ func (r *OpenShiftPulseReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		return ctrl.Result{}, nil
 	}
+	// One instance per cluster, in the Pulse namespace (admission.go). Checked
+	// before the finalizer is added: a rejected CR owns nothing to clean up.
+	if reason, err := r.rejectionReason(ctx, pulse); err != nil {
+		return ctrl.Result{}, err
+	} else if reason != "" {
+		logger.Info("ignoring OpenShiftPulse", "name", pulse.Name, "namespace", pulse.Namespace, "reason", reason)
+		// Re-checked periodically: if the accepted instance is deleted, the
+		// next CR in the namespace takes over.
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, r.reject(ctx, pulse, reason)
+	}
 	if !controllerutil.ContainsFinalizer(pulse, finalizerName) {
 		controllerutil.AddFinalizer(pulse, finalizerName)
 		return ctrl.Result{}, r.Update(ctx, pulse)

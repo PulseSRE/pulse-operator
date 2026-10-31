@@ -26,6 +26,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -85,6 +86,9 @@ func (r *TemporalReconciler) reconcileTemporal(ctx context.Context, pulse *pulse
 	}
 	if err := r.reconcileService(ctx, pulse); err != nil {
 		return fmt.Errorf("temporal service: %w", err)
+	}
+	if err := r.reconcileNetworkPolicy(ctx, pulse); err != nil {
+		return fmt.Errorf("temporal network policy: %w", err)
 	}
 	if pulse.Spec.Temporal.UI != nil && *pulse.Spec.Temporal.UI {
 		if err := r.reconcileUI(ctx, pulse); err != nil {
@@ -304,6 +308,44 @@ func (r *TemporalReconciler) reconcileService(ctx context.Context, pulse *pulsev
 	return err
 }
 
+// temporalNetworkPolicyName is the policy fencing the Temporal pods.
+func temporalNetworkPolicyName(crName string) string {
+	return temporalResourceName(crName) + "-access"
+}
+
+// reconcileNetworkPolicy lets only the agent (and the Temporal pods
+// themselves) reach the Temporal frontend, and nothing reach the Web UI.
+//
+// Temporal has no authentication here. Without this policy any pod in any
+// namespace could connect to port 7233 and signal "approve" to a pending
+// incident workflow, or start one with approval turned off, and the agent's
+// worker would apply the fix with the agent's ServiceAccount. The Web UI,
+// which can terminate workflows, has no Route; `oc port-forward` still
+// reaches it, because port-forwarded traffic is not subject to the policy.
+func (r *TemporalReconciler) reconcileNetworkPolicy(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
+	server := temporalResourceName(pulse.Name)
+	ui := server + "-ui"
+	tcp := corev1.ProtocolTCP
+	frontend := intstr.FromInt32(temporalFrontendPort)
+	np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: temporalNetworkPolicyName(pulse.Name), Namespace: pulse.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+		np.Spec.PodSelector = metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+			Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{server, ui},
+		}}}
+		np.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
+		np.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{
+			From: []networkingv1.NetworkPolicyPeer{
+				{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": agentResourceName(pulse.Name)}}},
+				{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": server}}},
+				{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": ui}}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &frontend}},
+		}}
+		return controllerutil.SetControllerReference(pulse, np, r.Scheme)
+	})
+	return err
+}
+
 // removeTemporal deletes the Temporal server when spec.temporal.enabled is off,
 // and the Web UI when either Temporal or spec.temporal.ui is off. Previously
 // both kept running after being disabled. Workflow history lives in the
@@ -317,6 +359,10 @@ func (r *TemporalReconciler) removeTemporal(ctx context.Context, pulse *pulsev1a
 		}
 	} else {
 		names = append(names, temporalResourceName(pulse.Name))
+		np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: temporalNetworkPolicyName(pulse.Name)}}
+		if err := deleteOwned(ctx, r.Client, np, pulse); err != nil {
+			return err
+		}
 	}
 	for _, name := range names {
 		for _, obj := range []client.Object{
