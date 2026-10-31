@@ -406,7 +406,7 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 			pulseCR := &pulsev1alpha1.OpenShiftPulse{
 				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
 				Spec: pulsev1alpha1.OpenShiftPulseSpec{
-					Agent: pulsev1alpha1.AgentConfig{AllowSecretAccess: true},
+					Agent: pulsev1alpha1.AgentConfig{AllowSecretAccess: boolPtr(true)},
 				},
 			}
 			Expect(k8sClient.Create(ctx, pulseCR)).To(Succeed())
@@ -418,6 +418,60 @@ var _ = Describe("AgentReconciler — Deployment spec", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
 			Expect(hasVerb(clusterRole, "secrets", "get")).To(BeTrue(),
 				"get verb on secrets must be present when AllowSecretAccess=true")
+		})
+
+		// Secret reads are what the Security Posture and Certificate Expiry
+		// scanners run on. Off, they report themselves unavailable rather than
+		// clean, which reads as "fine" on a dashboard — a cluster whose ACM
+		// webhook certificates had been expired for two months looked healthy
+		// because the only check that would have caught it was switched off.
+		It("ClusterRole includes secrets read when AllowSecretAccess is unset (CRD default)", func() {
+			pulseCR := &pulsev1alpha1.OpenShiftPulse{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+				Spec:       pulsev1alpha1.OpenShiftPulseSpec{},
+			}
+			Expect(k8sClient.Create(ctx, pulseCR)).To(Succeed())
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			stored := &pulsev1alpha1.OpenShiftPulse{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName, Namespace: namespace}, stored)).To(Succeed())
+			Expect(stored.Spec.Agent.AllowSecretAccess).NotTo(BeNil(),
+				"the CRD default must stamp the field on a CR that omits it")
+			Expect(*stored.Spec.Agent.AllowSecretAccess).To(BeTrue())
+
+			clusterRole := &rbacv1.ClusterRole{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
+			Expect(hasVerb(clusterRole, "secrets", "get")).To(BeTrue(),
+				"secrets read must be granted by default")
+		})
+
+		// The whole reason the field is *bool: with a plain bool defaulted to
+		// true, omitempty makes an explicit false indistinguishable from unset,
+		// so opting out would be unexpressible through a typed Go client.
+		It("ClusterRole omits secrets read when AllowSecretAccess is explicitly false", func() {
+			pulseCR := &pulsev1alpha1.OpenShiftPulse{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+				Spec: pulsev1alpha1.OpenShiftPulseSpec{
+					Agent: pulsev1alpha1.AgentConfig{AllowSecretAccess: boolPtr(false)},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pulseCR)).To(Succeed())
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			stored := &pulsev1alpha1.OpenShiftPulse{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName, Namespace: namespace}, stored)).To(Succeed())
+			Expect(stored.Spec.Agent.AllowSecretAccess).NotTo(BeNil())
+			Expect(*stored.Spec.Agent.AllowSecretAccess).To(BeFalse(),
+				"an explicit false must survive the round-trip, not be erased by omitempty")
+
+			clusterRole := &rbacv1.ClusterRole{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, clusterRole)).To(Succeed())
+			Expect(hasVerb(clusterRole, "secrets", "get")).To(BeFalse(),
+				"opting out must actually remove the grant")
 		})
 	})
 

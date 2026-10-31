@@ -146,8 +146,31 @@ type AgentConfig struct {
 	AdminUsers string `json:"adminUsers,omitempty"`
 	// +optional
 	AllowWriteOperations bool `json:"allowWriteOperations,omitempty"`
+	// AllowSecretAccess grants the agent read-only access to Secrets, which
+	// the Security Posture and Certificate Expiry scanners both require.
+	//
+	// Defaults to true. Left off, those two scanners report themselves as
+	// unavailable rather than clean, and the gap is easy to miss: a cluster
+	// whose ACM webhook certificates had been expired for two months looked
+	// healthy because the only check that would have noticed was switched
+	// off. Reading Secrets to find expiring certificates is the feature, and
+	// an operator that silently does not perform its headline checks is the
+	// worse failure.
+	//
+	// The grant is get/list/watch on secrets and nothing else; the agent's
+	// ability to change anything is governed separately by
+	// allowWriteOperations and trustLevel. Set this to false explicitly on
+	// clusters where even read access is unacceptable.
+	//
+	// *bool for the same omitempty reason MonitoringConfig documents: a plain
+	// bool defaulted to true could never be explicitly set back to false
+	// through a typed Go client. nil means unset — the CRD default applies
+	// once the object is stored, and callers reading the field before that
+	// round-trip must treat nil the same way (see secretAccessEnabled in the
+	// controller package).
 	// +optional
-	AllowSecretAccess bool `json:"allowSecretAccess,omitempty"`
+	// +kubebuilder:default=true
+	AllowSecretAccess *bool `json:"allowSecretAccess,omitempty"`
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 	// +optional

@@ -45,7 +45,7 @@ var _ = Describe("One OpenShiftPulse per cluster", func() {
 	}
 	create := func(ns, name string) *pulsev1alpha1.OpenShiftPulse {
 		cr := &pulsev1alpha1.OpenShiftPulse{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
-		cr.Spec.Agent.AllowSecretAccess = true
+		cr.Spec.Agent.AllowSecretAccess = boolPtr(true)
 		cr.Spec.Agent.AllowWriteOperations = true
 		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
 		DeferCleanup(func() {

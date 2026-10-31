@@ -32,6 +32,11 @@ func (in *AgentConfig) DeepCopyInto(out *AgentConfig) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.AllowSecretAccess != nil {
+		in, out := &in.AllowSecretAccess, &out.AllowSecretAccess
+		*out = new(bool)
+		**out = **in
+	}
 	in.Resources.DeepCopyInto(&out.Resources)
 	out.MCP = in.MCP
 }
