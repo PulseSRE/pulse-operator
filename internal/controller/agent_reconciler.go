@@ -395,6 +395,25 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"machineconfigpools"},
 				Verbs:     []string{"get", "list"},
 			},
+			// The agent reads its own OpenShiftPulse to report how it is
+			// configured — which MCP toolsets are enabled, most visibly. Denied
+			// this, the lookup returns 403, the agent cannot tell "forbidden"
+			// from "no operator installed", and it falls through to a
+			// Deployment-name path that cannot match an operator-created
+			// Deployment. The user sees "MCP server deployment not found in
+			// cluster" on a cluster where it plainly exists, and a toolset list
+			// that disagrees with the CR.
+			//
+			// Read-only, deliberately. This CR carries allowWriteOperations,
+			// trustLevel, adminUsers and allowSecretAccess, so an agent able to
+			// patch it could raise its own privileges — and RBAC cannot limit a
+			// patch to one field. Changing toolsets stays an operation on the
+			// CR, performed by whoever administers the operator.
+			{
+				APIGroups: []string{"pulse.ai"},
+				Resources: []string{"openshiftpulses"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
 		},
 	}
 
