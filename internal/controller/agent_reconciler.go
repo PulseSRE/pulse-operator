@@ -404,6 +404,15 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"machineconfigpools"},
 				Verbs:     []string{"get", "list"},
 			},
+			// The deprecated-API inbox generator reads APIRequestCounts to find
+			// APIs removed in the next minor release that something still
+			// calls, before an upgrade breaks it. Read-only, cluster-scoped
+			// usage counters.
+			{
+				APIGroups: []string{"apiserver.openshift.io"},
+				Resources: []string{"apirequestcounts"},
+				Verbs:     []string{"get", "list"},
+			},
 			// The agent reads its own OpenShiftPulse to report how it is
 			// configured — which MCP toolsets are enabled, most visibly. Denied
 			// this, the lookup returns 403, the agent cannot tell "forbidden"

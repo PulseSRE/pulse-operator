@@ -131,6 +131,11 @@ rules:
 - apiGroups: [machineconfiguration.openshift.io]
   resources: [machineconfigpools]
   verbs: [get, list]
+# Read-only: granted on to the agent's ClusterRole for the deprecated-API
+# inbox generator (removed APIs still in use before a minor upgrade).
+- apiGroups: [apiserver.openshift.io]
+  resources: [apirequestcounts]
+  verbs: [get, list]
 - apiGroups: [image.openshift.io]
   resources: [imagestreams]
   verbs: [get, list, watch]

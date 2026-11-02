@@ -293,6 +293,7 @@ var _ = Describe("AgentReconciler", func() {
 			"apps":                              {"controllerrevisions"},
 			"argoproj.io":                       {"applications"},
 			"machineconfiguration.openshift.io": {"machineconfigpools"},
+			"apiserver.openshift.io":            {"apirequestcounts"},
 		}
 		for group, resources := range want {
 			for _, res := range resources {
