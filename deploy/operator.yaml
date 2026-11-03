@@ -151,7 +151,7 @@ spec:
         # CI). Not :latest, which moves independently of the operand digests
         # below. To run a dev build: edit this line, or `oc set image` after
         # `make deploy`.
-        image: quay.io/amobrem/pulse-operator:v0.12.2
+        image: quay.io/amobrem/pulse-operator:v0.13.0
         # Operand images, digest-pinned to match the CSV's RELATED_IMAGE_*
         # env and spec.relatedImages. Kept here too so a non-OLM install
         # (kubectl apply -f deploy/) deploys the same operands an OLM install
@@ -159,11 +159,11 @@ spec:
         # compiled into the binary.
         env:
         - name: RELATED_IMAGE_AGENT
-          value: quay.io/amobrem/pulse-agent@sha256:009ee80aef5049a2377175faa4a725608c79a7b80a795b45632d4f847b32954f
+          value: quay.io/amobrem/pulse-agent@sha256:de33bd64ed167dde91789094190537aba9c1d29f4dbe591edcb813cde64ec412
         - name: RELATED_IMAGE_UI
-          value: quay.io/amobrem/openshiftpulse@sha256:81d7ecf91119e19983281ee7591e3eece86fe53094341e8eceafacaee98c6d17
+          value: quay.io/amobrem/openshiftpulse@sha256:ec96fb240cb653de352c011b5eed0502ae09f4e5b0cde4a971c03b994c783a22
         - name: RELATED_IMAGE_MCP_SERVER
-          value: quay.io/amobrem/pulse-agent@sha256:a0a4b9ef4efdc5810250d4ec8641f25c3247a2fa0f2c9852fe1759aca586b165
+          value: quay.io/amobrem/pulse-agent@sha256:6fcf1373aa5e9422b034219bf19ff1eb4245de631600f1806c3dd8405bf9dd2a
         - name: RELATED_IMAGE_RENDER
           value: quay.io/amobrem/openshiftpulse-render@sha256:cec17637e6165c3b354f68438ad6e7ef17cac205ac3001856036a023bad37673
         - name: RELATED_IMAGE_POSTGRESQL
