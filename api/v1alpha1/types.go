@@ -245,7 +245,10 @@ type UIConfig struct {
 	// anything else. Defaults to the digest this operator release pins
 	// (RELATED_IMAGE_HELM_RUNNER). When neither is set, or the value is not
 	// digest-pinned, nothing is served, Helm actions in the UI stay disabled,
-	// and the HelmRunnerImageConfigured condition says why.
+	// and the HelmRunnerImageConfigured condition says why. The format is
+	// checked by the operator, not the CRD, so a bad value is reported in that
+	// condition rather than rejected at admission.
+	// +kubebuilder:validation:MaxLength=512
 	// +optional
 	HelmRunnerImage string `json:"helmRunnerImage,omitempty"`
 	// +optional

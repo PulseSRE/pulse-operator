@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -188,6 +190,33 @@ var _ = Describe("UIReconciler /config.js", func() {
 		Expect(bodies[0]).To(Equal(bodies[1]))
 	})
 
+	// The hash is a pod-template annotation; if it moved between reconciles
+	// with nothing changed, every reconcile would restart the UI pods.
+	It("keeps the nginx config hash and Secret stable across reconciles with the same input", func() {
+		setHelmRunnerEnv(pinnedRunnerEnv)
+		create()
+		first, err := ui.reconcileUINginxConfigMap(testCtx, cr)
+		Expect(err).NotTo(HaveOccurred())
+		sec := &corev1.Secret{}
+		Expect(k8sClient.Get(testCtx, client.ObjectKey{Name: uiNginxSecretName(crName), Namespace: namespace}, sec)).To(Succeed())
+		rv := sec.ResourceVersion
+
+		for i := 0; i < 3; i++ {
+			again, err := ui.reconcileUINginxConfigMap(testCtx, cr)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(again).To(Equal(first), "reconcile %d produced a different hash", i+2)
+		}
+		Expect(k8sClient.Get(testCtx, client.ObjectKey{Name: uiNginxSecretName(crName), Namespace: namespace}, sec)).To(Succeed())
+		Expect(sec.ResourceVersion).To(Equal(rv), "the nginx Secret was rewritten with nothing changed")
+
+		// A freshly read copy of the CR (as the next reconcile gets) gives the same hash too.
+		fresh := &pulsev1alpha1.OpenShiftPulse{}
+		Expect(k8sClient.Get(testCtx, client.ObjectKeyFromObject(cr), fresh)).To(Succeed())
+		again, err := ui.reconcileUINginxConfigMap(testCtx, fresh)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(again).To(Equal(first))
+	})
+
 	It("rolls the UI when the runner image changes (nginx config hash moves)", func() {
 		create()
 		before, err := ui.reconcileUINginxConfigMap(testCtx, cr)
@@ -236,12 +265,31 @@ func TestHelmRunnerImagePattern(t *testing.T) {
 }
 
 func TestUIRuntimeConfigJS(t *testing.T) {
-	if got := uiRuntimeConfigJS(helmRunnerSetting{}); got != "window.__OPENSHIFTPULSE_CONFIG__={};" {
+	if got := uiRuntimeConfigJS(context.Background(), helmRunnerSetting{}); got != "window.__OPENSHIFTPULSE_CONFIG__={};" {
 		t.Errorf("unset: got %q", got)
 	}
-	got := uiRuntimeConfigJS(helmRunnerSetting{image: pinnedRunner})
+	got := uiRuntimeConfigJS(context.Background(), helmRunnerSetting{image: pinnedRunner})
 	want := `window.__OPENSHIFTPULSE_CONFIG__={"helmInstall":{"runnerImage":"` + pinnedRunner + `"}};`
 	if got != want {
 		t.Errorf("set: got %q, want %q", got, want)
+	}
+}
+
+// TestUIRuntimeConfigJSRefusesNginxUnsafeBody feeds values straight to the
+// encoder, past helmRunnerImagePattern, the way a future config field without
+// its own validation would arrive. Anything that would end, escape or
+// interpolate inside the single-quoted nginx string yields the empty config.
+func TestUIRuntimeConfigJSRefusesNginxUnsafeBody(t *testing.T) {
+	const empty = "window.__OPENSHIFTPULSE_CONFIG__={};"
+	for _, v := range []string{
+		"quay.io/x';return 200 'pwned",
+		`quay.io/x\y`,
+		`quay.io/x"y`, // JSON-encodes as \"
+		"quay.io/$host/x",
+		"quay.io/x\n",
+	} {
+		if got := uiRuntimeConfigJS(context.Background(), helmRunnerSetting{image: v}); got != empty {
+			t.Errorf("image %q: got %q, want %q", v, got, empty)
+		}
 	}
 }

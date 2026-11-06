@@ -15,13 +15,17 @@ package controller
 // in the UI reads, so on an operator install every Helm Job was refused.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	pulsev1alpha1 "github.com/PulseSRE/pulse-operator/api/v1alpha1"
 )
@@ -109,14 +113,31 @@ type uiRuntimeConfig struct {
 // empty object, and the UI refuses Helm actions with its existing "Helm runner
 // image must be digest-pinned" error.
 // helmInstall.serviceAccountName is left to the UI's default.
-func uiRuntimeConfigJS(s helmRunnerSetting) string {
+//
+// The body is written into a single-quoted nginx string, where ' ends the
+// string, \ escapes and $ interpolates a variable. helmRunnerImagePattern keeps
+// those out of the runner image today; the check below keeps them out of any
+// field added later, by serving the empty config instead.
+func uiRuntimeConfigJS(ctx context.Context, s helmRunnerSetting) string {
+	empty := uiRuntimeConfigGlobal + "={};"
 	cfg := uiRuntimeConfig{}
 	if s.image != "" {
 		cfg.HelmInstall = &uiHelmInstallConfig{RunnerImage: s.image}
 	}
 	raw, err := json.Marshal(cfg)
 	if err != nil { // cannot happen for this type
-		raw = []byte("{}")
+		log.FromContext(ctx).Error(err, "encoding UI runtime config; serving an empty /config.js")
+		return empty
+	}
+	if strings.ContainsAny(string(raw), nginxUnsafeChars) {
+		log.FromContext(ctx).Error(errUnsafeRuntimeConfig, "serving an empty /config.js", "config", string(raw))
+		return empty
 	}
 	return uiRuntimeConfigGlobal + "=" + string(raw) + ";"
 }
+
+// nginxUnsafeChars cannot appear inside a single-quoted nginx string literal
+// without ending it, escaping, or interpolating a variable.
+const nginxUnsafeChars = `'\$`
+
+var errUnsafeRuntimeConfig = errors.New("UI runtime config contains ', \\ or $, which would break out of the nginx string it is served from")

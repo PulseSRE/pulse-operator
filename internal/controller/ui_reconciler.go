@@ -687,7 +687,7 @@ func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pul
 	// the caller writes status.
 	helmRunner := resolveHelmRunner(pulse)
 	setHelmRunnerCondition(pulse, helmRunner)
-	static := uiNginxStatic(uiRuntimeConfigJS(helmRunner))
+	static := uiNginxStatic(uiRuntimeConfigJS(ctx, helmRunner))
 
 	// The render-only listener (see render_reconciler.go): what a page needs
 	// to draw with the forwarded user's token, and nothing that carries the
