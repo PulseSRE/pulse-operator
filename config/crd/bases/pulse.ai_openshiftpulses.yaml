@@ -361,6 +361,20 @@ spec:
                   empty-object default makes the API server synthesize the parent so its
                   children's own defaults can fire.
                 properties:
+                  helmRunnerImage:
+                    description: |-
+                      HelmRunnerImage is the image the UI's Helm install, upgrade, rollback
+                      and uninstall Jobs run (pulse-ui's Dockerfile.helm-runner). The UI
+                      creates those Jobs, and their ServiceAccount and Role, as the signed-in
+                      user; the operator only tells it which image to use, through
+                      helmInstall.runnerImage in the UI's /config.js.
+
+                      Must be digest-pinned (<repository>@sha256:<64 hex>); the UI refuses
+                      anything else. Defaults to the digest this operator release pins
+                      (RELATED_IMAGE_HELM_RUNNER). When neither is set, or the value is not
+                      digest-pinned, nothing is served, Helm actions in the UI stay disabled,
+                      and the HelmRunnerImageConfigured condition says why.
+                    type: string
                   image:
                     type: string
                   oauthProxyImage:

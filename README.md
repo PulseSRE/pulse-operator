@@ -369,6 +369,7 @@ spec:
     image: quay.io/amobrem/openshiftpulse:latest
     replicas: 2
     oauthProxyImage: ""    # auto-detected from cluster ImageStream when empty
+    helmRunnerImage: ""    # image for the UI's Helm Jobs; must be @sha256:-pinned; default RELATED_IMAGE_HELM_RUNNER — see "Helm actions in the UI" below
     resources: {}
 
   # ── Database ─────────────────────────────────────────────────────────────────
@@ -467,6 +468,34 @@ more than they can already see. The operator enforces that with these pieces:
 Turning it off removes the render Deployment, Service, NetworkPolicy and
 token Secret, the agent env vars, and the UI listener.
 
+### Helm actions in the UI (spec.ui.helmRunnerImage)
+
+The UI's Helm install, upgrade, rollback and uninstall actions run as Jobs
+using pulse-ui's helm-runner image (`quay.io/amobrem/openshiftpulse-helm-runner`,
+built from `Dockerfile.helm-runner` on every pulse-ui release). The UI creates
+each Job, and the namespace's `openshiftpulse-helm-installer`
+ServiceAccount, Role and RoleBinding, as the signed-in user, so the operator
+needs no RBAC for it and grants none. The operator only tells the UI which
+image to use, in `/config.js`:
+
+```js
+window.__OPENSHIFTPULSE_CONFIG__={"helmInstall":{"runnerImage":"quay.io/amobrem/openshiftpulse-helm-runner@sha256:<digest>"}};
+```
+
+The image is `spec.ui.helmRunnerImage`, else the release pin
+`RELATED_IMAGE_HELM_RUNNER` on the operator. It must be digest-pinned
+(`<repository>@sha256:<64 hex>`), because the UI refuses anything else. When
+neither is set, or the value is not digest-pinned, `/config.js` is
+`window.__OPENSHIFTPULSE_CONFIG__={};`, the UI refuses Helm actions with its
+existing "Helm runner image must be digest-pinned" error, and
+the `HelmRunnerImageConfigured` condition says why (`NotSet` or
+`NotDigestPinned`). A CR value that is not digest-pinned is not replaced by the
+release pin. Changing the image restarts the UI pods, as any nginx config
+change does.
+
+Before this setting, `/config.js` assigned `window.__PULSE_CONFIG__`, which the
+UI never reads, so Helm actions failed on every operator install.
+
 ## CR Status
 
 ```yaml
@@ -501,6 +530,9 @@ status:
   - type: AgentUIVersionsMatch  # agent and UI image tags agree — see "Agent / UI image skew" below
     status: "True"
     reason: VersionsMatch
+  - type: HelmRunnerImageConfigured  # True/Pinned when the UI was given a digest-pinned Helm runner; False/NotSet or False/NotDigestPinned otherwise (Helm actions disabled) — see "Helm actions in the UI" above
+    status: "True"
+    reason: Pinned
   # - type: AgentVersionCompatible   # only present once spec.agent.minOperatorVersion is set — see "Agent-version compatibility gate" below
   #   status: "True"
   #   reason: Compatible
@@ -772,6 +804,18 @@ Before tagging, in one commit on `main`:
    multi-arch image, use the index digest). `go test ./internal/controller/`
    checks the CSV's two lists agree and are digests;
    `scripts/check-deploy-sync.py` checks `deploy/operator.yaml` against the CSV.
+4. Pin the Helm runner image the same way: `RELATED_IMAGE_HELM_RUNNER` in the
+   CSV and in `deploy/operator.yaml`, plus a `pulse-helm-runner` entry in
+   `spec.relatedImages`, set to
+   `quay.io/amobrem/openshiftpulse-helm-runner@sha256:<digest>` from the paired
+   pulse-ui release (`skopeo inspect --format '{{.Digest}}'
+   docker://quay.io/amobrem/openshiftpulse-helm-runner:vX.Y.Z`; pulse-ui's
+   `build-push.yml` run summary also records it). It is the one pin that may be
+   empty (`value: ""`, and no `relatedImages` entry): until a pulse-ui release
+   has published the image, leave it empty and Helm actions in the UI stay
+   disabled. Never commit a digest you have not resolved from the registry.
+   Once set, the same tests hold it to the operand rules (digest-pinned, listed
+   in `relatedImages`).
 
 Then tag to trigger CI publishing:
 
@@ -887,6 +931,8 @@ oc delete secret pulse-nginx -n openshiftpulse
 ### Which image each component runs
 
 Every image the operator deploys is the digest its release pins: `RELATED_IMAGE_*` on the manager, the same list as the bundle's `relatedImages` (what a disconnected mirror copies). An image set in the CR (`spec.agent.image`, `spec.agent.mcp.image`, ...) wins over the pin.
+
+The UI's Helm Jobs run `RELATED_IMAGE_HELM_RUNNER` (or `spec.ui.helmRunnerImage`), which the operator passes to the UI rather than deploying. Check what the UI was given with `oc get openshiftpulse pulse -n openshiftpulse -o jsonpath='{.status.conditions[?(@.type=="HelmRunnerImageConfigured")]}'`.
 
 ```bash
 oc get deploy pulse-mcp-server -n openshiftpulse -o jsonpath='{.spec.template.spec.containers[0].image}'   # <cr-name>-mcp-server

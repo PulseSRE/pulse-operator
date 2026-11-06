@@ -174,6 +174,10 @@ spec:
           value: docker.io/temporalio/auto-setup@sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5
         - name: RELATED_IMAGE_TEMPORAL_UI
           value: docker.io/temporalio/ui@sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703
+        # Helm runner for the UI's Helm Jobs, served in /config.js; same value
+        # as the CSV. Empty until a release pins it (Helm actions disabled).
+        - name: RELATED_IMAGE_HELM_RUNNER
+          value: ""
         # No --leader-elect: this Deployment runs a single replica (see
         # spec.replicas above), so leader election has no failover target to
         # protect against — it provides zero HA benefit here. What it does

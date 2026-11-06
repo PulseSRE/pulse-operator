@@ -308,6 +308,13 @@ spec:
                         value: docker.io/temporalio/auto-setup@sha256:9ce78f5a7ba7169acb659a8bb7a174a64251c3bfe1553d1fefdd669a59d41df5
                       - name: RELATED_IMAGE_TEMPORAL_UI
                         value: docker.io/temporalio/ui@sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703
+                      # Not an operand: the UI's Helm Jobs run it, and the
+                      # operator serves it to the UI in /config.js. Empty until
+                      # a release pins pulse-ui's helm-runner image; while it is
+                      # empty, Helm actions in the UI are disabled. Once set, it
+                      # needs a matching spec.relatedImages entry (pulse-helm-runner).
+                      - name: RELATED_IMAGE_HELM_RUNNER
+                        value: ""
                     ports:
                       - containerPort: 8082
                         name: metrics
