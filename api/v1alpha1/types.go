@@ -235,6 +235,22 @@ type UIConfig struct {
 	Replicas int32 `json:"replicas,omitempty"`
 	// +optional
 	OAuthProxyImage string `json:"oauthProxyImage,omitempty"`
+	// HelmRunnerImage is the image the UI's Helm install, upgrade, rollback
+	// and uninstall Jobs run (pulse-ui's Dockerfile.helm-runner). The UI
+	// creates those Jobs, and their ServiceAccount and Role, as the signed-in
+	// user; the operator only tells it which image to use, through
+	// helmInstall.runnerImage in the UI's /config.js.
+	//
+	// Must be digest-pinned (<repository>@sha256:<64 hex>); the UI refuses
+	// anything else. Defaults to the digest this operator release pins
+	// (RELATED_IMAGE_HELM_RUNNER). When neither is set, or the value is not
+	// digest-pinned, nothing is served, Helm actions in the UI stay disabled,
+	// and the HelmRunnerImageConfigured condition says why. The format is
+	// checked by the operator, not the CRD, so a bad value is reported in that
+	// condition rather than rejected at admission.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	HelmRunnerImage string `json:"helmRunnerImage,omitempty"`
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }

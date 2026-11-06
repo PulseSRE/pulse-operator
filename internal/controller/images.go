@@ -42,6 +42,11 @@ const (
 	envOAuthProxyImage = "RELATED_IMAGE_OAUTH_PROXY"
 	envTemporalImage   = "RELATED_IMAGE_TEMPORAL"
 	envTemporalUIImage = "RELATED_IMAGE_TEMPORAL_UI"
+	// Not an operand: the operator deploys nothing from it. The UI's Helm
+	// Jobs run it, and the operator passes the pin on through /config.js
+	// (see helm_runner.go). It has no compiled default, and may be empty in
+	// the CSV until a release pins one.
+	envHelmRunnerImage = "RELATED_IMAGE_HELM_RUNNER"
 )
 
 // imageFromEnv returns the operand image pinned by the bundle, falling back to

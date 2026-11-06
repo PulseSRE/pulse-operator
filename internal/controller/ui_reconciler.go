@@ -643,10 +643,15 @@ const uiNginxUserAuthProxies = `    # Kubernetes API proxy — UI reads cluster 
 
 `
 
-const uiNginxStatic = `    # Runtime config served by nginx (no disk file needed).
+// uiNginxStatic is the static-file tail of a server block. configJS is the
+// body of /config.js (uiRuntimeConfigJS); it goes inside a single-quoted nginx
+// string, so it must not contain ', \ or $ (helmRunnerImagePattern guarantees
+// that for the only variable part).
+func uiNginxStatic(configJS string) string {
+	return `    # Runtime config served by nginx (no disk file needed).
     location = /config.js {
       add_header Content-Type application/javascript;
-      return 200 'window.__PULSE_CONFIG__={};';
+      return 200 '` + configJS + `';
     }
     location /healthz { return 200 'OK\n'; add_header Content-Type text/plain; }
     location ~* \.(js|css|png|svg|ico|woff2?|ttf|eot|map)$ {
@@ -656,6 +661,7 @@ const uiNginxStatic = `    # Runtime config served by nginx (no disk file needed
     }
     location / { try_files $uri $uri/ /index.html; }
 `
+}
 
 func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) (string, error) {
 	name := uiNginxSecretName(pulse.Name)
@@ -676,6 +682,13 @@ func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pul
 
 	agentSvc := agentResourceName(pulse.Name) // e.g. "pulse-openshift-sre-agent"
 
+	// The Helm runner image the UI's Helm Jobs use, served in /config.js.
+	// The condition is set here because this is where the decision is made;
+	// the caller writes status.
+	helmRunner := resolveHelmRunner(pulse)
+	setHelmRunnerCondition(pulse, helmRunner)
+	static := uiNginxStatic(uiRuntimeConfigJS(ctx, helmRunner))
+
 	// The render-only listener (see render_reconciler.go): what a page needs
 	// to draw with the forwarded user's token, and nothing that carries the
 	// agent's credential. /api/agent/ answers 404 rather than falling through
@@ -692,7 +705,7 @@ func (r *UIReconciler) reconcileUINginxConfigMap(ctx context.Context, pulse *pul
 %s    location /api/agent/ { return 404; }
 
 %s  }
-`, uiRenderPort, uiNginxHeaders, uiNginxUserAuthProxies, uiNginxStatic)
+`, uiRenderPort, uiNginxHeaders, uiNginxUserAuthProxies, static)
 	}
 
 	nginxConf := fmt.Sprintf(`worker_processes auto;
@@ -756,7 +769,7 @@ http {
 
 %s  }
 %s}
-`, uiNginxHeaders, uiNginxUserAuthProxies, agentSvc, wsToken, agentSvc, wsToken, uiNginxStatic, renderServer)
+`, uiNginxHeaders, uiNginxUserAuthProxies, agentSvc, wsToken, agentSvc, wsToken, static, renderServer)
 	cm := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,

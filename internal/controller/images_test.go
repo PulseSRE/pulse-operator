@@ -54,6 +54,16 @@ var csvOperandImageEnvs = []string{
 	envTemporalUIImage,
 }
 
+// csvOptionalImageEnvs are RELATED_IMAGE_* pins the CSV must declare but may
+// leave empty: images the operator passes on rather than deploys, with no
+// compiled default. The Helm runner is empty until a release pins pulse-ui's
+// helm-runner build; empty means the UI's Helm actions stay disabled. Once
+// one is set, it is held to the same rules as an operand: digest-pinned (by
+// TestCSVOperandImagesArePinnedByDigest) and listed in spec.relatedImages.
+var csvOptionalImageEnvs = []string{
+	envHelmRunnerImage,
+}
+
 type csvDoc struct {
 	Spec struct {
 		RelatedImages []struct {
@@ -144,11 +154,22 @@ func TestCSVSetsEveryOperandImageEnv(t *testing.T) {
 		}
 	}
 
+	for _, want := range csvOptionalImageEnvs {
+		v, ok := present[want]
+		if !ok {
+			t.Errorf("CSV manager container is missing env %s — declare it (empty until a release pins it) so the pin has one place to go", want)
+			continue
+		}
+		if v != "" && !helmRunnerImagePattern.MatchString(v) {
+			t.Errorf("CSV env %s=%q is not digest-pinned", want, v)
+		}
+	}
+
 	related := map[string]bool{}
 	for _, r := range doc.Spec.RelatedImages {
 		related[r.Image] = true
 	}
-	for _, name := range csvOperandImageEnvs {
+	for _, name := range append(append([]string{}, csvOperandImageEnvs...), csvOptionalImageEnvs...) {
 		v := present[name]
 		if v != "" && !related[v] {
 			t.Errorf("env %s=%q has no matching spec.relatedImages entry; it will not be mirrored for disconnected installs", name, v)
