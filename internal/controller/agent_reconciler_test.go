@@ -309,6 +309,58 @@ var _ = Describe("AgentReconciler", func() {
 		}
 	})
 
+	// RBAC change history (pulse-agent Wave 16) lists SCCs and admission
+	// webhook configurations as the agent's service account. Without these
+	// reads those three kinds were always "unwatched" on operator installs.
+	It("lets RBAC change history read SCCs and webhook configurations, read-only", func() {
+		Expect(reconciler.reconcileClusterRole(ctx, cr)).To(Succeed())
+
+		role := &rbacv1.ClusterRole{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, role)).To(Succeed())
+
+		var historyRules []rbacv1.PolicyRule
+		for _, rule := range role.Rules {
+			if slices.Contains(rule.APIGroups, "security.openshift.io") ||
+				slices.Contains(rule.APIGroups, "admissionregistration.k8s.io") {
+				historyRules = append(historyRules, rule)
+			}
+		}
+		Expect(historyRules).To(ConsistOf(
+			rbacv1.PolicyRule{
+				APIGroups: []string{"security.openshift.io"},
+				Resources: []string{"securitycontextconstraints"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			rbacv1.PolicyRule{
+				APIGroups: []string{"admissionregistration.k8s.io"},
+				Resources: []string{"validatingwebhookconfigurations", "mutatingwebhookconfigurations"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+		), "exactly these rules for these groups: no other resources, no write verbs")
+	})
+
+	It("never grants a wildcard, and write verbs only through the opt-in flags", func() {
+		cr.Spec.Agent.AllowWriteOperations = true
+		Expect(reconciler.reconcileClusterRole(ctx, cr)).To(Succeed())
+
+		role := &rbacv1.ClusterRole{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, role)).To(Succeed())
+
+		readVerbs := []string{"get", "list", "watch"}
+		for _, rule := range role.Rules {
+			Expect(rule.APIGroups).NotTo(ContainElement("*"))
+			Expect(rule.Resources).NotTo(ContainElement("*"))
+			Expect(rule.Verbs).NotTo(ContainElement("*"))
+			Expect(rule.NonResourceURLs).To(BeEmpty())
+			Expect(rule.ResourceNames).To(BeEmpty())
+			if slices.Contains(rule.APIGroups, "security.openshift.io") ||
+				slices.Contains(rule.APIGroups, "admissionregistration.k8s.io") {
+				// Even with allowWriteOperations on: SCCs and webhooks stay read-only.
+				Expect(readVerbs).To(ContainElements(rule.Verbs), "%v/%v must stay read-only", rule.APIGroups, rule.Resources)
+			}
+		}
+	})
+
 	It("does not hand the agent any authorisation power along with authentication", func() {
 		// TokenReview answers "who is this"; SubjectAccessReview answers "may
 		// they". The agent needs the first and must not quietly acquire the
