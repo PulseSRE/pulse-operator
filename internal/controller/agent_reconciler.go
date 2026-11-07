@@ -413,6 +413,24 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"apirequestcounts"},
 				Verbs:     []string{"get", "list"},
 			},
+			// RBAC change history (pulse-agent Wave 16) keeps an observed
+			// version history of Roles, ClusterRoles, their bindings, SCCs and
+			// admission webhook configurations, listing each kind as the
+			// agent's service account on every audit scan. The RBAC kinds are
+			// covered above; without these two rules SCC and webhook history
+			// was always reported "unwatched". Read-only, cluster-scoped. An
+			// SCC change or a new mutating webhook is exactly the kind of
+			// privilege change an incident review needs to see.
+			{
+				APIGroups: []string{"security.openshift.io"},
+				Resources: []string{"securitycontextconstraints"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"admissionregistration.k8s.io"},
+				Resources: []string{"validatingwebhookconfigurations", "mutatingwebhookconfigurations"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
 			// The agent reads its own OpenShiftPulse to report how it is
 			// configured — which MCP toolsets are enabled, most visibly. Denied
 			// this, the lookup returns 403, the agent cannot tell "forbidden"
