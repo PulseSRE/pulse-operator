@@ -1,16 +1,16 @@
 module github.com/PulseSRE/pulse-operator
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
-	github.com/onsi/ginkgo/v2 v2.33.1
+	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/openshift/api v0.0.0-20260813212709-d4bb0b443cb8
 	github.com/prometheus/client_golang v1.25.0
-	k8s.io/api v0.37.1
-	k8s.io/apimachinery v0.37.1
-	k8s.io/client-go v0.37.1
+	k8s.io/api v0.37.2
+	k8s.io/apimachinery v0.37.2
+	k8s.io/client-go v0.37.2
 	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/yaml v1.6.0
 )
