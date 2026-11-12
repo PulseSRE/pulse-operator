@@ -14,7 +14,7 @@ OpenShiftPulse CR → operator reconciliation → verify installation and provid
 
 [![Watch the 37-second video of the Pulse operator](docs/assets/pulse-operator-poster.jpg)](https://pulsesre.github.io/pulse-operator/#film)
 
-<sub>37-second video of what the operator installs and keeps in step, no sound.</sub>
+<sub>37-second video of what the operator installs and keeps in step, with narration.</sub>
 
 ---
 
