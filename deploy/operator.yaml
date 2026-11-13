@@ -157,7 +157,7 @@ spec:
         # CI). Not :latest, which moves independently of the operand digests
         # below. To run a dev build: edit this line, or `oc set image` after
         # `make deploy`.
-        image: quay.io/amobrem/pulse-operator:v0.13.0
+        image: quay.io/amobrem/pulse-operator:v0.14.0
         # Operand images, digest-pinned to match the CSV's RELATED_IMAGE_*
         # env and spec.relatedImages. Kept here too so a non-OLM install
         # (kubectl apply -f deploy/) deploys the same operands an OLM install
@@ -165,13 +165,13 @@ spec:
         # compiled into the binary.
         env:
         - name: RELATED_IMAGE_AGENT
-          value: quay.io/amobrem/pulse-agent@sha256:de33bd64ed167dde91789094190537aba9c1d29f4dbe591edcb813cde64ec412
+          value: quay.io/amobrem/pulse-agent@sha256:b153cec6f1654e4f59e85e84667da67cddceec89d2ad9537036c852645288411
         - name: RELATED_IMAGE_UI
-          value: quay.io/amobrem/openshiftpulse@sha256:ec96fb240cb653de352c011b5eed0502ae09f4e5b0cde4a971c03b994c783a22
+          value: quay.io/amobrem/openshiftpulse@sha256:18ff35c017e85ece0ff9272cd05183d649ce3091d45e61a27df295d7b508fc7a
         - name: RELATED_IMAGE_MCP_SERVER
-          value: quay.io/amobrem/pulse-agent@sha256:6fcf1373aa5e9422b034219bf19ff1eb4245de631600f1806c3dd8405bf9dd2a
+          value: quay.io/amobrem/pulse-agent@sha256:46eb854a913c470701d0980b143ccffe112a869f3ed336dde30834e8d703784c
         - name: RELATED_IMAGE_RENDER
-          value: quay.io/amobrem/openshiftpulse-render@sha256:cec17637e6165c3b354f68438ad6e7ef17cac205ac3001856036a023bad37673
+          value: quay.io/amobrem/openshiftpulse-render@sha256:b47d8646a6c5f3199d8599867c50f6b6dd5fd8604801f88ce7a1c5d188ce63b5
         - name: RELATED_IMAGE_POSTGRESQL
           value: registry.redhat.io/rhel9/postgresql-15@sha256:cb2b214b470dfb39e19d6d71819844e855c52435c78deea025c1e0650ad175f8
         - name: RELATED_IMAGE_OAUTH_PROXY
@@ -183,7 +183,7 @@ spec:
         # Helm runner for the UI's Helm Jobs, served in /config.js; same value
         # as the CSV. Empty until a release pins it (Helm actions disabled).
         - name: RELATED_IMAGE_HELM_RUNNER
-          value: ""
+          value: quay.io/amobrem/openshiftpulse-helm-runner@sha256:a73405952c047aa14f7e61fe9b833956671b3a26cebedaa2317332fe7923fd11
         # No --leader-elect: this Deployment runs a single replica (see
         # spec.replicas above), so leader election has no failover target to
         # protect against — it provides zero HA benefit here. What it does

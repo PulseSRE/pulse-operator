@@ -7,6 +7,19 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+## v0.14.0 (2026-11-12)
+
+Pairs with pulse-agent and pulse-ui v2.38.0, whose Helm actions and RBAC change history need this release. **On upgrade** the agent and console Deployments roll once, to the v2.38.0 images.
+
+**Security.** Upgrading changes what the agent may read: two new read-only grants on its ClusterRole, `securitycontextconstraints.security.openshift.io` and `validatingwebhookconfigurations`/`mutatingwebhookconfigurations` (`get`/`list`/`watch`). No write verb is added.
+
+**Operands pinned by digest** (CSV `relatedImages`, the manager's `RELATED_IMAGE_*` and `deploy/operator.yaml`):
+- agent `pulse-agent@sha256:b153cec6` (v2.38.0), UI `openshiftpulse@sha256:18ff35c0` (v2.38.0), MCP server `pulse-agent@sha256:46eb854a` (mcp-server-v2.38.0).
+- **Helm runner `openshiftpulse-helm-runner@sha256:a7340595` (v2.38.0), pinned for the first time**, so Helm actions are on by default on operator installs.
+- **Render `openshiftpulse-render@sha256:b47d8646` (v2.38.0).** It had stayed at v2.36.0's build through v0.13.0.
+
+Also in this release: Dependabot updates to the Kubernetes libraries (#125) and Ginkgo 2.34.0 (#129).
+
 - **Security: Go 1.26.10 → 1.26.11** for GO-2026-6859 (HTTP/1 server crash from a `MaxBytesReader` header race in `net/http`), which `govulncheck` began reporting after it was published. The operator serves HTTP (metrics, health probes) and calls the API server over HTTP, so it is reachable. `go.mod` now requires go 1.26.11; the UBI9 go-toolset builder fetches it through `GOTOOLCHAIN=auto` as before.
 - **The agent can read SCCs and admission webhook configurations, for RBAC change history.** pulse-agent's RBAC change history (Wave 16) keeps an observed version history of Roles, ClusterRoles, RoleBindings, ClusterRoleBindings, SecurityContextConstraints and Validating/MutatingWebhookConfigurations by listing each kind as the agent's service account. The agent's ClusterRole granted no reads in `security.openshift.io` or `admissionregistration.k8s.io`, so on operator installs SCC and webhook history was always reported "unwatched". The agent's ClusterRole now carries `get`/`list`/`watch` on `securitycontextconstraints`, `validatingwebhookconfigurations` and `mutatingwebhookconfigurations`, and the operator's own ClusterRole (`config/rbac/role.yaml`, mirrored into `deploy/operator.yaml` and the CSV) holds the same, as the RBAC escalation check requires. Read-only and cluster-scoped: no write verbs (also with `allowWriteOperations`), no wildcards, no other resources; tests assert it. Upgrading the operator updates the role on the next reconcile.
 - **Security: `golang.org/x/net` v0.60.0 → v0.62.0** for CVE-2026-78661 (HIGH, denial of service in `x/net/html`), which Trivy's container scan began reporting after it was published. `go mod tidy` also moves `x/sync` v0.24.0, `x/sys` v0.49.0, `x/term` v0.47.0, `x/text` v0.43.0 and `x/tools` v0.51.0, the versions x/net v0.62.0 and its dependencies require.
