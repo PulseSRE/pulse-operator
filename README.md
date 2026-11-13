@@ -12,9 +12,9 @@ A Kubernetes Operator that deploys and manages the complete [OpenShift Pulse](ht
 OpenShiftPulse CR → operator reconciliation → verify installation and provider access
 ```
 
-[![Watch the 30-second overview of Pulse](https://pulsesre.github.io/pulse-agent/media/video-thumb.jpg)](https://pulsesre.github.io/pulse-agent/#film)
+[![Watch the 37-second video of the Pulse operator](docs/assets/pulse-operator-poster.jpg)](https://pulsesre.github.io/pulse-operator/#film)
 
-<sub>30-second overview of what the operator installs, no sound.</sub>
+<sub>37-second video of what the operator installs and keeps in step, with narration.</sub>
 
 ---
 
