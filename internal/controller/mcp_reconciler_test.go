@@ -270,7 +270,7 @@ func TestBuildMCPConfigTOMLGolden(t *testing.T) {
 			want: "# Managed by pulse-operator. Edits are reverted.\n" +
 				"port = \"8081\"\n" +
 				`toolsets = ["core", "config", "helm", "observability/metrics", "observability/logs", ` +
-				`"openshift", "ossm", "netedge", "tekton", "kubevirt", "kcp", "cluster-diagnostics"]` + "\n" +
+				`"ossm", "netedge", "tekton", "kubevirt", "kcp", "cluster-diagnostics"]` + "\n" +
 				"read_only = true\n" + disabled,
 		},
 		{
@@ -356,3 +356,28 @@ var _ = Describe("MCP config read-only settings", func() {
 			"the pod template must carry the hash of this config so the change rolls the server")
 	})
 })
+
+// upstreamMCPToolsets are the toolset names openshift/openshift-mcp-server
+// registers at 0e36b241ccf768bdc3eb64df2afcd5257c19061d, the MCP_SERVER_REF
+// pulse-agent's MCP image is built from (GetName() of each toolset imported by
+// pkg/mcp/modules.go and pkg/mcp/openshift_modules.go; kiali registers as
+// "ossm" in this build). Update it when that ref moves.
+var upstreamMCPToolsets = []string{
+	"cluster-diagnostics", "cni-diagnostics", "config", "core", "helm", "kcp",
+	"kubevirt", "netedge", "netobserv", "oadp", "observability/logs",
+	"observability/metrics", "observability/otelcol", "observability/traces",
+	"openshift/mustgather", "ossm", "ovn-kubernetes", "tekton",
+}
+
+// TestDefaultMCPToolsetsAreRegistered: the server validates its toolset list
+// at startup and exits on any unknown name, so one bad default leaves every
+// CR that does not set spec.agent.mcp.toolsets with an MCP sidecar that never
+// starts. That happened with "openshift".
+func TestDefaultMCPToolsetsAreRegistered(t *testing.T) {
+	for _, name := range strings.Split(defaultMCPToolsets, ",") {
+		name = strings.TrimSpace(name)
+		if !slices.Contains(upstreamMCPToolsets, name) {
+			t.Errorf("default MCP toolset %q is not registered by openshift-mcp-server 0e36b24; the server would exit with \"invalid toolset name\"", name)
+		}
+	}
+}

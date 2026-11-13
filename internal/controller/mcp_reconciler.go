@@ -30,10 +30,17 @@ const (
 	// install runs RELATED_IMAGE_MCP_SERVER (see images.go).
 	defaultMCPServerImage = "quay.io/amobrem/pulse-agent:mcp-server"
 	mcpServerPort         = int32(8081)
-	// defaultMCPToolsets is the full SRE toolset matching the documented 36-tool count.
-	// Matches: core(default)+config(default)+helm+observability/metrics+observability/logs+
-	// openshift+ossm+netedge+tekton+kubevirt+kcp+cluster-diagnostics
-	defaultMCPToolsets = "core,config,helm,observability/metrics,observability/logs,openshift,ossm,netedge,tekton,kubevirt,kcp,cluster-diagnostics"
+	// defaultMCPToolsets is the SRE toolset set enabled when spec.agent.mcp.toolsets
+	// is empty: core(default)+config(default)+helm+observability/metrics+
+	// observability/logs+ossm+netedge+tekton+kubevirt+kcp+cluster-diagnostics.
+	//
+	// Every name must be a toolset the server registers: it validates the list
+	// at startup and exits on an unknown name ("invalid toolset name"). This
+	// list used to include "openshift", which openshift-mcp-server does not
+	// register (it has "openshift/mustgather"), so a CR that left toolsets
+	// empty got a sidecar that could not start. TestDefaultMCPToolsetsAreRegistered
+	// checks the list against upstream's names.
+	defaultMCPToolsets = "core,config,helm,observability/metrics,observability/logs,ossm,netedge,tekton,kubevirt,kcp,cluster-diagnostics"
 
 	// Where the generated TOML is mounted and what it is called. The server
 	// resolves a relative --config against its working directory, so this is
@@ -139,7 +146,7 @@ func (r *MCPReconciler) reconcileMCPServiceAccount(ctx context.Context, pulse *p
 // of AgentReconciler.reconcileClusterRole's set (which the MCP toolsets
 // overlap heavily with for cluster-diagnostics/observability) plus the
 // OpenShift platform resources (routes, clusteroperators, clusterversions)
-// the "openshift" toolset needs, which the agent's role does not carry.
+// OpenShift-specific toolsets need, which the agent's role does not carry.
 func (r *MCPReconciler) reconcileMCPClusterRole(ctx context.Context, pulse *pulsev1alpha1.OpenShiftPulse) error {
 	name := mcpClusterRoleName(pulse.Name, pulse.Namespace)
 	if err := deleteStaleUnqualifiedClusterScopedResource(ctx, r.Client, &rbacv1.ClusterRole{}, mcpResourceName(pulse.Name), pulse); err != nil {
