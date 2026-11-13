@@ -14,7 +14,7 @@
 <body>
 <header class="wrap"><nav class="sites" aria-label="Pulse projects">
 <a class="mark" href="https://github.com/PulseSRE"><svg viewBox="0 0 68 36" aria-hidden="true"><path d="M0 20 H18 L22 24 L28 3 L34 32 L38 20 H50 L54 15 L58 20 H68" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Pulse</span></a>
-<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.14.0</span>
+<a class="site" href="https://pulsesre.github.io/pulse-agent/">Agent</a><a class="site" href="https://pulsesre.github.io/pulse-ui/">UI</a><a class="site" href="https://pulsesre.github.io/pulse-operator/" aria-current="page">Operator</a><a class="site" href="https://pulsesre.github.io/sre-bench/">SRE-Bench</a><span class="ver">operator v0.14.1</span>
 </nav></header>
 <main>
 <section class="hero wrap" aria-labelledby="title">
@@ -36,11 +36,11 @@
     <span class="k">projectId:</span> my-gcp-project
     <span class="k">region:</span> us-east5
     <span class="k">credentialSecret:</span> gcp-sa-key</code></pre><div class="what"><b>The Claude backend</b><span>Vertex AI by reference to a Secret you create, or an Anthropic API key. The operator never copies the credential into the resource.</span></div></div><div class="row"><pre><code>  <span class="k">agent:</span>
-    <span class="k">image:</span> <span class="v">quay.io/amobrem/pulse-agent:v2.38.0</span>
+    <span class="k">image:</span> <span class="v">quay.io/amobrem/pulse-agent:v2.38.1</span>
     <span class="k">trustLevel:</span> 2
     <span class="k">allowWriteOperations:</span> false
     <span class="k">adminUsers:</span> "kube:admin"</code></pre><div class="what"><b>The agent</b><span>Deployment, Service, token Secret and memory volume, and a read-only ClusterRole. Writes stay off until you allow them. Only the users you list can edit skills, approve or resume monitor fixes, and import, correct or forget what the agent remembers; left empty, any signed-in user can.</span></div></div><div class="row"><pre><code>  <span class="k">ui:</span>
-    <span class="k">image:</span> <span class="v">quay.io/amobrem/openshiftpulse:v2.38.0</span>
+    <span class="k">image:</span> <span class="v">quay.io/amobrem/openshiftpulse:v2.38.1</span>
     <span class="k">replicas:</span> 2</code></pre><div class="what"><b>The console</b><span>nginx and an OpenShift OAuth proxy behind a Route and an OAuthClient. With more than one replica it also gets a disruption budget, removed again if you scale back to one.</span></div></div><div class="row"><pre><code>  <span class="k">database:</span>
     <span class="k">storageSize:</span> 5Gi</code></pre><div class="what"><b>PostgreSQL</b><span>A StatefulSet and its volume. The data volume and password Secret are kept when the resource is deleted, so a reinstall finds its history.</span></div></div><div class="row"><pre><code>  <span class="k">monitoring:</span>
     <span class="k">enabled:</span> true</code></pre><div class="what"><b>Monitoring<span class="opt">optional</span></b><span>A ServiceMonitor for the agent's metrics and alerts for when the agent or the database is down.</span></div></div><div class="row"><pre><code>  <span class="c"># inside agent:</span>
@@ -99,6 +99,12 @@
 <section class="block" aria-labelledby="new">
 <div class="wrap">
 <h2 id="new">What's new</h2>
+<div class="release">
+<p class="when"><strong>v0.14.1</strong>12 November 2026<br>Pairs with agent and UI v2.38.1<br>The agent and console restart once on upgrade</p>
+<ul>
+<li style="--c:var(--ask)"><b>Runs agent and UI v2.38.1.</b> <span>Only the image pins change. In the new agent, a request to delete a pod in a protected namespace stops every write in that turn, not just the deletion.</span></li>
+</ul>
+</div>
 <div class="release">
 <p class="when"><strong>v0.14.0</strong>12 November 2026<br>Pairs with agent and UI v2.38.0<br>The agent gains read access to SCCs and webhook configurations. The agent and console restart once on upgrade</p>
 <ul>
@@ -172,7 +178,7 @@
 </section>
 </main>
 <footer><div class="wrap">
-<span>Pulse operator v0.14.0. MIT licensed.</span>
+<span>Pulse operator v0.14.1. MIT licensed.</span>
 <span><a href="https://github.com/PulseSRE/pulse-operator">Source</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/releases">Releases</a> &nbsp; <a href="https://github.com/PulseSRE/pulse-operator/blob/main/CHANGELOG.md">Changelog</a></span>
 </div></footer>
 </body>

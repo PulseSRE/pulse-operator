@@ -7,6 +7,12 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+## v0.14.1 (2026-11-12)
+
+Pairs with pulse-agent and pulse-ui v2.38.1. Only the operand pins change; no CRD, RBAC or controller changes. **On upgrade** the agent and console Deployments roll once, to the v2.38.1 images. Agent v2.38.1 refuses every write in a turn that asks to delete a pod in a protected namespace (pulse-agent#245); it has no migrations.
+
+**Operands pinned by digest** (CSV `relatedImages`, the manager's `RELATED_IMAGE_*` and `deploy/operator.yaml`): agent `pulse-agent@sha256:a3c56766`, UI `openshiftpulse@sha256:f5259ccc`, MCP server `pulse-agent@sha256:1da4d677` (mcp-server-v2.38.1), Helm runner `openshiftpulse-helm-runner@sha256:e4d84345`, render `openshiftpulse-render@sha256:282b945b`, all v2.38.1. Also: a new operator video on the docs site (#131).
+
 ## v0.14.0 (2026-11-12)
 
 Pairs with pulse-agent and pulse-ui v2.38.0, whose Helm actions and RBAC change history need this release. **On upgrade** the agent and console Deployments roll once, to the v2.38.0 images.
