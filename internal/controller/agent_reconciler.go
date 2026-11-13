@@ -413,6 +413,17 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"apirequestcounts"},
 				Verbs:     []string{"get", "list"},
 			},
+			// The operator-approvals inbox generator (pulse-agent#253) lists
+			// InstallPlans awaiting manual approval and the Subscriptions that
+			// own them, so a stalled operator upgrade shows up in the Inbox
+			// instead of waiting unnoticed. Read-only, deliberately: approving
+			// an InstallPlan is a patch, and that stays with a person in the
+			// console. No write verb, also with allowWriteOperations.
+			{
+				APIGroups: []string{"operators.coreos.com"},
+				Resources: []string{"installplans", "subscriptions"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
 			// RBAC change history (pulse-agent Wave 16) keeps an observed
 			// version history of Roles, ClusterRoles, their bindings, SCCs and
 			// admission webhook configurations, listing each kind as the

@@ -380,14 +380,68 @@ func mcpConfigName(crName string) string {
 	return mcpResourceName(crName) + "-config"
 }
 
-// buildMCPConfigTOML renders the settings that used to be --port and
-// --toolsets. The upstream keys are `port` (a string; empty means stdio) and
-// `toolsets` (an array of strings) — see pkg/config.Config in
-// openshift/openshift-mcp-server.
+// mcpDisabledTools are hidden from the MCP server's tool list even though it
+// annotates them readOnlyHint=true, so `read_only = true` alone lets them
+// through. Each one runs a command inside a pod (pods_exec, the netedge router
+// and DNS tools, the ovn-kubernetes ovn_*/ovs_* tools exec into ovnkube pods)
+// or starts a privileged debug pod on a node (nodes_debug_exec, the
+// cni-diagnostics kernel and network tools), with the MCP service account's
+// authority. "It only reads" is not something an exec can promise.
 //
-// This is written by hand rather than with a TOML library because it is two
-// scalar keys and adding a dependency to emit them is not worth it; the values
-// are a fixed int and a comma-separated list the CRD already constrains.
+// This mirrors the exec and debug-pod entries of MCP_WITHHELD_TOOLS in
+// pulse-agent's sre_agent/mcp_tool_policy.py (pulse-agent#256), which withholds
+// them on the agent side; hiding them here as well means a client other than
+// the agent cannot reach them through the sidecar either. Names are exact:
+// upstream matches disabled_tools with slices.Contains, no globs. Checked
+// against openshift/openshift-mcp-server 0e36b24 (pulse-agent's MCP_SERVER_REF).
+//
+// configuration_view comes first because it is the downstream build's own
+// default for disabled_tools (pkg/config/config_default_overrides.go). Setting
+// the key replaces that default rather than adding to it, so leaving it out
+// would expose a tool the server hides today.
+var mcpDisabledTools = []string{
+	"configuration_view",
+	// core
+	"pods_exec",
+	// cluster-diagnostics
+	"nodes_debug_exec",
+	// cni-diagnostics
+	"get-conntrack",
+	"get-ip",
+	"get-iptables",
+	"get-nft",
+	"pwru",
+	"tcpdump",
+	// netedge
+	"exec_dns_in_pod",
+	"get_router_config",
+	"get_router_info",
+	"get_router_sessions",
+	// ovn-kubernetes
+	"ovn_get",
+	"ovn_lflow_list",
+	"ovn_show",
+	"ovn_trace",
+	"ovs_appctl",
+	"ovs_ofctl",
+	"ovs_vsctl",
+}
+
+// buildMCPConfigTOML renders the server's settings. The upstream keys (see
+// pkg/config.Config in openshift/openshift-mcp-server) are `port` (a string;
+// empty means stdio), `toolsets` (an array of strings), `read_only` (expose
+// only tools annotated readOnlyHint=true) and `disabled_tools` (exact tool
+// names to hide).
+//
+// read_only is already the downstream build's default; it is written out so
+// that the sidecar stays read-only if that default ever changes. The agent
+// only offers MCP reads, and changes go through its own confirm-gated write
+// tools, which run with the user's token rather than the MCP service account.
+//
+// This is written by hand rather than with a TOML library because it is a
+// handful of keys and adding a dependency to emit them is not worth it; the
+// values are a fixed int, a fixed bool, a fixed list and a comma-separated
+// list the CRD already constrains.
 func buildMCPConfigTOML(pulse *pulsev1alpha1.OpenShiftPulse) string {
 	toolsets := pulse.Spec.Agent.MCP.Toolsets
 	if toolsets == "" {
@@ -399,8 +453,13 @@ func buildMCPConfigTOML(pulse *pulsev1alpha1.OpenShiftPulse) string {
 			quoted = append(quoted, strconv.Quote(t))
 		}
 	}
-	return fmt.Sprintf("# Managed by pulse-operator. Edits are reverted.\nport = %q\ntoolsets = [%s]\n",
-		strconv.Itoa(int(mcpServerPort)), strings.Join(quoted, ", "))
+	disabled := make([]string, 0, len(mcpDisabledTools))
+	for _, t := range mcpDisabledTools {
+		disabled = append(disabled, strconv.Quote(t))
+	}
+	return fmt.Sprintf("# Managed by pulse-operator. Edits are reverted.\n"+
+		"port = %q\ntoolsets = [%s]\nread_only = true\ndisabled_tools = [%s]\n",
+		strconv.Itoa(int(mcpServerPort)), strings.Join(quoted, ", "), strings.Join(disabled, ", "))
 }
 
 // reconcileMCPConfig writes the TOML the server reads at startup and returns a

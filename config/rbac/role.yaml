@@ -136,6 +136,11 @@ rules:
 - apiGroups: [apiserver.openshift.io]
   resources: [apirequestcounts]
   verbs: [get, list]
+# Read-only: granted on to the agent's ClusterRole for the operator-approvals
+# inbox generator (InstallPlans awaiting manual approval, pulse-agent#253).
+- apiGroups: [operators.coreos.com]
+  resources: [installplans, subscriptions]
+  verbs: [get, list, watch]
 # Read-only: granted on to the agent's ClusterRole for RBAC change history
 # (SCC and admission webhook versions, pulse-agent Wave 16).
 - apiGroups: [security.openshift.io]
