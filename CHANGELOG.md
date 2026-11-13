@@ -9,14 +9,14 @@ actually contains, taken from its commits.
 
 ## v0.14.0 (2026-11-12)
 
-Pairs with pulse-agent and pulse-ui v2.38.0, whose Helm actions and RBAC change history need this release. **On upgrade** the agent and console Deployments roll once, to the v2.38.0 images.
+Pairs with pulse-agent and pulse-ui v2.38.1, whose Helm actions and RBAC change history need this release. **On upgrade** the agent and console Deployments roll once, to the v2.38.1 images.
 
 **Security.** Upgrading changes what the agent may read: two new read-only grants on its ClusterRole, `securitycontextconstraints.security.openshift.io` and `validatingwebhookconfigurations`/`mutatingwebhookconfigurations` (`get`/`list`/`watch`). No write verb is added.
 
 **Operands pinned by digest** (CSV `relatedImages`, the manager's `RELATED_IMAGE_*` and `deploy/operator.yaml`):
-- agent `pulse-agent@sha256:b153cec6` (v2.38.0), UI `openshiftpulse@sha256:18ff35c0` (v2.38.0), MCP server `pulse-agent@sha256:46eb854a` (mcp-server-v2.38.0).
-- **Helm runner `openshiftpulse-helm-runner@sha256:a7340595` (v2.38.0), pinned for the first time**, so Helm actions are on by default on operator installs.
-- **Render `openshiftpulse-render@sha256:b47d8646` (v2.38.0).** It had stayed at v2.36.0's build through v0.13.0.
+- agent `pulse-agent@sha256:a3c56766` (v2.38.1), UI `openshiftpulse@sha256:f5259ccc` (v2.38.1), MCP server `pulse-agent@sha256:1da4d677` (mcp-server-v2.38.1).
+- **Helm runner `openshiftpulse-helm-runner@sha256:e4d84345` (v2.38.1), pinned for the first time**, so Helm actions are on by default on operator installs.
+- **Render `openshiftpulse-render@sha256:282b945b` (v2.38.1).** It had stayed at v2.36.0's build through v0.13.0.
 
 Also in this release: Dependabot updates to the Kubernetes libraries (#125) and Ginkgo 2.34.0 (#129).
 
