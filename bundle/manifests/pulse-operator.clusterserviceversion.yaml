@@ -299,13 +299,13 @@ spec:
                     # in sync.
                     env:
                       - name: RELATED_IMAGE_AGENT
-                        value: quay.io/amobrem/pulse-agent@sha256:a3c56766641784c70839716f07c6cc0be3e21c481f8bf9b7e91ceaa6033aca13
+                        value: quay.io/amobrem/pulse-agent@sha256:3df698aa296677f062dac5c13d04fafde0e9636cb77d58e5238d0df3a88c053a
                       - name: RELATED_IMAGE_UI
-                        value: quay.io/amobrem/openshiftpulse@sha256:f5259ccc2c2f22e0c6e15f27225bf7a8b9e96d947216d5d775129860ac12eb8f
+                        value: quay.io/amobrem/openshiftpulse@sha256:e4caeae122b83038c6e682c27c063550ad17ec95c9e81425ead0fef609e13a9f
                       - name: RELATED_IMAGE_MCP_SERVER
-                        value: quay.io/amobrem/pulse-agent@sha256:1da4d677b499d2612deea7d054b80c38ad4c04700f7390e41c6059fabbea6d72
+                        value: quay.io/amobrem/pulse-agent@sha256:c5632871f3b0e4d878f2990cceed580de573fd9cc0ad71ae3b2e9b72652c6759
                       - name: RELATED_IMAGE_RENDER
-                        value: quay.io/amobrem/openshiftpulse-render@sha256:282b945b78572363f876315f160776d4a6cc6df168b08876b31deca5097a8b97
+                        value: quay.io/amobrem/openshiftpulse-render@sha256:3dfab6e76aea79c9a57a2402bebd735dc826b4bb02eb70a393fb533dc4b72c9e
                       - name: RELATED_IMAGE_POSTGRESQL
                         value: registry.redhat.io/rhel9/postgresql-15@sha256:cb2b214b470dfb39e19d6d71819844e855c52435c78deea025c1e0650ad175f8
                       - name: RELATED_IMAGE_OAUTH_PROXY
@@ -320,7 +320,7 @@ spec:
                       # empty, Helm actions in the UI are disabled. Once set, it
                       # needs a matching spec.relatedImages entry (pulse-helm-runner).
                       - name: RELATED_IMAGE_HELM_RUNNER
-                        value: quay.io/amobrem/openshiftpulse-helm-runner@sha256:e4d843456105322b8dcfe4556728b5a06d3cf70d7f0613836025dc6974749984
+                        value: quay.io/amobrem/openshiftpulse-helm-runner@sha256:42301452932e160776881fbf16ab4cc39d5ba167d26fcc03d10e3e31da93eb4d
                     ports:
                       - containerPort: 8082
                         name: metrics
@@ -422,13 +422,13 @@ spec:
   # a running deployment is what took the MCP server down.
   relatedImages:
     - name: pulse-agent
-      image: quay.io/amobrem/pulse-agent@sha256:a3c56766641784c70839716f07c6cc0be3e21c481f8bf9b7e91ceaa6033aca13
+      image: quay.io/amobrem/pulse-agent@sha256:3df698aa296677f062dac5c13d04fafde0e9636cb77d58e5238d0df3a88c053a
     - name: pulse-ui
-      image: quay.io/amobrem/openshiftpulse@sha256:f5259ccc2c2f22e0c6e15f27225bf7a8b9e96d947216d5d775129860ac12eb8f
+      image: quay.io/amobrem/openshiftpulse@sha256:e4caeae122b83038c6e682c27c063550ad17ec95c9e81425ead0fef609e13a9f
     - name: pulse-mcp-server
-      image: quay.io/amobrem/pulse-agent@sha256:1da4d677b499d2612deea7d054b80c38ad4c04700f7390e41c6059fabbea6d72
+      image: quay.io/amobrem/pulse-agent@sha256:c5632871f3b0e4d878f2990cceed580de573fd9cc0ad71ae3b2e9b72652c6759
     - name: pulse-render
-      image: quay.io/amobrem/openshiftpulse-render@sha256:282b945b78572363f876315f160776d4a6cc6df168b08876b31deca5097a8b97
+      image: quay.io/amobrem/openshiftpulse-render@sha256:3dfab6e76aea79c9a57a2402bebd735dc826b4bb02eb70a393fb533dc4b72c9e
     - name: postgresql
       image: registry.redhat.io/rhel9/postgresql-15@sha256:cb2b214b470dfb39e19d6d71819844e855c52435c78deea025c1e0650ad175f8
     - name: oauth-proxy
@@ -438,5 +438,5 @@ spec:
     - name: temporal-ui
       image: docker.io/temporalio/ui@sha256:7be8d6e41d4846ccb718c4f35956c9557512f8085e94a73954286a4e95113703
     - name: pulse-helm-runner
-      image: quay.io/amobrem/openshiftpulse-helm-runner@sha256:e4d843456105322b8dcfe4556728b5a06d3cf70d7f0613836025dc6974749984
+      image: quay.io/amobrem/openshiftpulse-helm-runner@sha256:42301452932e160776881fbf16ab4cc39d5ba167d26fcc03d10e3e31da93eb4d
   version: 0.1.0
