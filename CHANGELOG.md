@@ -7,6 +7,14 @@ actually contains, taken from its commits.
 
 ## Unreleased
 
+## v2.39.0 (2026-11-14)
+
+Pairs with pulse-agent and pulse-ui v2.39.0. From this release the operator shares the agent/UI version number, so it follows v0.14.1 as v2.39.0 (the bundle's `replaces` chain is unchanged: v2.39.0 replaces v0.14.1). Only the operand pins change; no CRD, RBAC or controller changes. **On upgrade** the agent and console Deployments roll once, to the v2.39.0 images. Agent v2.39.0 has no database migrations since v2.38.1.
+
+**Not in this release:** the agent grants in #135 (InstallPlans/Subscriptions reads, MCP sidecar without exec tools). Until they ship, agent v2.39.0's `cloud_credentials` scanner reports itself degraded and the Inbox's "operator updates awaiting approval" generator gets 403 with the agent service account; chat's `list_pending_installplans`/`approve_installplan` use the person's own token and work.
+
+**Operands pinned by digest** (CSV `relatedImages`, the manager's `RELATED_IMAGE_*` and `deploy/operator.yaml`): agent `pulse-agent@sha256:3df698aa`, UI `openshiftpulse@sha256:e4caeae1`, MCP server `pulse-agent@sha256:c5632871` (mcp-server-v2.39.0), Helm runner `openshiftpulse-helm-runner@sha256:42301452`, render `openshiftpulse-render@sha256:3dfab6e7`, all v2.39.0.
+
 ## v0.14.1 (2026-11-12)
 
 Pairs with pulse-agent and pulse-ui v2.38.1. Only the operand pins change; no CRD, RBAC or controller changes. **On upgrade** the agent and console Deployments roll once, to the v2.38.1 images. Agent v2.38.1 refuses every write in a turn that asks to delete a pod in a protected namespace (pulse-agent#245); it has no migrations.
