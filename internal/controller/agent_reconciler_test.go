@@ -370,6 +370,27 @@ var _ = Describe("AgentReconciler", func() {
 		})
 	}
 
+	for _, writes := range []bool{false, true} {
+		It(fmt.Sprintf("lets the cloud-credentials scanner read CredentialsRequests and the credentials mode, read-only (allowWriteOperations=%v)", writes), func() {
+			cr.Spec.Agent.AllowWriteOperations = writes
+			Expect(reconciler.reconcileClusterRole(ctx, cr)).To(Succeed())
+
+			role := &rbacv1.ClusterRole{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentClusterRoleName(crName, namespace)}, role)).To(Succeed())
+
+			Expect(role.Rules).To(ContainElements(
+				rbacv1.PolicyRule{APIGroups: []string{"cloudcredential.openshift.io"}, Resources: []string{"credentialsrequests"}, Verbs: []string{"get", "list"}},
+				rbacv1.PolicyRule{APIGroups: []string{"operator.openshift.io"}, Resources: []string{"cloudcredentials"}, Verbs: []string{"get"}},
+				rbacv1.PolicyRule{APIGroups: []string{"config.openshift.io"}, Resources: []string{"authentications"}, Verbs: []string{"get"}},
+			))
+			for _, rule := range role.Rules {
+				if slices.Contains(rule.APIGroups, "cloudcredential.openshift.io") {
+					Expect(rule.Verbs).To(ConsistOf("get", "list"), "no write verb on CredentialsRequests")
+				}
+			}
+		})
+	}
+
 	It("never grants a wildcard, and write verbs only through the opt-in flags", func() {
 		cr.Spec.Agent.AllowWriteOperations = true
 		Expect(reconciler.reconcileClusterRole(ctx, cr)).To(Succeed())
@@ -578,4 +599,51 @@ func TestOperatorRoleCoversAgentOLMRead(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestCloudCredentialsReadRules pins the cloud-credentials scanner's grants
+// (pulse-agent#264) to read-only, in both the agent's ClusterRole and the
+// operator's own role (which must hold a permission to grant it).
+func TestCloudCredentialsReadRules(t *testing.T) {
+	want := map[string][]string{
+		"cloudcredential.openshift.io/credentialsrequests": {"get", "list"},
+		"operator.openshift.io/cloudcredentials":           {"get"},
+		"config.openshift.io/authentications":              {"get"},
+	}
+	check := func(source string, rules []rbacv1.PolicyRule) {
+		covered := map[string]bool{}
+		for _, rule := range rules {
+			for _, g := range rule.APIGroups {
+				for _, res := range rule.Resources {
+					key := g + "/" + res
+					if _, ok := want[key]; !ok {
+						continue
+					}
+					for _, verb := range rule.Verbs {
+						if verb != "get" && verb != "list" && verb != "watch" {
+							t.Errorf("%s grants %q on %s; it only needs to read", source, verb, key)
+						}
+						covered[key+"/"+verb] = true
+					}
+				}
+			}
+		}
+		for key, verbs := range want {
+			for _, verb := range verbs {
+				if !covered[key+"/"+verb] {
+					t.Errorf("%s must hold %s on %s", source, verb, key)
+				}
+			}
+		}
+	}
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "rbac", "role.yaml"))
+	if err != nil {
+		t.Fatalf("read role.yaml: %v", err)
+	}
+	var role rbacv1.ClusterRole
+	if err := yaml.Unmarshal(raw, &role); err != nil {
+		t.Fatalf("parse role.yaml: %v", err)
+	}
+	check("operator role", role.Rules)
 }

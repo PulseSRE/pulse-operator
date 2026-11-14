@@ -141,6 +141,17 @@ rules:
 - apiGroups: [operators.coreos.com]
   resources: [installplans, subscriptions]
   verbs: [get, list, watch]
+# Read-only: granted on to the agent's ClusterRole for the cloud-credentials
+# scanner (why cloud-credential is Degraded and the fix, pulse-agent#264).
+- apiGroups: [cloudcredential.openshift.io]
+  resources: [credentialsrequests]
+  verbs: [get, list]
+- apiGroups: [operator.openshift.io]
+  resources: [cloudcredentials]
+  verbs: [get]
+- apiGroups: [config.openshift.io]
+  resources: [authentications]
+  verbs: [get]
 # Read-only: granted on to the agent's ClusterRole for RBAC change history
 # (SCC and admission webhook versions, pulse-agent Wave 16).
 - apiGroups: [security.openshift.io]
