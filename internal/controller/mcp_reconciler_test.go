@@ -2,6 +2,12 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -245,3 +251,133 @@ var _ = Describe("MCPReconciler", func() {
 		})
 	})
 })
+
+// TestBuildMCPConfigTOMLGolden pins the exact file the MCP server reads at
+// startup. Keys are the ones openshift/openshift-mcp-server 0e36b24 defines in
+// pkg/config (port, toolsets, read_only, disabled_tools).
+func TestBuildMCPConfigTOMLGolden(t *testing.T) {
+	const disabled = `disabled_tools = ["configuration_view", "pods_exec", "nodes_debug_exec", ` +
+		`"get-conntrack", "get-ip", "get-iptables", "get-nft", "pwru", "tcpdump", ` +
+		`"exec_dns_in_pod", "get_router_config", "get_router_info", "get_router_sessions", ` +
+		`"ovn_get", "ovn_lflow_list", "ovn_show", "ovn_trace", "ovs_appctl", "ovs_ofctl", "ovs_vsctl"]` + "\n"
+
+	for _, tc := range []struct {
+		name, toolsets, want string
+	}{
+		{
+			name:     "default toolsets",
+			toolsets: "",
+			want: "# Managed by pulse-operator. Edits are reverted.\n" +
+				"port = \"8081\"\n" +
+				`toolsets = ["core", "config", "helm", "observability/metrics", "observability/logs", ` +
+				`"ossm", "netedge", "tekton", "kubevirt", "kcp", "cluster-diagnostics"]` + "\n" +
+				"read_only = true\n" + disabled,
+		},
+		{
+			// An explicit toolset list must not drop the read-only settings:
+			// enabling ovn-kubernetes or cni-diagnostics is exactly when the
+			// exec tools would otherwise appear.
+			name:     "explicit toolsets keep read_only and disabled_tools",
+			toolsets: " core , ovn-kubernetes,cni-diagnostics,",
+			want: "# Managed by pulse-operator. Edits are reverted.\n" +
+				"port = \"8081\"\n" +
+				`toolsets = ["core", "ovn-kubernetes", "cni-diagnostics"]` + "\n" +
+				"read_only = true\n" + disabled,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := &pulsev1alpha1.OpenShiftPulse{}
+			cr.Spec.Agent.MCP.Toolsets = tc.toolsets
+			if got := buildMCPConfigTOML(cr); got != tc.want {
+				t.Errorf("buildMCPConfigTOML mismatch\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMCPDisabledToolsKeepsUpstreamDefault: setting disabled_tools replaces the
+// downstream build's default (["configuration_view"]) instead of extending it,
+// so dropping that entry would expose a tool the server hides today. Names
+// must be exact; upstream does not expand globs.
+func TestMCPDisabledToolsKeepsUpstreamDefault(t *testing.T) {
+	if !slices.Contains(mcpDisabledTools, "configuration_view") {
+		t.Error("mcpDisabledTools must keep the upstream default configuration_view")
+	}
+	seen := map[string]bool{}
+	for _, name := range mcpDisabledTools {
+		if strings.ContainsAny(name, "*?[") {
+			t.Errorf("%q: disabled_tools takes exact names; upstream does not expand globs", name)
+		}
+		if seen[name] {
+			t.Errorf("%q listed twice", name)
+		}
+		seen[name] = true
+	}
+}
+
+// The config hash rolls the MCP Deployment, so a config change (like this
+// one) restarts the server, which reads its config only at startup.
+var _ = Describe("MCP config read-only settings", func() {
+	const (
+		crName    = "mcp-readonly-pulse"
+		namespace = "default"
+	)
+
+	AfterEach(func() {
+		cr := &pulsev1alpha1.OpenShiftPulse{ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace}}
+		_ = k8sClient.Delete(testCtx, cr)
+	})
+
+	It("writes read_only and disabled_tools into the ConfigMap the server mounts", func() {
+		cr := &pulsev1alpha1.OpenShiftPulse{
+			ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: namespace},
+			Spec: pulsev1alpha1.OpenShiftPulseSpec{
+				Agent: pulsev1alpha1.AgentConfig{MCP: pulsev1alpha1.MCPConfig{Enabled: true}},
+			},
+		}
+		Expect(k8sClient.Create(testCtx, cr)).To(Succeed())
+
+		mcp := &MCPReconciler{Client: k8sClient, Scheme: testScheme}
+		Expect(mcp.reconcileMCP(testCtx, cr, nil)).To(Succeed())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: mcpConfigName(crName), Namespace: namespace}, cm)).To(Succeed())
+		toml := cm.Data[mcpConfigFileName]
+		Expect(toml).To(Equal(buildMCPConfigTOML(cr)))
+		Expect(toml).To(ContainSubstring("\nread_only = true\n"))
+		for _, name := range []string{"pods_exec", "nodes_debug_exec", "get_router_config", "ovn_trace", "tcpdump"} {
+			Expect(toml).To(ContainSubstring(strconv.Quote(name)), "%s must be in disabled_tools", name)
+		}
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: mcpResourceName(crName), Namespace: namespace}, deploy)).To(Succeed())
+		want := fmt.Sprintf("%x", sha256.Sum256([]byte(toml)))[:8]
+		Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(mcpConfigHashAnnotation, want),
+			"the pod template must carry the hash of this config so the change rolls the server")
+	})
+})
+
+// upstreamMCPToolsets are the toolset names openshift/openshift-mcp-server
+// registers at 0e36b241ccf768bdc3eb64df2afcd5257c19061d, the MCP_SERVER_REF
+// pulse-agent's MCP image is built from (GetName() of each toolset imported by
+// pkg/mcp/modules.go and pkg/mcp/openshift_modules.go; kiali registers as
+// "ossm" in this build). Update it when that ref moves.
+var upstreamMCPToolsets = []string{
+	"cluster-diagnostics", "cni-diagnostics", "config", "core", "helm", "kcp",
+	"kubevirt", "netedge", "netobserv", "oadp", "observability/logs",
+	"observability/metrics", "observability/otelcol", "observability/traces",
+	"openshift/mustgather", "ossm", "ovn-kubernetes", "tekton",
+}
+
+// TestDefaultMCPToolsetsAreRegistered: the server validates its toolset list
+// at startup and exits on any unknown name, so one bad default leaves every
+// CR that does not set spec.agent.mcp.toolsets with an MCP sidecar that never
+// starts. That happened with "openshift".
+func TestDefaultMCPToolsetsAreRegistered(t *testing.T) {
+	for _, name := range strings.Split(defaultMCPToolsets, ",") {
+		name = strings.TrimSpace(name)
+		if !slices.Contains(upstreamMCPToolsets, name) {
+			t.Errorf("default MCP toolset %q is not registered by openshift-mcp-server 0e36b24; the server would exit with \"invalid toolset name\"", name)
+		}
+	}
+}

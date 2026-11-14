@@ -174,7 +174,10 @@ var _ = Describe("Controller behavior — AUDIT regression tests", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpConfigName(crName), Namespace: namespace}, cm)).To(Succeed())
 			toml := cm.Data[mcpConfigFileName]
 			Expect(toml).To(ContainSubstring(`"core"`), "config must include the core toolset")
-			Expect(toml).To(ContainSubstring(`"openshift"`), "config must include the openshift toolset")
+			Expect(toml).To(ContainSubstring(`"cluster-diagnostics"`), "config must include the cluster-diagnostics toolset")
+			// "openshift" is not a toolset openshift-mcp-server registers; the
+			// server refuses to start with it in the list.
+			Expect(toml).NotTo(ContainSubstring(`"openshift"`), "config must not name the unregistered openshift toolset")
 			Expect(toml).To(ContainSubstring(`port = "8081"`))
 		})
 
