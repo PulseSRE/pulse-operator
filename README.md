@@ -92,22 +92,23 @@ moments apart, and blocking on the resulting transient mismatch would wedge the
 very rollout that clears it. Digest pins, `latest`, and unset images all report
 no skew rather than guessing.
 
-### Why the operator's version differs
+### One version with the agent and UI
 
-The operator versions independently of the Pulse application it deploys.
-Read `OperatorVersion` in `internal/controller/compat.go` for this checkout's
-operator version, and the CR's image fields for the deployed application versions:
+From v2.39.0 the operator shares the agent and UI's version number: a Pulse
+release is `vX.Y.Z` in all three repositories, and operator `vX.Y.Z` pins the
+agent and UI images of the same version (its line before that was v0.1.0 to
+v0.14.1, and v2.39.0 upgrades from v0.14.1 in the OLM graph). So "which Pulse am
+I running" has one answer on a default install. What that costs:
 
-- The operator's version tracks *its own* API and reconcile behaviour. The CRD
-  is still `v1alpha1`, and a 0.x version says so honestly.
-- OLM upgrade graphs are monotonic. Folding the operator into the application's
-  2.x stream would be irreversible, and would force an operator release, bundle
-  rebuild, catalog render and a cluster-wide OLM upgrade for every application
-  patch — including releases that change nothing in the operator.
-- The application version is already carried explicitly, per instance, in
-  `spec.agent.image` on the OpenShiftPulse CR. That is the field to look at to
-  answer "which Pulse am I running", and it is deliberately decoupled from the
-  operator that reconciles it.
+- The jump is permanent: OLM upgrade graphs are monotonic, so the operator
+  cannot return to 0.x.
+- Every application release, patches included, is an operator release, bundle
+  rebuild, catalog render and OLM upgrade, even when only the operand pins change.
+- The CRD is still `v1alpha1`; the version number no longer signals that.
+
+A CR that sets its own `spec.agent.image` can still run another agent version;
+the `AgentVersionCompatible` condition checks `spec.agent.minOperatorVersion`
+against this operator's build.
 
 `OperatorVersion` in `internal/controller/compat.go` is the operator build's own
 version and must be bumped with each release; `version_guard_test.go` fails the
