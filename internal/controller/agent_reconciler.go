@@ -413,6 +413,39 @@ func (r *AgentReconciler) reconcileClusterRole(ctx context.Context, cr *pulsev1a
 				Resources: []string{"apirequestcounts"},
 				Verbs:     []string{"get", "list"},
 			},
+			// The operator-approvals inbox generator (pulse-agent#253) lists
+			// InstallPlans awaiting manual approval and the Subscriptions that
+			// own them, so a stalled operator upgrade shows up in the Inbox
+			// instead of waiting unnoticed. Read-only, deliberately: approving
+			// an InstallPlan is a patch, and that stays with a person in the
+			// console. No write verb, also with allowWriteOperations.
+			{
+				APIGroups: []string{"operators.coreos.com"},
+				Resources: []string{"installplans", "subscriptions"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			// The cloud-credentials scanner (pulse-agent#264) explains why the
+			// cloud-credential operator is Degraded: which CredentialsRequest
+			// failed, the cloud permissions it needs, and the fix for the
+			// cluster's credentials mode (Mint/Passthrough/Manual/STS, read from
+			// the CloudCredential config and the Authentication issuer).
+			// Read-only metadata; credential values live in Secrets and are
+			// never read by this rule.
+			{
+				APIGroups: []string{"cloudcredential.openshift.io"},
+				Resources: []string{"credentialsrequests"},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{"operator.openshift.io"},
+				Resources: []string{"cloudcredentials"},
+				Verbs:     []string{"get"},
+			},
+			{
+				APIGroups: []string{"config.openshift.io"},
+				Resources: []string{"authentications"},
+				Verbs:     []string{"get"},
+			},
 			// RBAC change history (pulse-agent Wave 16) keeps an observed
 			// version history of Roles, ClusterRoles, their bindings, SCCs and
 			// admission webhook configurations, listing each kind as the

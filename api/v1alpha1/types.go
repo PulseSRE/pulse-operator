@@ -197,8 +197,8 @@ type MCPConfig struct {
 	// Toolsets is the comma-separated list of MCP toolsets to enable.
 	// Available: cluster-diagnostics, cni-diagnostics, config, core, helm, kcp,
 	// kubevirt, netedge, netobserv, oadp, observability/logs, observability/metrics,
-	// observability/otelcol, observability/traces, openshift, openshift/mustgather,
-	// ossm, ovn-kubernetes, tekton.
+	// observability/otelcol, observability/traces, openshift/mustgather, ossm,
+	// ovn-kubernetes, tekton.
 	// Defaults to the full SRE set when empty.
 	// +optional
 	Toolsets string `json:"toolsets,omitempty"`
