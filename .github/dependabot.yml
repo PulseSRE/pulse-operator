@@ -18,3 +18,11 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    ignore:
+      # go-toolset publishes two tag streams: Go versions (1.26) and RHEL
+      # releases (9.9, which carries whatever Go that release ships). Dependabot
+      # reads 9.9 as a newer 1.26 and proposes switching streams (#130). Stay
+      # on the Go stream: digest updates within 1.26 still arrive, and a move
+      # to a new Go minor follows go.mod.
+      - dependency-name: "ubi9/go-toolset"
+        update-types: ["version-update:semver-major"]
