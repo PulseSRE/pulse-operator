@@ -26,12 +26,15 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
 
 # Runtime stage
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest@sha256:7fbeae18dc9476399f565e68255f602a3374ea8614ba3d14843565131a13ff93
+# ubi-micro, not ubi-minimal: the manager is a static binary (CGO_ENABLED=0)
+# that needs no shared libraries, and it talks only to the Kubernetes API, whose
+# CA comes from the service account, so it needs no system CA bundle either.
+# ubi-minimal carried packages the manager never loads (krb5-libs, sqlite-libs,
+# microdnf's own stack), and their CVEs failed container-scan with no fix
+# available in the UBI repos (krb5-libs, 14 HIGH, 2026-11). ubi-micro has no
+# package manager, so fixes arrive when Dependabot moves this digest.
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest@sha256:dbd325b96bcd432dd42816d31412bdf1dc0fb973b79ed310344bc23c76c068db
 WORKDIR /
-# The base digest is pinned for reproducibility, which also pins its CVEs.
-# Pull in published package fixes at build time so a rebuild picks up errata
-# (e.g. sqlite-libs CVE-2026-11822) without waiting for a digest bump.
-RUN microdnf update -y && microdnf clean all
 COPY --from=builder /opt/app-root/src/manager .
 USER 65532:65532
 ENTRYPOINT ["/manager"]

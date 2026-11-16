@@ -37,15 +37,18 @@ following are especially welcome:
 
 The `container-scan` job builds the operator image and runs Trivy with
 `severity: CRITICAL,HIGH`, `ignore-unfixed: true`, and `exit-code: 1`.
-The runtime base is digest-pinned, and `microdnf update` applies available
-package errata during each build. A new fixable vulnerability can therefore
+The runtime base is `ubi9/ubi-micro`, digest-pinned. It has no package
+manager, so package fixes reach the image only when its digest moves; it also
+carries far fewer packages than `ubi-minimal`, which it replaced after
+`krb5-libs` CVEs that the manager never loads failed the scan with no fix in
+the UBI repos. A newly published vulnerability in the pinned base can still
 change CI results even when the source tree has not changed.
 
 Dependabot checks Docker digests daily. Review its existing PRs before opening
 another update. To validate a candidate, build the complete operator image and
 scan that image with the same Trivy settings; scanning only the base does not
-exercise the package update or inspect the operator binary. Preserve the
-`microdnf update` step when resolving an older digest PR against current main.
+inspect the operator binary. Keep the runtime stage on `ubi-micro`: the
+manager is static and needs no shared libraries or system CA bundle.
 
 The builder contributes only the statically linked manager executable
 (`CGO_ENABLED=0`) to the runtime stage. Updating builder RPMs alone does not
