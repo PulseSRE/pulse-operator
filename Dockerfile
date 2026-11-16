@@ -9,7 +9,7 @@
 # themselves regardless of the Go version baked into this base image. This image's
 # default WORKDIR is /opt/app-root/src, owned by its non-root default user (uid 1001),
 # so we build there instead of /workspace.
-FROM registry.access.redhat.com/ubi9/go-toolset:1.26@sha256:8cf89835994846ca0dffb9078e3a5638c57ec6175750f0af02fbe9c9942696d3 AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:1.27@sha256:4053e919374d739ee6b0007e412d89256b0bd065e0bc690c2b3905bbaab6500e AS builder
 WORKDIR /opt/app-root/src
 # Unlike Docker Hub's golang images, Red Hat's go-toolset builds Go with
 # GOTOOLCHAIN defaulting to "local" instead of upstream's "auto". Without this,
